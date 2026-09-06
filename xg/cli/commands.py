@@ -910,7 +910,7 @@ def _tier_usage(sub: str) -> str:
 
 
 def execute_path_command(raw: str) -> tuple[str, bool]:
-    """执行 /path：status 查看命令目录 PATH 状态；add 立即执行自愈写入持久 PATH。"""
+    """执行 /path：status 查看命令目录 PATH 状态；add 立即执行自愈（PATH 或启动器）。"""
     from xg.cli import path_heal
 
     parts = raw.split()
@@ -925,12 +925,18 @@ def execute_path_command(raw: str) -> tuple[str, bool]:
             "PATH 状态",
             f"命令目录:   {scripts}",
             f"命令文件:   {status['command_file'] or '（未生成，请先 pip install xg-cli）'}",
+            f"启动器:     {status['shim_file'] or '（未生成，用 /path add 配置）'}",
             f"当前会话:   {'已在 PATH 中' if status['in_current_path'] else '不在 PATH 中'}",
             f"持久 PATH:  {'已写入' if status['in_persisted_path'] else '未写入（用 /path add 配置）'}",
             f"自动自愈:   {'关闭（XG_AUTO_PATH=0）' if status['auto_path_disabled'] else '开启'}",
         ]
-        if not status["command_file"]:
-            lines.append("提示：目录里没有 xg-cli 可执行文件时，配置 PATH 也不会让命令生效。")
+        if not status["command_file"] and not status["shim_file"]:
+            if status["store_python"]:
+                lines.append(
+                    "提示：微软商店版 Python 不生成命令入口，/path add 会改用启动器（shim）方案。"
+                )
+            else:
+                lines.append("提示：目录里没有 xg-cli 可执行文件时，/path add 会改用启动器（shim）方案。")
         return "\n".join(lines), True
 
     if sub == "add":
@@ -938,12 +944,19 @@ def execute_path_command(raw: str) -> tuple[str, bool]:
             return "自动 PATH 已被 XG_AUTO_PATH=0 关闭，如需配置请移除该环境变量。", False
         if not scripts:
             return "未找到命令 scripts 目录，无法配置 PATH。", False
-        if status["in_persisted_path"]:
+        if status["in_persisted_path"] and status["command_file"]:
             return f"持久 PATH 已包含命令目录，无需重复配置：{scripts}", True
         if path_heal.ensure_on_path():
-            return (
-                f"已将命令目录写入持久 PATH：{scripts}\n请重开一个终端后直接运行 xg-cli。"
-            ), True
+            after = path_heal.path_status()
+            if after["command_file"] and after["in_persisted_path"]:
+                return (
+                    f"已将命令目录写入持久 PATH：{scripts}\n请重开一个终端后直接运行 xg-cli。"
+                ), True
+            if after["shim_file"]:
+                return (
+                    f"已生成启动器：{after['shim_file']}\n请重开一个终端后直接运行 xg-cli。"
+                ), True
+            return "已配置完成，请重开一个终端后直接运行 xg-cli。", True
         return (
             "写入失败（可能权限不足）。可手动把上面的命令目录加入用户 PATH，"
             "或改用 tools/install.ps1 / install.sh 安装器。"

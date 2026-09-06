@@ -30,6 +30,7 @@ def test_disabled_via_env(monkeypatch):
 
 def test_no_ops_when_no_scripts(monkeypatch):
     monkeypatch.setattr(path_heal, "_scripts_dir", lambda: "")
+    monkeypatch.setattr(path_heal, "_shim_dir", lambda: "")
     assert ensure_on_path() is False
 
 
@@ -37,6 +38,7 @@ def test_no_ops_when_no_dispatch_file(monkeypatch):
     monkeypatch.setattr(path_heal, "_scripts_dir", lambda: "/x/scripts")
     monkeypatch.setattr(os.path, "isdir", lambda p: True)
     monkeypatch.setattr(path_heal, "_has_dispatch", lambda _d: False)
+    monkeypatch.setattr(path_heal, "_shim_dir", lambda: "")
     assert ensure_on_path() is False
 
 
@@ -60,11 +62,82 @@ def test_writes_and_updates_current_path(monkeypatch):
     assert path_heal._seg_contains(os.environ.get("PATH", ""), "C:\\scripts\\xg")
 
 
-def test_write_failure_returns_false(monkeypatch):
+def test_write_failure_falls_back_to_shim(monkeypatch, tmp_path):
+    # 注册表写入失败 → 回落启动器方案（shim 写入成功则整体视为成功）
+    shim_dir = tmp_path / "shim"
     monkeypatch.setattr(path_heal, "_scripts_dir", lambda: "/x/scripts")
     monkeypatch.setattr(os.path, "isdir", lambda p: True)
     monkeypatch.setattr(path_heal, "_write", lambda e: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(path_heal, "_shim_dir", lambda: str(shim_dir))
+    assert ensure_on_path() is True
+    assert (shim_dir / path_heal.SHIM_NAME).is_file()
+
+
+# ---------------- 启动器(shim) ----------------
+
+
+def test_shim_written_when_no_dispatch(monkeypatch, tmp_path):
+    # 商店版 Python / pip 未生成命令文件：ensure_on_path 改写启动器
+    shim_dir = tmp_path / "shim"
+    monkeypatch.setattr(path_heal, "_scripts_dir", lambda: "/x/scripts")
+    monkeypatch.setattr(os.path, "isdir", lambda p: True)
+    monkeypatch.setattr(path_heal, "_has_dispatch", lambda _d: False)
+    monkeypatch.setattr(path_heal, "_shim_dir", lambda: str(shim_dir))
+
+    assert ensure_on_path() is True
+    shim = shim_dir / path_heal.SHIM_NAME
+    assert shim.is_file()
+    content = shim.read_text(encoding="utf-8")
+    assert "-m xg.cli.app" in content
+    import sys
+
+    assert sys.executable in content
+
+
+def test_shim_idempotent_when_current(monkeypatch, tmp_path):
+    # shim 已存在且指向当前解释器 → 视为就绪，不重复写
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    path_heal._write_shim_file(str(shim_dir / path_heal.SHIM_NAME))
+    monkeypatch.setattr(path_heal, "_scripts_dir", lambda: "/x/scripts")
+    monkeypatch.setattr(os.path, "isdir", lambda p: True)
+    monkeypatch.setattr(path_heal, "_has_dispatch", lambda _d: False)
+    monkeypatch.setattr(path_heal, "_shim_dir", lambda: str(shim_dir))
     assert ensure_on_path() is False
+
+
+def test_shim_rewritten_when_interpreter_changes(monkeypatch, tmp_path):
+    # 解释器变化（如换 venv）→ shim 重写指向新解释器
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    stale = shim_dir / path_heal.SHIM_NAME
+    stale.write_text('@echo off\r\n"Z:\\old\\python.exe" -m xg.cli.app %*\r\n', encoding="utf-8")
+    monkeypatch.setattr(path_heal, "_scripts_dir", lambda: "/x/scripts")
+    monkeypatch.setattr(os.path, "isdir", lambda p: True)
+    monkeypatch.setattr(path_heal, "_has_dispatch", lambda _d: False)
+    monkeypatch.setattr(path_heal, "_shim_dir", lambda: str(shim_dir))
+
+    assert ensure_on_path() is True
+    import sys
+
+    assert sys.executable in stale.read_text(encoding="utf-8")
+
+
+def test_ensure_shim_persists_shim_dir_when_missing(monkeypatch, tmp_path):
+    # shim 目录不在持久 PATH 时补写
+    shim_dir = tmp_path / "shim"
+    written: list[str] = []
+    monkeypatch.setattr(path_heal, "_shim_dir", lambda: str(shim_dir))
+    monkeypatch.setattr(path_heal, "_write", lambda e: written.append(e))
+    assert path_heal._ensure_shim() is True
+    assert written == [str(shim_dir)]
+    # 当前进程 PATH 已立即包含 shim 目录
+    assert path_heal._seg_contains(os.environ.get("PATH", ""), str(shim_dir))
+
+
+def test_ensure_shim_no_ops_when_no_dir(monkeypatch):
+    monkeypatch.setattr(path_heal, "_shim_dir", lambda: "")
+    assert path_heal._ensure_shim() is False
 
 
 def test_seg_contains():
@@ -178,8 +251,18 @@ def test_record_dispatch_finds_check_family(monkeypatch, tmp_path):
     assert path_heal._record_dispatch() == str(scripts / "xg-cli.exe")
 
 
-def test_record_dispatch_empty_wing_dists(monkeypatch):
+def test_record_dispatch_empty_when_nodist(monkeypatch):
     import importlib.metadata as md
 
     monkeypatch.setattr(md, "distribution", lambda _name: (_ for _ in ()).throw(md.PackageNotFoundError("no")))
     assert path_heal._record_dispatch() == ""
+
+
+def test_is_store_python_detects_windowsapps(monkeypatch):
+    monkeypatch.setattr(sysconfig, "get_path", lambda _name: "C:\\Program Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.11\\Scripts")
+    assert path_heal._is_store_python() is True
+
+
+def test_is_store_python_false_for_normal(monkeypatch):
+    monkeypatch.setattr(sysconfig, "get_path", lambda _name: "D:\\Anaconda\\Scripts")
+    assert path_heal._is_store_python() is False

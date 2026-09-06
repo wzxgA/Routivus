@@ -1345,14 +1345,20 @@ def main(argv: list[str] | None = None) -> None:
     if args.version:
         print(f"xg-cli {__version__}")
         return
-    # 首次运行自愈：把命令 scripts 目录加入用户 PATH，新开终端即可直接 xg-cli。
+    # 首次运行自愈：把命令 scripts 目录加入用户 PATH；命令文件不可用时改写启动器。
     # 可用 XG_AUTO_PATH=0 关闭；只执行一次（幂等）。
     if _heal_path():
+        from xg.cli import path_heal as _ph
+
+        _st = _ph.path_status()
+        if _st.get("shim_file") and not _st.get("command_file"):
+            _tip = f"已生成 XG-CLI 启动器（{_st['shim_file']}）。"
+        else:
+            _tip = "已将 XG-CLI 命令目录加入 PATH。"
         console.print(
             Panel(
                 Text(
-                    f"已将 XG-CLI 命令目录加入 PATH（数据目录 {os.path.expanduser('~')}）。"
-                    "请重开一个终端后直接运行: xg-cli"
+                    f"{_tip}请重开一个终端后直接运行: xg-cli"
                 ),
                 style="green",
             )

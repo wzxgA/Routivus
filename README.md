@@ -24,9 +24,11 @@ xg-cli
 若新开终端仍提示找不到 `xg-cli`（自动写入被禁用或失败），可在已启动的 XG 内（TUI 或 inline 均可）手动配置：
 
 ```bash
-/path        # 查看命令目录、命令文件、当前会话与持久 PATH 状态
-/path add    # 立即把命令目录写入用户级持久 PATH（幂等）
+/path        # 查看命令目录、命令文件、启动器与当前/持久 PATH 状态
+/path add    # 立即配置：优先写入命令目录到用户级持久 PATH（幂等）
 ```
+
+`/path add` 在命令文件不可用的环境（如微软商店版 Python 不生成入口 exe）会自动改用**启动器（shim）**方案：在默认已位于用户 PATH 的可写目录（Windows 为 `%LOCALAPPDATA%\Microsoft\WindowsApps`，macOS/Linux 为 `~/.local/bin`）生成一个调用当前解释器的 `xg-cli` 启动脚本，重开终端后同样可直接运行 `xg-cli`。启动器写死了当前解释器路径，若日后更换 Python 环境导致失效，重新执行一次 `/path add` 即可重建。
 
 ### 方式二：使用安装器
 
@@ -123,7 +125,7 @@ SmartRouter 按任务复杂度动态选择四档模型（Basic / Enhanced / Supe
 | `/team <任务>` | Multi-Agent 模式：Supervisor 调度隔离 Worker，审查证据并定向修复（见下） |
 | `/provider` | 管理服务商（增删改查、切 base、写 Key、维护模型列表，见「配置 Provider」） |
 | `/model` | 查看当前模型，或在当前 provider 内切换模型（见「配置 Provider」） |
-| `/path [add]` | 查看 xg-cli 命令目录的 PATH 状态；`add` 写入用户级持久 PATH（幂等），重开终端后 `xg-cli` 直接可用 |
+| `/path [add]` | 查看 xg-cli 命令目录/启动器与 PATH 状态；`add` 写入用户级持久 PATH，命令文件不可用时自动生成启动器（重开终端后 `xg-cli` 直接可用） |
 | `/smartRouter` | 智能路由总开关与状态（on / off / status / reset，见「SmartRouter 智能路由」） |
 | `/tier` | 配置四档模型（list / show / set / clear，见「SmartRouter 智能路由」） |
 | `/train` | 手动训练 ML 精判模型（需确认，实时输出进度） |
