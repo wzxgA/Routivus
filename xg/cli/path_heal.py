@@ -46,6 +46,26 @@ def ensure_on_path() -> bool:
     return True
 
 
+def path_status() -> dict:
+    """只读诊断：命令目录、命令文件与当前/持久 PATH 状态（不做任何修改）。"""
+    scripts = _scripts_dir()
+    command_file = ""
+    if scripts:
+        candidates = ("xg-cli.exe", "xg-cli") if os.name == "nt" else ("xg-cli",)
+        for name in candidates:
+            if os.path.isfile(os.path.join(scripts, name)):
+                command_file = os.path.join(scripts, name)
+                break
+    current = os.environ.get("PATH", "")
+    return {
+        "scripts_dir": scripts,
+        "command_file": command_file,
+        "in_current_path": bool(scripts) and _seg_contains(current, scripts),
+        "in_persisted_path": bool(scripts) and _persist_contains(scripts),
+        "auto_path_disabled": _disabled(),
+    }
+
+
 def _disabled() -> bool:
     return os.environ.get(ENV_FLAG, "1").strip().lower() in {"0", "false", "no", "off"}
 
@@ -125,8 +145,10 @@ def _win_user_path_contains(entry: str) -> bool:
 def _win_add(entry: str) -> None:
     import winreg
 
+    # KEY_WRITE 不含 KEY_QUERY_VALUE：打开时必须同时申请读权限，
+    # 否则下面读取现有 Path 会抛 PermissionError（WinError 5），写入整次失败。
     with winreg.CreateKeyEx(
-        winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_WRITE
+        winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ | winreg.KEY_WRITE
     ) as key:
         try:
             value, _ = winreg.QueryValueEx(key, "Path")

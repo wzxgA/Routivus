@@ -1,87 +1,141 @@
 # XG-CLI
 
-Python Agent CLI 。终端交互的 Agent 命令行工具，支持 ReAct 直接执行、`/plan` 计划模式和 `/team` Multi-Agent 协作，内置文件读写、代码搜索与命令执行工具。
-
+Python Agent CLI。终端交互的 Agent 命令行工具，支持 ReAct 直接执行、`/plan` 计划模式和 `/team` Multi-Agent 协作，内置文件读写、代码搜索、命令执行与只读联网工具。附带 SmartRouter 智能路由与训练能力，可针对不同复杂度任务自动切换四档模型。
 
 ## 快速开始
 
-要求：Python 3.11+，[uv](https://docs.astral.sh/uv/)。
+要求：Python 3.11+。
+
+### 方式一：pip 安装（推荐）
 
 ```bash
-# 安装依赖
+# 1) 安装
+pip install xg-cli
+
+# 2) 首次启动（此时命令目录还没进 PATH，用模块入口启动）
+python -m xg.cli.app
+
+# 3) 重开一个终端，之后直接使用
+xg-cli
+```
+
+第 2 步首次启动时会自动把命令目录写入用户 PATH（Windows 写注册表、macOS/Linux 追加 shell 配置文件），并提示重开终端；已打开的旧终端不会感知变更，**必须新开一个终端**再执行第 3 步。
+
+若新开终端仍提示找不到 `xg-cli`（自动写入被禁用或失败），可在已启动的 XG 内（TUI 或 inline 均可）手动配置：
+
+```bash
+/path        # 查看命令目录、命令文件、当前会话与持久 PATH 状态
+/path add    # 立即把命令目录写入用户级持久 PATH（幂等）
+```
+
+### 方式二：使用安装器
+
+仓库 `tools/` 下提供一键安装脚本（自动建用户级 venv + 安装 + 配 PATH）：
+
+- macOS / Linux：[install.sh](tools/install.sh)
+- Windows：[install.ps1](tools/install.ps1)
+
+### 方式三：源码运行（开发用）
+
+```bash
+git clone https://github.com/<you>/XG-CLI.git
+cd XG-CLI
 uv sync
-
-# 配置 API（复制示例并填写）
-cp .env.example .env
-
-# 启动
-uv run xg
+uv run xg-cli
 ```
 
-`.env` 最小配置（单 provider，openai 为默认 provider）：
+> 依赖中 `textual`（全屏 TUI）、`onnxruntime`（语义精判）等会自动安装，不需要单独配置。仅语义模型离线导出那套大件（torch 等）仍在 `[optional] semantic` 中，日常使用不需要。
 
-```
-XG_OPENAI_API_KEY=sk-xxx       # 至少配置一个 provider 的专属 Key
-XG_MODEL=gpt-4o-mini           # 可选
-```
+## 配置 Provider
 
-## 多 provider
+所有 provider 配置（定义、URL、API Key、模型列表）**统一写入 `config.json`**，全程可在界面内通过 `/provider` 命令或 TUI 面板完成，无需手改文件、无需 `.env`。
 
-内置 openai / deepseek / glm / kimi 四个 provider（均可走 OpenAI 兼容协议）。每个 provider 的 **URL 和 API Key 都能独立配置**，全部放 `.env`：
+首次进入后，用 `/provider` 添加服务商并写入 API Key：
 
-```
-XG_PROVIDER=deepseek              # 激活哪个 provider
-XG_OPENAI_API_BASE=https://api.openai.com/v1
-XG_OPENAI_API_KEY=sk-xxx
-XG_DEEPSEEK_API_BASE=https://api.deepseek.com/v1
-XG_DEEPSEEK_API_KEY=sk-xxx
-XG_GLM_API_BASE=https://open.bigmodel.cn/api/paas/v4
-XG_GLM_API_KEY=sk-xxx
-XG_KIMI_API_BASE=https://api.moonshot.cn/v1
-XG_KIMI_API_KEY=sk-xxx
+```bash
+/provider add myproxy https://gateway.my.com/v1 --model deepseek-v4 --key sk_x --set-base
 ```
 
-Key 读取：每个 provider 必须配置自己的专属 `XG_<NAME>_API_KEY`（无通用兜底），占位值（`sk-xxx`）会被忽略。URL 优先级：专属 `XG_<NAME>_API_BASE` > 配置文件/内置预设（`XG_API_BASE` 仅对 openai 兼容生效）。
-
-启动后运行时切换（无需重启）：
+`--set-base` 把它设为 base provider。之后 `/provider key <name> <KEY>` 可单独写 Key。
 
 | 命令 | 行为 |
 |------|------|
-| `/model` | 列出所有 provider 与当前激活项 |
-| `/model deepseek` | 切换到该 provider 的默认模型 |
-| `/model glm/glm-4-plus` | 切换到指定模型 |
-| `/model gpt-4o` | 当前 provider 内切换模型名 |
+| `/provider` 或 `list` | 列出所有 provider（默认模型、是否 base、来源层） |
+| `/provider add <name> <api_base> [--model M] [--label L] [--key K] [--set-base]` | 新增 provider |
+| `/provider show <name>` | 查看单个 provider（Key 脱敏） |
+| `/provider set <name> <field> <value>` | 修改 api_base / default_model / display_name |
+| `/provider switch <name> [model]` | 切换 base provider（立即生效） |
+| `/provider key <name> <KEY> [--yes]` | 写入/覆盖 API Key 到 config.json |
+| `/provider remove <name> [--yes]` | 删除 provider（base 不可删） |
+| `/provider <name> model <model>` | 给该 provider 添加模型到列表 |
+| `/provider <name> model rm <model>` | 从该 provider 移除模型 |
+| `/model` 或 `list` | 查看当前模型与可用 provider |
+| `/model <model-name>` | 在当前 base provider 内切换模型 |
 
-切换结果持久化到 `~/.xg/config.json`，重启后仍生效。配置优先级：环境变量/.env > 项目级 `.xg/config.json` > 用户级 `~/.xg/config.json` > 默认值。
+配置最终生成为类似下方的 `~/.xg/config.json`：
+
+```json
+{
+  "active_provider": "myproxy",
+  "active_model": "deepseek-v4-flash-0731",
+  "providers": {
+    "myproxy": {
+      "api_base": "https://gateway.my.com/v1",
+      "default_model": "deepseek-v4-flash-0731",
+      "api_key": "sk_x",
+      "models": ["deepseek-v4-flash-0731", "deepseek-v4-pro-0813"]
+    }
+  },
+  "ui_language": "zh"
+}
+```
+
+未配置 provider 也可启动（会提示），随后再通过 `/provider` 与 `/model` 补全即可。API Key 显示时一律脱敏。
+
+## SmartRouter 智能路由
+
+SmartRouter 按任务复杂度动态选择四档模型（Basic / Enhanced / Superior / Ultimate），档位的 provider/model 通过 `/tier` 配置，总开关用 `/smartRouter`：
+
+| 命令 | 行为 |
+|------|------|
+| `/smartRouter status` | 查看路由状态、四档配置、ML 精判与语义通道指标 |
+| `/smartRouter on` / `off` | 开启 / 关闭智能路由 |
+| `/smartRouter reset` | 重建共享路由状态（重载 ML 模型等） |
+| `/tier list` | 列出四档 provider/model（未配回落主动 active） |
+| `/tier show <tier>` | 查看单个档位 |
+| `/tier set <tier> <provider> [model]` | 设置档位 provider/model（缺省 model 用该 provider 的 default_model） |
+| `/tier clear <tier>` | 清空档位，回落到手动 active |
+| `/train [labeled.jsonl] [--yes] [--no-semantic]` | 手动训练 ML 精判模型（需确认，实时输出进度） |
+
+- **ML 精判**：默认走 TF-IDF + LightGBM 离线训练，产物写入 `~/.xg/adaptive/router.lgb`；训练带语义列可选。用户训练的 `router.lgb` 存在时优先使用，否则回落内置通用模型。
+- **语义通道**：内存 + 任务特征打分命中一定触发条件后，用 BGE 语义编码器（`router_semantics.onnx`，512 维）增强 ML 路由精度；编码器缺失时静默回落 TF-IDF-only。可通过 `/smartRouter status` 观察语义编码次数与耗时。
+- 语义编码器需用 `tools/export_bge_onnx.py` 离线导出，模型文件不随包分发。
 
 ## 使用
 
 启动后直接输入任务，Agent 会自动调用工具完成多步操作（读目录 → 找文件 → 改内容 → 执行命令验证等）。
 
-斜杠命令：
+斜杠命令总览：
 
 | 命令 | 说明 |
 |------|------|
 | `/plan <任务>` | 计划模式：先拆解为子任务 DAG，审阅后按轮执行（见下） |
 | `/team <任务>` | Multi-Agent 模式：Supervisor 调度隔离 Worker，审查证据并定向修复（见下） |
+| `/provider` | 管理服务商（增删改查、切 base、写 Key、维护模型列表，见「配置 Provider」） |
+| `/model` | 查看当前模型，或在当前 provider 内切换模型（见「配置 Provider」） |
+| `/path [add]` | 查看 xg-cli 命令目录的 PATH 状态；`add` 写入用户级持久 PATH（幂等），重开终端后 `xg-cli` 直接可用 |
+| `/smartRouter` | 智能路由总开关与状态（on / off / status / reset，见「SmartRouter 智能路由」） |
+| `/tier` | 配置四档模型（list / show / set / clear，见「SmartRouter 智能路由」） |
+| `/train` | 手动训练 ML 精判模型（需确认，实时输出进度） |
 | `/init` | 分析当前项目，预览并生成 `XG.md` 项目记忆（已有文件不覆盖） |
 | `/save <内容>` | 显式保存一条当前项目长期记忆 |
-| `/memory list\|search\|delete\|clear` | 管理当前项目的长期记忆 |
-| `/model` | 切换 provider / 模型（见上） |
-| `/config` | 显示当前生效配置（Key 脱敏） |
-| `/config list` | provider 能力表 |
-| `/config get <key>` | 查看配置项 |
-| `/config set <key> <value>` | 设置并持久化到 `~/.xg/config.json` |
-| `/mcp status` | 查看 MCP Server、工具和 resources 状态 |
-| `/web status|providers|search|fetch` | 查看状态、搜索公开互联网或抓取公开网页 |
-| `/mcp restart|logs|enable|disable|resources` | 管理 MCP Server |
-| `/skill list` | 查看当前项目可用的 Skill 元信息 |
-| `/skill load <name> [reference ...]` | 手动按需加载 Skill 和指定参考资料 |
-| `/skill enable|disable <name>` | 启用或禁用 Skill |
-| `/history status` | 查看当前项目输入历史状态 |
-| `/history clear` | 清理当前项目输入历史 |
-| `/hitl` | 查看 HITL 审批状态 |
-| `/hitl on\|off` | 开启 / 关闭危险操作审批 |
+| `/memory` | 管理当前项目的长期记忆（list / search / delete / clear） |
+| `/config` | 显示当前生效配置（Key 脱敏）；`list` provider 能力表；`get <key>` / `set <key> <value>` 查改配置项 |
+| `/mcp` | 管理 MCP Server（status / restart / logs / enable / disable / resources） |
+| `/web` | 只读联网能力（status / providers / search / fetch） |
+| `/skill` | 管理任务 Skill（list / load / enable / disable） |
+| `/history` | 输入历史（status / clear） |
+| `/hitl [on/off]` | 查看 / 开启 / 关闭危险操作审批 |
 | `/clear` | 清空当前对话上下文 |
 | `/exit` | 退出 |
 
@@ -178,18 +232,18 @@ Server 工具会动态注册为 `mcp__{server}__{tool}`，默认经过 HITL 确�
 - Composer：多行输入、命令补全、历史和快捷键
 - Modal：HITL 审批、`/init` 与记忆清空确认；Plan 使用对话内嵌卡片审阅
 - Inspector：Session、Plan、Memory、Safety 状态面板
+- 配置面板：`Ctrl+T` 打开，集中管理 Provider 与 SmartRouter 配置
 
-当前入口为 `xg` 默认全屏、`xg --inline` 保留兼容模式，并支持 `xg --tui` 强制全屏、`xg --no-tui` 兼容 inline。全屏 TUI 不改变 ReAct、Plan、Memory、ToolRegistry 或安全策略核心；非交互终端仍使用 inline fallback。
+入口为 `xg-cli` 默认全屏、`xg-cli --inline` 保留兼容模式，并支持 `xg-cli --tui` 强制全屏、`xg-cli --no-tui` 兼容 inline；`xg-cli --version` 查看版本。全屏 TUI 不改变 ReAct、Plan、Memory、ToolRegistry 或安全策略核心；非交互终端仍使用 inline fallback。
 
 ## 配置项
 
+provider 与 SmartRouter 配置统一存于 `config.json`（见「配置 Provider」与「SmartRouter」章节），对应字段为 `active_provider` / `active_model` / `providers` / `smart_router` / `tier` / `ui_language`。
+
+其余可用环境变量（均为可选进阶项，来自 `.env` / `.env.example`）：
+
 | 环境变量 | 说明 |
 |----------|------|
-| `XG_PROVIDER` | 激活的 provider（openai / deepseek / glm / kimi 或自定义），优先于配置文件 |
-| `XG_<NAME>_API_BASE` | 各 provider 专属 URL，如 `XG_DEEPSEEK_API_BASE` |
-| `XG_<NAME>_API_KEY` | 各 provider 专属 Key（必配，无通用兜底），如 `XG_DEEPSEEK_API_KEY` |
-| `XG_API_BASE` | 旧键兼容，仅对 openai 生效 |
-| `XG_MODEL` | 默认模型（未配置 active_model 时生效） |
 | `XG_CONTEXT_WINDOW` | 上下文窗口（token），覆盖 provider 能力声明 |
 | `XG_CONTEXT_BUDGET_RATIO` | 自动压缩前的输入预算比例（默认 0.8，限制 0.5~0.9） |
 | `XG_CONTEXT_KEEP_RECENT_TURNS` | 自动压缩保留的最近完整对话轮次（默认 4） |
@@ -248,14 +302,14 @@ Server 工具会动态注册为 `mcp__{server}__{tool}`，默认经过 HITL 确�
 | `XG_INPUT_HISTORY_MAX_CHARS` | 单条历史输入字符上限（默认 8000） |
 | `XG_INPUT_HISTORY_MAX_BYTES` | 单项目历史文件字节上限（默认 1 MiB） |
 
-API Key 只从环境变量 / .env 读取，不写入配置文件；`/config` 显示时脱敏。
+provider 的 API Key 存入 `config.json`，`/provider show`、`/config` 显示时脱敏。不再从环境变量读取 provider Key。
 
 ## 开发
 
 ```bash
 uv run pytest -m "not slow"   # 常规回归
 uv run pytest                 # 全量测试
-uv run xg                     # 手工验收
+uv run xg-cli                 # 手工验收
 ```
 
-项目分层：`xg/agent`（ReAct 循环 + 计划模式）、`xg/llm`（客户端抽象 + OpenAI 兼容实现 + 工厂）、`xg/tool`（统一工具注册表 + 内置工具）、`xg/mcp`（协议、transport、动态工具和 resources）、`xg/skill`（Skill 发现、解析、按需加载与安全策略）、`xg/input_history`（输入历史、游标、持久化与隐私策略）、`xg/memory`（项目/长期记忆 + 上下文压缩）、`xg/tui`（Textual 全屏交互层）、`xg/cli`（入口与 inline fallback）、`xg/config`（provider/MCP/Web/Skill 配置与运行时快照）。
+项目分层：`xg/agent`（ReAct 循环 + 计划模式）、`xg/llm`（客户端抽象 + OpenAI 兼容实现 + 工厂）、`xg/tool`（统一工具注册表 + 内置工具）、`xg/mcp`（协议、transport、动态工具和 resources）、`xg/skill`（Skill 发现、解析、按需加载与安全策略）、`xg/input_history`（输入历史、游标、持久化与隐私策略）、`xg/memory`（项目/长期记忆 + 上下文压缩）、`xg/tui`（Textual 全屏交互层）、`xg/cli`（入口与 inline fallback）、`xg/config`（provider/MCP/Web/Skill 配置与运行时快照）、`xg/router`（SmartRouter 路由、校准与训练）。

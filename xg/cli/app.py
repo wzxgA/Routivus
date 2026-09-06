@@ -706,6 +706,10 @@ async def _run_loop_body(agent: ReActAgent, settings: Settings, manager: ConfigM
                 from xg.cli.commands import execute_tier_command
 
                 message, _ok = execute_tier_command(manager, settings, user_input)
+            elif user_input.split(maxsplit=1)[0].lower() == "/path":
+                from xg.cli.commands import execute_path_command
+
+                message = execute_path_command(user_input)[0]
             elif user_input.split(maxsplit=1)[0].lower() == "/train":
                 message = _run_train_inline(user_input)
             else:

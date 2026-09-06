@@ -197,6 +197,24 @@ SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
         ),
     ),
     SlashCommandSpec(
+        "/path",
+        usage="/path [add]",
+        description="查看或配置 xg-cli 命令目录的 PATH",
+        category="config",
+        details=(
+            "不带参数时显示命令目录、命令文件、当前会话 PATH 与持久化 PATH 状态。",
+            "add 把命令目录写入用户级持久 PATH（幂等），写入后重开终端即可直接运行 xg-cli。",
+            "启动时的自动自愈可用环境变量 XG_AUTO_PATH=0 关闭。",
+        ),
+        subcommands=(
+            SlashSubcommandSpec("add", "/path add", "把命令目录写入持久 PATH"),
+        ),
+        examples=(
+            "/path",
+            "/path add",
+        ),
+    ),
+    SlashCommandSpec(
         "/mcp",
         usage="/mcp status|restart|logs|enable|disable|resources",
         description="管理 MCP Server",
@@ -452,6 +470,9 @@ class CommandService:
             return CommandResult(ok=ok, message=message)
         if parts[0].lower() == "/tier":
             message, ok = execute_tier_command(self.context.manager, self.context.settings, raw)
+            return CommandResult(ok=ok, message=message)
+        if parts[0].lower() == "/path":
+            message, ok = execute_path_command(raw)
             return CommandResult(ok=ok, message=message)
         if parts[0].lower() == "/train":
             return await execute_train_command(raw, log_sink=self.log_sink)
@@ -886,6 +907,49 @@ def _tier_usage(sub: str) -> str:
         "clear": "/tier clear <tier>",
     }
     return usage.get(sub, "/tier [list|show|set|clear]")
+
+
+def execute_path_command(raw: str) -> tuple[str, bool]:
+    """执行 /path：status 查看命令目录 PATH 状态；add 立即执行自愈写入持久 PATH。"""
+    from xg.cli import path_heal
+
+    parts = raw.split()
+    sub = parts[1].lower() if len(parts) > 1 else "status"
+    status = path_heal.path_status()
+    scripts = status["scripts_dir"]
+
+    if sub in {"status", ""}:
+        if not scripts:
+            return "未找到命令 scripts 目录（当前 Python 环境异常）。", False
+        lines = [
+            "PATH 状态",
+            f"命令目录:   {scripts}",
+            f"命令文件:   {status['command_file'] or '（未生成，请先 pip install xg-cli）'}",
+            f"当前会话:   {'已在 PATH 中' if status['in_current_path'] else '不在 PATH 中'}",
+            f"持久 PATH:  {'已写入' if status['in_persisted_path'] else '未写入（用 /path add 配置）'}",
+            f"自动自愈:   {'关闭（XG_AUTO_PATH=0）' if status['auto_path_disabled'] else '开启'}",
+        ]
+        if not status["command_file"]:
+            lines.append("提示：目录里没有 xg-cli 可执行文件时，配置 PATH 也不会让命令生效。")
+        return "\n".join(lines), True
+
+    if sub == "add":
+        if status["auto_path_disabled"]:
+            return "自动 PATH 已被 XG_AUTO_PATH=0 关闭，如需配置请移除该环境变量。", False
+        if not scripts:
+            return "未找到命令 scripts 目录，无法配置 PATH。", False
+        if status["in_persisted_path"]:
+            return f"持久 PATH 已包含命令目录，无需重复配置：{scripts}", True
+        if path_heal.ensure_on_path():
+            return (
+                f"已将命令目录写入持久 PATH：{scripts}\n请重开一个终端后直接运行 xg-cli。"
+            ), True
+        return (
+            "写入失败（可能权限不足）。可手动把上面的命令目录加入用户 PATH，"
+            "或改用 tools/install.ps1 / install.sh 安装器。"
+        ), False
+
+    return "/path [add]  （不带参数查看状态）", False
 
 
 async def execute_train_command(raw: str, log_sink: callable | None = None) -> CommandResult:
