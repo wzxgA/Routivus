@@ -33,6 +33,8 @@ from xg.config.web import WebConfigManager
 from xg.config.skills import SkillConfigManager
 from xg.router import TIER_NAMES, resolve as resolve_tier, route as route_turn
 from xg.cli.help import format_command_help, format_help
+from xg.cli.path_heal import ensure_on_path as _ensure_on_path
+from xg import __version__
 from xg.input_history import HistoryConfig, InputHistory, PromptToolkitHistory
 from xg.llm.client import LlmClient, LlmError
 from xg.llm.factory import create_client
@@ -1330,11 +1332,27 @@ def _run_tui_or_inline(agent: ReActAgent, settings: Settings, manager: ConfigMan
         asyncio.run(run_loop(agent, settings, manager))
 
 
+def _heal_path() -> bool:
+    return _ensure_on_path()
+
+
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     if args.version:
-        print("xg-cli 0.1.0")
+        print(f"xg-cli {__version__}")
         return
+    # 首次运行自愈：把命令 scripts 目录加入用户 PATH，新开终端即可直接 xg-cli。
+    # 可用 XG_AUTO_PATH=0 关闭；只执行一次（幂等）。
+    if _heal_path():
+        console.print(
+            Panel(
+                Text(
+                    f"已将 XG-CLI 命令目录加入 PATH（数据目录 {os.path.expanduser('~')}）。"
+                    "请重开一个终端后直接运行: xg-cli"
+                ),
+                style="green",
+            )
+        )
     manager = ConfigManager()
     settings = load_settings(manager)
     if settings.provider_missing:
