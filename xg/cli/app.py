@@ -50,8 +50,8 @@ from xg.skill.registry import SkillRegistry
 
 console = Console()
 
-BANNER = """\
-[XG] Agent CLI v0.1.0
+BANNER = f"""\
+[XG] Agent CLI v{__version__}
 输入任务开始对话；/plan 先拆解计划再执行，/team 使用多 Agent 协作，/provider 管理服务商，/model 在当前 provider 内切换模型，
 /config 查看/设置配置，/init 初始化项目记忆，/save 保存记忆，
 /memory 管理记忆，/mcp 管理外部能力，/web 查看联网能力，/hitl 审批开关，/clear 清空上下文，/exit 退出。
