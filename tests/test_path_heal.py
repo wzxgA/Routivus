@@ -17,6 +17,8 @@ def clean_env(monkeypatch):
     monkeypatch.setattr(path_heal, "_persist_contains", lambda e: False)
     monkeypatch.setattr(path_heal, "_write", lambda e: None)
     monkeypatch.setattr(path_heal, "_notify_win", lambda: None)
+    # 写入/幂等类用例默认认为命令文件已存在，聚焦 PATH 写入逻辑。
+    monkeypatch.setattr(path_heal, "_has_dispatch", lambda _d: True)
 
 
 def test_disabled_via_env(monkeypatch):
@@ -28,6 +30,13 @@ def test_disabled_via_env(monkeypatch):
 
 def test_no_ops_when_no_scripts(monkeypatch):
     monkeypatch.setattr(path_heal, "_scripts_dir", lambda: "")
+    assert ensure_on_path() is False
+
+
+def test_no_ops_when_no_dispatch_file(monkeypatch):
+    monkeypatch.setattr(path_heal, "_scripts_dir", lambda: "/x/scripts")
+    monkeypatch.setattr(os.path, "isdir", lambda p: True)
+    monkeypatch.setattr(path_heal, "_has_dispatch", lambda _d: False)
     assert ensure_on_path() is False
 
 
@@ -95,3 +104,82 @@ def test_rc_contains_detects_existing_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(path_heal, "_rc_files", lambda: [str(rc)])
     assert path_heal._rc_contains("/x/scripts") is True
     assert path_heal._rc_contains("/y/scripts") is False
+
+
+def test_dispatch_path_detects_windows_exe(tmp_path, monkeypatch):
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    exe = scripts / "xg-cli.exe"
+    exe.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(path_heal, "_has_dispatch", lambda _d: bool(path_heal._dispatch_path(_d)))
+    assert path_heal._dispatch_path(str(scripts)) == str(exe)
+    assert path_heal._has_dispatch(str(scripts)) is True
+
+
+def test_dispatch_path_empty_when_missing(tmp_path, monkeypatch):
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    monkeypatch.setattr(path_heal, "_has_dispatch", lambda _d: bool(path_heal._dispatch_path(_d)))
+    assert path_heal._dispatch_path(str(scripts)) == ""
+    assert path_heal._has_dispatch(str(scripts)) is False
+
+
+def test_scripts_dir_prefers_which(monkeypatch):
+    # shutil.which 能解析 → 直接取父目录，不再回退 sysconfig
+    monkeypatch.setattr(path_heal, "_which_dispatch", lambda: "/real/bin/xg-cli")
+    monkeypatch.setattr(path_heal, "_record_dispatch", lambda: "/record/bin/xg-cli")
+    assert path_heal._scripts_dir() == "/real/bin"
+
+
+def test_scripts_dir_falls_back_to_record(monkeypatch):
+    # which 为空、RECORD 命中 → 用 RECORD 的父目录（微软商店版关键路径）
+    monkeypatch.setattr(path_heal, "_which_dispatch", lambda: "")
+    monkeypatch.setattr(path_heal, "_record_dispatch", lambda: "/user/Scripts/xg-cli")
+    assert path_heal._scripts_dir() == "/user/Scripts"
+
+
+def test_scripts_dir_falls_back_to_sysconfig(monkeypatch):
+    # which / RECORD 都取不到 → 兜底 sysconfig
+    monkeypatch.setattr(path_heal, "_which_dispatch", lambda: "")
+    monkeypatch.setattr(path_heal, "_record_dispatch", lambda: "")
+    monkeypatch.setattr(sysconfig, "get_path", lambda name: "/sys/src/scripts")
+    assert path_heal._scripts_dir() == "/sys/src/scripts"
+
+
+def test_scripts_dir_empty_on_sysconfig_error(monkeypatch):
+    monkeypatch.setattr(path_heal, "_which_dispatch", lambda: "")
+    monkeypatch.setattr(path_heal, "_record_dispatch", lambda: "")
+
+    def _boom(_name):
+        raise ValueError("no scripts")
+
+    monkeypatch.setattr(sysconfig, "get_path", _boom)
+    assert path_heal._scripts_dir() == ""
+
+
+def test_record_dispatch_finds_check_family(monkeypatch, tmp_path):
+    # 模拟 pip 写入的 RECORD 含 xg-cli 实际路径（形如 .../Scripts/xg-cli.exe）
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    (scripts / "xg-cli.exe").write_text("x", encoding="utf-8")
+
+    class _FakeDistFile:
+        name = f"../../../Scripts/xg-cli.exe"
+
+    class _FakeDist:
+        files = [_FakeDistFile()]
+
+        def locate_file(self, name):
+            return scripts / "xg-cli.exe"
+
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "distribution", lambda _name: _FakeDist())
+    assert path_heal._record_dispatch() == str(scripts / "xg-cli.exe")
+
+
+def test_record_dispatch_empty_wing_dists(monkeypatch):
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "distribution", lambda _name: (_ for _ in ()).throw(md.PackageNotFoundError("no")))
+    assert path_heal._record_dispatch() == ""

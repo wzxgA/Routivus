@@ -15,10 +15,12 @@ pip 把 ``xg-cli`` 命令可执行文件装进 Python 的 ``scripts`` 目录
 from __future__ import annotations
 
 import os
+import shutil
 import sysconfig
 
 ENV_FLAG = "XG_AUTO_PATH"
 _RC_CANDIDATES = (".zshrc", ".bashrc", ".bash_profile")
+_DISPATCH_NAMES = ("xg-cli.exe", "xg-cli")
 
 
 def ensure_on_path() -> bool:
@@ -29,7 +31,8 @@ def ensure_on_path() -> bool:
     if _disabled():
         return False
     scripts = _scripts_dir()
-    if not scripts or not os.path.isdir(scripts):
+    # 目录可能因存储型异常(微软商店 Python)探测错：必须确认里面真有命令文件才写。
+    if not scripts or not os.path.isdir(scripts) or not _has_dispatch(scripts):
         return False
     if _persist_contains(scripts):
         return False
@@ -49,13 +52,7 @@ def ensure_on_path() -> bool:
 def path_status() -> dict:
     """只读诊断：命令目录、命令文件与当前/持久 PATH 状态（不做任何修改）。"""
     scripts = _scripts_dir()
-    command_file = ""
-    if scripts:
-        candidates = ("xg-cli.exe", "xg-cli") if os.name == "nt" else ("xg-cli",)
-        for name in candidates:
-            if os.path.isfile(os.path.join(scripts, name)):
-                command_file = os.path.join(scripts, name)
-                break
+    command_file = _dispatch_path(scripts) if scripts else ""
     current = os.environ.get("PATH", "")
     return {
         "scripts_dir": scripts,
@@ -70,7 +67,61 @@ def _disabled() -> bool:
     return os.environ.get(ENV_FLAG, "1").strip().lower() in {"0", "false", "no", "off"}
 
 
+def _dispatch_path(scripts_dir: str) -> str:
+    """在给定目录中返回命令文件绝对路径；不存在返回空串。"""
+    for name in _DISPATCH_NAMES:
+        candidate = os.path.join(scripts_dir, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def _has_dispatch(scripts_dir: str) -> bool:
+    return bool(_dispatch_path(scripts_dir))
+
+
+def _which_dispatch() -> str:
+    """当前能否直接解析 xg-cli？能就返回其真实路径，否则空串。"""
+    found = shutil.which("xg-cli")
+    return found or ""
+
+
+def _record_dispatch() -> str:
+    """从包元数据(RECORD)读 pip 实际写入的命令文件路径；取不到返回空串。
+
+    微软商店版 Python 的 sysconfig 会指向只读的 WindowsApps 目录，而 pip 实际把
+    可执行文件写进 per-user Scripts；RECORD 记录的是真实写入路径，跨发行版一致。
+    """
+    try:
+        import importlib.metadata as md
+
+        dist = md.distribution("xg-cli")
+    except Exception:
+        return ""
+    for f in dist.files or ():
+        base = os.path.basename(f.name.replace("\\", "/"))
+        if base in _DISPATCH_NAMES or base.startswith("xg-cli"):
+            try:
+                resolved = str(dist.locate_file(f.name))
+            except Exception:
+                continue
+            # RECORD 路径可能因损坏/非标准安装指向不存在的文件，只接受真实存在者。
+            if resolved and os.path.isfile(resolved):
+                return resolved
+    return ""
+
+
 def _scripts_dir() -> str:
+    """返回命令真实所在目录（best-effort），解析失败返回空串。
+
+    解析优先级（跨 Python 发行版，避免微软商店版误报只读目录）：
+      1. shutil.which：当前已能解析命令 → 直接取父目录；
+      2. 包元数据 RECORD：pip 实际写入的命令文件路径的父目录；
+      3. sysconfig.get_path("scripts")：最后一击（调用方会再确认命令文件存在）。
+    """
+    dispatch = _which_dispatch() or _record_dispatch()
+    if dispatch:
+        return os.path.dirname(dispatch)
     try:
         return sysconfig.get_path("scripts") or ""
     except Exception:
