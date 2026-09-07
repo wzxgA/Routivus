@@ -1,6 +1,6 @@
 [project]
 name = "xg-cli"
-version = "1.1.5"
+version = "1.1.6"
 description = "XG-CLI: a commercial-grade Python Agent CLI"
 readme = "README.md"
 requires-python = ">=3.11"
