@@ -147,16 +147,17 @@ class Composer(Input):
                 return
 
         has_pending_plan = getattr(app, "_has_pending_plan", lambda: False)()
-        if not self._history_blocked(app) and event.key == "up":
-            event.prevent_default()
-            event.stop()
-            self._navigate_history("previous")
-            return
-        if not self._history_blocked(app) and event.key == "down":
-            event.prevent_default()
-            event.stop()
-            self._navigate_history("next")
-            return
+        if not self._history_blocked(app):
+            if event.key in ("up", "pageup"):
+                event.prevent_default()
+                event.stop()
+                self._navigate_history("previous")
+                return
+            if event.key in ("down", "pagedown"):
+                event.prevent_default()
+                event.stop()
+                self._navigate_history("next")
+                return
         if not has_pending_plan or getattr(app, "_replan_mode", False):
             if (
                 event.key == "d"

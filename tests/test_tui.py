@@ -687,6 +687,32 @@ async def test_tui_composer_navigates_submitted_input_history(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_tui_composer_uses_page_keys_for_history_with_suggestions_open(tmp_path):
+    agent, settings, manager = make_context(tmp_path)
+    app = XgTuiApp(agent, settings, manager)
+    async with app.run_test(size=(120, 30)) as pilot:
+        composer = app.query_one("#composer")
+        suggestions = app.query_one("#command-suggestions")
+        composer.value = "first task"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        composer.value = "second task"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+
+        composer.value = "/m"
+        await pilot.pause()
+        assert suggestions.display is True
+
+        await pilot.press("pageup")
+        assert composer.value == "second task"
+        assert suggestions.display is False
+
+        await pilot.press("pagedown")
+        assert composer.value == "/m"
+
+
+@pytest.mark.asyncio
 async def test_tui_uses_full_width_footer_composer_and_top_inspector(tmp_path):
     agent, settings, manager = make_context(tmp_path)
     app = XgTuiApp(agent, settings, manager)
