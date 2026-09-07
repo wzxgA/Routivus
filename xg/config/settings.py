@@ -122,6 +122,10 @@ class Settings:
     smart_router_saved: tuple[str, str] | None = None
     # base provider 未配置时置 True（active() 触发 ProviderNotConfigured），供启动提示。
     provider_missing: bool = False
+    # v1.1.6 Ask-User 交互询问：模型不确定/需澄清/用户要求反问时停下来提问
+    ask_user_enabled: bool = True
+    ask_max_fields: int = 5
+    ask_max_options: int = 8
 
     @property
     def token_budget(self) -> int:
@@ -224,6 +228,9 @@ def load_settings(manager: ConfigManager | None = None) -> Settings:
         input_history_max_chars=max(256, _get_int(manager.env, "XG_INPUT_HISTORY_MAX_CHARS", 8_000)),
         input_history_max_bytes=max(4_096, _get_int(manager.env, "XG_INPUT_HISTORY_MAX_BYTES", 1_048_576)),
         smart_router_enabled=bool(manager.smart_router_config().get("enabled", False)),
+        ask_user_enabled=manager.env.get("XG_ASK_USER", "on").lower() not in ("off", "0", "false"),
+        ask_max_fields=max(1, min(20, _get_int(manager.env, "XG_ASK_MAX_FIELDS", 5))),
+        ask_max_options=max(1, min(20, _get_int(manager.env, "XG_ASK_MAX_OPTIONS", 8))),
     )
 
 

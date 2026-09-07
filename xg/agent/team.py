@@ -904,6 +904,7 @@ class TeamExecutor:
         project_root: Path | None = None,
         team_id: str | None = None,
         agent_factory: AgentFactory | None = None,
+        ask_requester=None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -914,6 +915,7 @@ class TeamExecutor:
         self.audit = audit
         self.memory_manager = memory_manager
         self.mcp_manager = mcp_manager
+        self.ask_requester = ask_requester
         self.profiles = profiles or default_profiles()
         self.artifacts: ArtifactStore = artifact_store or InMemoryArtifactStore()
         self.project_root = (project_root or Path.cwd()).resolve()
@@ -1625,12 +1627,13 @@ class TeamExecutor:
                 audit=self.audit,
                 memory_manager=self.memory_manager,
                 mcp_manager=self.mcp_manager,
+                ask_requester=self.ask_requester,
             )
         artifacts: list[Artifact] = []
         try:
             async for event in agent.run(self._worker_user_prompt(task, recovery_summary=recovery_summary, instruction=instruction)):
                 if event.kind in {
-                    "thinking", "content", "tool_call", "approval", "tool_result", "retrying",
+                    "thinking", "content", "tool_call", "ask_user", "approval", "tool_result", "retrying",
                     "context_compacted", "context_warning", "context_usage", "usage",
                 }:
                     queue.put_nowait(TeamEvent(kind="subtask_event", team_id=self.team_id, plan=plan, task=task, agent_id=agent_id, role=profile.name, agent_event=event))

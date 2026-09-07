@@ -251,6 +251,7 @@ class PlanExecutor:
         audit=None,
         memory_manager: MemoryManager | None = None,
         mcp_manager: "McpManager | None" = None,
+        ask_requester=None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -260,6 +261,7 @@ class PlanExecutor:
         self.audit = audit
         self.memory_manager = memory_manager
         self.mcp_manager = mcp_manager
+        self.ask_requester = ask_requester
         self._planner_context_event: AgentEvent | None = None
         self._planner_usage: Usage | None = None
         self._last_plan: Plan | None = None
@@ -548,10 +550,11 @@ class PlanExecutor:
             audit=self.audit,
             memory_manager=self.memory_manager,
             mcp_manager=self.mcp_manager,
+            ask_requester=self.ask_requester,
         )
         async for event in agent.run(self._subtask_user_prompt(task, instruction)):
             if event.kind in (
-                "thinking", "content", "tool_call", "approval", "tool_result",
+                "thinking", "content", "tool_call", "ask_user", "approval", "tool_result",
                 "context_compacted", "context_warning", "context_usage", "usage",
             ):
                 queue.put_nowait(PlanEvent(

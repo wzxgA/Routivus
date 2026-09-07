@@ -29,6 +29,7 @@ from xg.tui.messages import (
 )
 from xg.tui.state import TuiState
 from xg.tui.widgets.action_card import InlineApprovalCard
+from xg.tui.widgets.ask_modal import AskModal
 from xg.tui.widgets.command_suggestions import CommandSuggestions
 from xg.tui.widgets.composer import Composer
 from xg.tui.widgets.footer import FooterBar
@@ -130,7 +131,27 @@ class XgTuiApp(App[None]):
         self._state = message.state
         self._sync_progress_timer(message.state)
         self._pending_render_state = message.state
+        if message.state.pending_ask is not None and self.screen.id != "ask-screen":
+            self._modal_kind = "ask"
+            self.run_worker(
+                self._present_ask(message.state.pending_ask),
+                exclusive=False, name="ask-modal",
+            )
+        else:
+            self._modal_kind = ""
         self._schedule_render()
+
+    async def _present_ask(self, ask) -> None:
+        """弹 Ask 面板并等待用户作答；结果经 controller 回灌给模型。"""
+        if ask is None or not self.is_attached:
+            return
+        answer = await self.push_screen(
+            AskModal(ask),
+            wait_for_dismiss=True,
+        )
+        cancelled = answer is None
+        await self.controller.submit_ask_answer(answer if answer else {}, cancelled=cancelled)
+        self._modal_kind = ""
 
     def _progress_item(self, state: TuiState):
         return next(

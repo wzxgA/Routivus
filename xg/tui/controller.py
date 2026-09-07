@@ -133,6 +133,7 @@ class SessionController:
         self._active_turn_id = ""
         self._approval_future: asyncio.Future[ApprovalDecision] | None = None
         self._review_future: asyncio.Future[ReviewDecision] | None = None
+        self._ask_future: asyncio.Future[dict[str, str] | None] | None = None
         self._team_executor: TeamExecutor | None = None
         self._resumable: ResumableTask | None = None
         self._confirmation: ConfirmationRequest | None = None
@@ -142,6 +143,7 @@ class SessionController:
             mcp_manager.add_listener(self._on_mcp_event)
         if agent.approval_policy is not None:
             agent.approval_policy.requester = self._request_approval
+        agent.ask_requester = self._request_ask
         # SmartRouter 防降级上下文（600s 内最多降一档），与 inline 主循环一致
         self._router_prev_tier: str | None = None
         self._router_prev_ts: float | None = None
@@ -601,7 +603,7 @@ class SessionController:
 
     async def _execute_one(self, text: str) -> bool:
         lowered = text.lower()
-        if text.startswith("/") and not lowered.startswith(("/plan", "/team")):
+        if text.startswith("/") and not lowered.startswith(("/plan", "/team", "/ask")):
             current = asyncio.current_task()
             self._active_task = current
             try:
@@ -625,9 +627,10 @@ class SessionController:
         self._append_item(TranscriptItem(id=f"user-{len(self.state.transcript)}", kind="user", text=text, turn_id=turn_id))
         is_plan = lowered.startswith("/plan")
         is_team = lowered.startswith("/team")
-        goal = text[5:].strip() if (is_plan or is_team) else ""
-        if (is_plan or is_team) and not goal:
-            self._append_system(f"用法: {'/team' if is_team else '/plan'} <任务描述>")
+        is_ask = lowered.startswith("/ask")
+        goal = text[5:].strip() if (is_plan or is_team or is_ask) else ""
+        if (is_plan or is_team or is_ask) and not goal:
+            self._append_system(f"用法: {'/team' if is_team else '/plan' if is_plan else '/ask'} <任务描述>")
             return True
         if is_plan or is_team:
             progress_text = "正在生成执行计划"
@@ -649,6 +652,8 @@ class SessionController:
                 await self._run_plan(goal, turn_id)
             elif is_team:
                 await self._run_team(goal, turn_id)
+            elif is_ask:
+                await self._run_ask(goal, turn_id)
             else:
                 # 普通轮执行前路由（与 inline _run_loop_body 一致；/plan、/team 不路由）
                 self._route_user_turn(text)
@@ -662,6 +667,7 @@ class SessionController:
             if self._active_task is current:
                 self._active_task = None
             self._approval_future = None
+            self._ask_future = None
             self._review_future = None
             if self.state.active_turn_id == turn_id and self.state.phase == "running":
                 self._set_state(replace(self.state, phase="idle", pending_approval=None, pending_plan=None))
@@ -669,6 +675,22 @@ class SessionController:
 
     async def _run_agent(self, text: str, turn_id: str) -> None:
         async for event in self.agent.run(text):
+            self._set_state(reduce_agent_event(self.state, event, turn_id))
+
+    async def _run_ask(self, goal: str, turn_id: str) -> None:
+        """/ask <任务>：强制模型先向用户收齐关键信息再动手。
+
+        通过临时注入一条 user 指令实现——复用同一个 ReAct agent，但本轮开头先
+        要求模型调用 ask_user。指令作为正常 assistant 上下文保留，不回写持久配置。
+        """
+        asked = (
+            "这是用户通过 /ask 发起的任务，要求你执行前先向用户确认关键信息。\n"
+            "规则：开始执行任何工具前，先调用 ask_user 向你提问，用问题+选项收齐"
+            "范围、约束、取舍等关键不确定点；用户回答后再依次执行。除非确实没有需要"
+            "澄清的地方，否则不要直接跳过。\n"
+            f"任务如下：\n{goal}"
+        )
+        async for event in self.agent.run(asked):
             self._set_state(reduce_agent_event(self.state, event, turn_id))
 
     async def _run_plan(self, goal: str, turn_id: str) -> None:
@@ -681,6 +703,7 @@ class SessionController:
             audit=self.agent.audit,
             memory_manager=self.agent.memory_manager,
             mcp_manager=getattr(self.agent, "mcp_manager", None),
+            ask_requester=self.agent.ask_requester,
         )
         self._resumable = ResumableTask(kind="plan", executor=executor, goal=goal, turn_id=turn_id)
         async for event in executor.run(goal):
@@ -698,6 +721,7 @@ class SessionController:
             memory_manager=self.agent.memory_manager,
             mcp_manager=getattr(self.agent, "mcp_manager", None),
             project_root=getattr(self.agent.memory_manager, "project_root", None),
+            ask_requester=self.agent.ask_requester,
         )
         self._team_executor = executor
         self._resumable = ResumableTask(kind="team", executor=executor, goal=goal, turn_id=turn_id)
@@ -941,6 +965,8 @@ class SessionController:
             return False
         if self._approval_future and not self._approval_future.done():
             self._approval_future.set_result(ApprovalDecision(allow=False, reason="user_cancelled"))
+        if self._ask_future and not self._ask_future.done():
+            self._ask_future.set_result(None)
         if self._review_future and not self._review_future.done():
             self._review_future.set_result(ReviewDecision(action="cancel"))
         task.cancel()
@@ -996,6 +1022,34 @@ class SessionController:
         future = self._approval_future
         if future is not None and not future.done():
             future.set_result(decision)
+
+    async def _request_ask(self, ask) -> dict[str, str] | None:
+        """ask_user 的 requester：暂停等用户在 Ask 面板作答，答案回灌给模型。"""
+        loop = asyncio.get_running_loop()
+        self._ask_future = loop.create_future()
+        self._set_state(replace(
+            self.state,
+            phase="awaiting_ask",
+            pending_ask=ask,
+            notification=("请完成下方确认（Esc 跳过）" if ask.prompt else "请完成下方确认"),
+            notification_level="info",
+        ))
+        try:
+            return await self._ask_future
+        finally:
+            self._ask_future = None
+
+    async def submit_ask_answer(self, answers: dict[str, str] | None, *, cancelled: bool = False) -> None:
+        """Ask 面板回调：把用户选择/自定义回灌；Esc 视为跳过（fail-closed）。"""
+        future = self._ask_future
+        self._set_state(replace(
+            self.state,
+            pending_ask=None,
+            notification="" if cancelled else "已收到你的确认，继续执行",
+            notification_level="info",
+        ))
+        if future is not None and not future.done():
+            future.set_result(None if cancelled else answers)
 
     async def _review_plan(self, plan: Plan) -> ReviewDecision:
         loop = asyncio.get_running_loop()

@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, AsyncIterator, Literal
 
+from xg.ask import AskRequest, AskRequester
 from xg.config.settings import Settings
 from xg.llm.client import LlmClient, LlmError
 from xg.llm.types import Message, ToolCall, ToolResult, Usage
@@ -37,6 +39,7 @@ class AgentEvent:
     - content: 普通/最终回答增量文本
     - thinking: Provider 明确返回的思考增量文本
     - tool_call: 模型发起一次工具调用（即将执行）
+    - ask_user: 模型请求向用户提问（含 AskRequest）
     - approval: HITL 审批结果（approved / rejected / modified）
     - tool_result: 工具执行完成（含被拒绝的 USER_REJECTED）
     - step_limit: 达到步数上限，循环终止
@@ -48,12 +51,13 @@ class AgentEvent:
     """
 
     kind: Literal[
-        "content", "thinking", "tool_call", "approval", "tool_result", "step_limit",
-        "budget_exceeded", "context_compacted", "context_warning",
+        "content", "thinking", "tool_call", "ask_user", "approval", "tool_result",
+        "step_limit", "budget_exceeded", "context_compacted", "context_warning",
         "context_overflow", "context_usage", "usage", "error", "retrying", "done"
     ]
     text: str = ""
     tool_call: ToolCall | None = None
+    ask: AskRequest | None = None
     tool_result: ToolResult | None = None
     decision: ApprovalDecision | None = None
     usage: Usage | None = None
@@ -79,6 +83,7 @@ class ReActAgent:
         audit=None,
         memory_manager: MemoryManager | None = None,
         mcp_manager: "McpManager | None" = None,
+        ask_requester: AskRequester | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -87,6 +92,7 @@ class ReActAgent:
         self.audit = audit
         self.memory_manager = memory_manager
         self.mcp_manager = mcp_manager
+        self.ask_requester = ask_requester
         self.context = ConversationContext(
             system_prompt,
             settings,
@@ -103,6 +109,50 @@ class ReActAgent:
 
     def estimate_tokens(self) -> int:
         return self.context.estimate_request_tokens(self.tools.schemas())
+
+    def _build_ask_request(self, args: dict) -> AskRequest:
+        """把模型传入的 ask_user 参数收敛为结构化的 AskRequest（fail-closed 截断上限）。"""
+        from xg.ask.models import AskField, AskOption
+
+        prompt = str(args.get("prompt", "")).strip()
+        max_fields = getattr(self.settings, "ask_max_fields", 5)
+        max_options = getattr(self.settings, "ask_max_options", 8)
+
+        fields: list[AskField] = []
+        raw_fields = args.get("fields")
+        if isinstance(raw_fields, list):
+            for raw in raw_fields[:max_fields]:
+                if not isinstance(raw, dict):
+                    continue
+                key = str(raw.get("key", "")).strip()
+                question = str(raw.get("question", "")).strip()
+                if not key or not question:
+                    continue
+                options: tuple[AskOption, ...] = ()
+                raw_options = raw.get("options")
+                if isinstance(raw_options, list):
+                    opts = []
+                    for o in raw_options[:max_options]:
+                        if not isinstance(o, dict):
+                            continue
+                        label = str(o.get("label", "")).strip()
+                        if not label:
+                            continue
+                        opts.append(AskOption(label=label, value=str(o.get("value", "")).strip() or label))
+                    options = tuple(opts)
+                fields.append(AskField(
+                    key=key,
+                    question=question,
+                    options=options,
+                    allow_custom=raw.get("allow_custom", True) is not False,
+                    default=str(raw.get("default", "")).strip(),
+                    required=raw.get("required", False) is True,
+                ))
+        return AskRequest.new(
+            prompt=prompt,
+            fields=tuple(fields),
+            origin=getattr(self, "_agent_name", ""),
+        )
 
     async def run(self, user_input: str) -> AsyncIterator[AgentEvent]:
         """执行一轮 ReAct 循环。"""
@@ -205,10 +255,14 @@ class ReActAgent:
                 context_attached = True
                 yield AgentEvent(kind="tool_call", tool_call=call, **fields)
 
+            # 拆分：ask_user 属交互工具，串行等待用户，不和普通工具并行执行。
+            ask_calls = [c for c in tool_calls if c.name == "ask_user"]
+            regular_calls = [c for c in tool_calls if c.name != "ask_user"]
+
             # HITL 审批：逐调用决策，被拒的不执行（未启用策略时静默放行）
             to_execute: list[ToolCall] = []
             rejected: dict[str, ToolResult] = {}
-            for call in tool_calls:
+            for call in regular_calls:
                 args = call.parsed_arguments()
                 decision: ApprovalDecision | None = None
                 if self.approval_policy is not None:
@@ -244,14 +298,49 @@ class ReActAgent:
                         )
                 to_execute.append(final_call)
 
-            # 并行执行已批准的调用（默认 4 并发，统一超时），结果按原始顺序回灌
+            # 交互式 ask_user：逐个等待用户选择/自定义，再把答案作为 tool_result 回灌。
+            for call in ask_calls:
+                ask = self._build_ask_request(call.parsed_arguments())
+                yield AgentEvent(kind="ask_user", ask=ask, **context_fields)
+                if self.ask_requester is None:
+                    answer: dict[str, str] | None = None
+                else:
+                    try:
+                        answer = await self.ask_requester(ask)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        answer = None
+                        if self.audit is not None:
+                            self.audit.tool_call(
+                                tool="ask_user", args=call.parsed_arguments(),
+                                ok=False, duration_ms=-1,
+                            )
+                if answer:
+                    result = ToolResult(
+                        tool_call_id=call.id, name="ask_user", ok=True,
+                        output=json.dumps(answer, ensure_ascii=False),
+                    )
+                else:
+                    # fail-closed：用户跳过/无 requester，不代选默认值。
+                    result = ToolResult(
+                        tool_call_id=call.id, name="ask_user", ok=False,
+                        error="USER_SKIPPED（用户未回答，未提供默认值）",
+                    )
+                yield AgentEvent(kind="tool_result", tool_result=result, **context_fields)
+                self.context.append(Message(
+                    role="tool", content=result.to_message_content(),
+                    tool_call_id=result.tool_call_id,
+                ))
+
+            # 并行执行已批准的普通调用（默认 4 并发，统一超时），结果按原始顺序回灌
             executed = await self.tools.aexecute_calls(
                 to_execute,
                 concurrency=self.settings.max_parallel,
                 timeout=self.settings.tool_timeout,
             )
             results = {r.tool_call_id: r for r in executed}
-            for call in tool_calls:
+            for call in regular_calls:
                 result = results.get(call.id) or rejected.get(call.id) or ToolResult(
                     tool_call_id=call.id, name=call.name, ok=False, error="未执行"
                 )

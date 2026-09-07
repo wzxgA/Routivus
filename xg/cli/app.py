@@ -118,6 +118,7 @@ def build_agent(
         web_search=web_search,
         web_fetch=web_fetch,
         skill_registry=skill_registry,
+        ask_user_enabled=settings.ask_user_enabled,
     )
     hitl = HITLPolicy(enabled=settings.hitl)
     memory_manager = MemoryManager(
@@ -322,6 +323,34 @@ class PlanReviewUI:
             if answer in ("c", "q", "esc"):
                 return ReviewDecision(action="cancel")
             console.print(Text("无效输入：Enter 执行 / d 详情 / r 重规划 / ESC 取消", style="yellow"))
+
+
+class AskUI:
+    """inline 交互询问：展示问题+选项，用户选择或输入自定义；Esc/空跳过（fail-closed）。"""
+
+    def __init__(self, session: PromptSession[str]) -> None:
+        self.session = session
+
+    async def __call__(self, ask) -> dict[str, str] | None:
+        for field in ask.fields:
+            console.print(Text(f"[{field.key}] {field.question}", style="cyan"))
+            options = list(field.options)
+            for index, option in enumerate(options, start=1):
+                console.print(Text(f"  {index}. {option.label}", style="dim"))
+            answer = (await self.session.prompt_async(
+                HTML("<ansicyan>选择数字或输入自定义（空=跳过）></ansicyan> ")
+            )).strip()
+            if answer:
+                try:
+                    selected = int(answer)
+                except ValueError:
+                    selected = -1
+                if 1 <= selected <= len(options):
+                    option = options[selected - 1]
+                    args.setdefault("answers", {})[field.key] = option.value or option.label
+                else:
+                    args.setdefault("answers", {})[field.key] = answer
+        return args.get("answers")
 
 
 def _escape_cancel_bindings() -> KeyBindings:
@@ -613,6 +642,8 @@ async def _run_loop_body(agent: ReActAgent, settings: Settings, manager: ConfigM
     approval_ui = ApprovalUI(session)
     if agent.approval_policy is not None:
         agent.approval_policy.requester = approval_ui
+    ask_ui = AskUI(session)
+    agent.ask_requester = ask_ui
 
     # SmartRouter 跨轮路由状态（phase-01 步骤 D）
     prev_tier: str | None = None
@@ -678,6 +709,24 @@ async def _run_loop_body(agent: ReActAgent, settings: Settings, manager: ConfigM
                 message = "（已取消记忆操作）"
             if message:
                 console.print(Text(message, style="dim"))
+            continue
+
+        if user_input.startswith("/ask"):
+            goal = user_input[5:].strip()
+            if not goal:
+                console.print(Text("用法: /ask <任务描述>", style="yellow"))
+                continue
+            asked = (
+                "这是用户通过 /ask 发起的任务，要求你执行前先向用户确认关键信息。\n"
+                "规则：开始执行任何工具前，先调用 ask_user 向你提问，用问题+选项收齐"
+                "范围、约束、取舍等关键不确定点；用户回答后再依次执行。除非确实没有需要"
+                "澄清的地方，否则不要直接跳过。\n"
+                f"任务如下：\n{goal}"
+            )
+            try:
+                await handle_turn(agent, asked)
+            except KeyboardInterrupt:
+                console.print(Text("（已中断）", style="yellow"))
             continue
 
         if user_input.startswith("/"):

@@ -32,6 +32,7 @@ def build_registry(
     web_search: WebSearchService | None = None,
     web_fetch: WebFetchService | None = None,
     skill_registry: SkillRegistry | None = None,
+    ask_user_enabled: bool = True,
 ) -> ToolRegistry:
     base = (base_dir or Path.cwd()).resolve()
     registry = ToolRegistry(max_output_chars=max_output_chars, guard=guard, audit=audit)
@@ -41,6 +42,8 @@ def build_registry(
         registry.skill_registry = skill_registry
     for tool in _tools(base):
         registry.register(tool)
+    if ask_user_enabled:
+        registry.register(make_ask_user_tool())
     if web_config is not None and web_config.enabled:
         search_service = web_search or WebSearchService(web_config, audit=audit)
         fetch_service = web_fetch or WebFetchService(web_config, audit=audit)
@@ -188,6 +191,67 @@ def _tools(base: Path) -> list[Tool]:
             handler=lambda a, _b=base: _execute_command(_b, a),
         ),
     ]
+
+
+def make_ask_user_tool(max_fields: int = 5, max_options: int = 8) -> Tool:
+    """返回 ask_user 交互工具。
+
+    ask_user 不在注册表内盲执行，而是由 ReAct 循环在 agent 层拦截并等待用户输入
+    （见 xg/agent/react.py）。此处的 handler 仅作为 fail-closed 兜底，正常路径不会走到。
+    """
+    return Tool(
+        name="ask_user",
+        description=(
+            "当用户任务存在明显歧义、缺少关键约束、多个合理方向待定、"
+            "或用户明确要求先确认（例如输入了 /ask）时，停下来说明问题并让用户在几个选项中选择，"
+            "或输入自定义内容。不要为了问而问，常规任务直接完成。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "可选的开场说明文字"},
+                "fields": {
+                    "type": "array",
+                    "description": "待用户回答的问题列表（一次可问多项）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": {"type": "string", "description": "字段名，用于回填答案"},
+                            "question": {"type": "string", "description": "问题文本"},
+                            "options": {
+                                "type": "array",
+                                "description": "推荐选项（用户可从中选择），可为空",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {"type": "string", "description": "选项显示文本"},
+                                        "value": {"type": "string", "description": "选中后回填的取值，缺省用 label"},
+                                    },
+                                    "required": ["label"],
+                                },
+                            },
+                            "allow_custom": {"type": "boolean", "description": "是否允许自定义输入，默认 true"},
+                            "default": {"type": "string", "description": "可选默认值（仅展示，不自动代选）"},
+                            "required": {"type": "boolean", "description": "是否为必答项，默认 false"},
+                        },
+                        "required": ["key", "question"],
+                    },
+                },
+            },
+            "required": ["fields"],
+        },
+        handler=lambda a, *_args, **kwargs: _ask_user_fallback(a),
+        source="builtin-ask",
+    )
+
+
+async def _ask_user_fallback(args: dict) -> ToolResult:
+    return ToolResult(
+        tool_call_id="",
+        name="ask_user",
+        ok=False,
+        error="USER_SKIPPED（ask_user 需在交互会话中执行）",
+    )
 
 
 def _resolve(base: Path, raw: str) -> Path:

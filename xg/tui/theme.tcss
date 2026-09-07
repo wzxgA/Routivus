@@ -206,3 +206,27 @@ ApprovalModal, PlanModal {
     background: $panel;
     border: thick $warning;
 }
+
+#ask-dialog {
+    width: 80;
+    max-width: 94%;
+    height: auto;
+    max-height: 85%;
+    padding: 1 2;
+    background: $panel;
+    border: thick $accent;
+}
+
+#ask-fields {
+    height: auto;
+    max-height: 60%;
+}
+
+.ask-field {
+    height: auto;
+    padding-bottom: 1;
+}
+
+.ask-option {
+    margin: 0 1 0 1;
+}

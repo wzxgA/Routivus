@@ -359,6 +359,14 @@ SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
         ),
         examples=("/hitl", "/hitl on", "/hitl reset"),
     ),
+    SlashCommandSpec(
+        "/ask",
+        aliases=("/ask?",),
+        usage="/ask <任务描述>",
+        description="让模型动手前先向你确认关键信息（问问题+选选项，可自定义输入）",
+        category="session",
+        examples=("/ask 重构登录模块",),
+    ),
     SlashCommandSpec("/clear", usage="/clear", description="清空当前上下文", category="session", examples=("/clear",)),
     SlashCommandSpec(
         "/smartRouter",

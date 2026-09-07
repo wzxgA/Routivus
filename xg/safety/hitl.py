@@ -18,6 +18,8 @@ DEFAULT_APPROVAL_LEVELS = {
     "execute_command": "always",
     "web_search": "never",
     "web_fetch": "never",
+    # 交互询问无副作用：由 ReAct 在 agent 层拦截等待用户，不在注册表盲执行。
+    "ask_user": "never",
 }
 
 

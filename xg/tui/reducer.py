@@ -419,7 +419,7 @@ def reduce_agent_event(
     trace_id = _trace_id(turn_id, trace_id)
     kind = event.kind
     if kind in {
-        "thinking", "content", "tool_call", "tool_result", "approval",
+        "thinking", "content", "tool_call", "tool_result", "approval", "ask_user",
         "error", "context_overflow", "budget_exceeded", "step_limit", "retrying", "done",
     }:
         _remove_progress(out, turn_id)
@@ -467,6 +467,15 @@ def reduce_agent_event(
         ))
         out.phase = "running"
         return out
+    if kind == "ask_user" and event.ask:
+        out.phase = "awaiting_ask"
+        out.pending_ask = event.ask
+        _append(out, TranscriptItem(
+            id=f"ask-{event.ask.id}", kind="system",
+            text=f"[需要你确认 @{event.ask.origin}]" if event.ask.origin else "[需要你确认]",
+            turn_id=turn_id, trace_id=trace_id,
+        ))
+        return out
     if kind == "tool_result" and event.tool_result:
         result = event.tool_result
         for item in reversed(out.transcript):
@@ -476,6 +485,10 @@ def reduce_agent_event(
                 if item.user_collapsed is None:
                     item.collapsed = True
                 break
+        # ask_user 的 tool_result 到达时收回等待态，恢复执行。
+        if result.name == "ask_user":
+            out.pending_ask = None
+            out.phase = "running"
         _append(out, TranscriptItem(
             id=f"result-{result.tool_call_id or len(out.transcript)}", kind="tool_result",
             text=result.output or result.error, tool_name=result.name,
@@ -518,6 +531,7 @@ def reduce_agent_event(
         out.notification = text
         out.notification_level = "error"
         out.pending_approval = None
+        out.pending_ask = None
         _collapse_trace(out, trace_id, status="failed")
         return out
     if kind in ("step_limit", "done"):
@@ -530,6 +544,7 @@ def reduce_agent_event(
         _collapse_trace(out, trace_id, status="done")
         out.phase = "idle"
         out.pending_approval = None
+        out.pending_ask = None
         if kind == "step_limit":
             out.notification = "已达到本轮步骤上限"
             out.notification_level = "warning"

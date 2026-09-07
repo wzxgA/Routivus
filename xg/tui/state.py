@@ -20,7 +20,7 @@ QueueItemKind = Literal["task", "plan", "command"]
 InspectorView = Literal["session", "plan", "memory", "safety"]
 TuiPhase = Literal[
     "idle", "running", "awaiting_approval", "awaiting_plan_review",
-    "awaiting_team_input", "error",
+    "awaiting_team_input", "awaiting_ask", "error",
 ]
 
 
@@ -210,6 +210,7 @@ class TuiState:
     pending_approval: Any | None = None
     pending_plan: Any | None = None
     pending_confirmation: ConfirmationRequest | None = None
+    pending_ask: Any | None = None
     team_input_task_id: str = ""
     team_input_category: str = ""
     team_input_message: str = ""
