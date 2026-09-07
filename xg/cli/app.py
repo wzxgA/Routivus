@@ -332,25 +332,39 @@ class AskUI:
         self.session = session
 
     async def __call__(self, ask) -> dict[str, str] | None:
+        answers: dict[str, str] = {}
+        if ask.prompt:
+            console.print(Text(ask.prompt, style="bold cyan"))
         for field in ask.fields:
             console.print(Text(f"[{field.key}] {field.question}", style="cyan"))
             options = list(field.options)
             for index, option in enumerate(options, start=1):
                 console.print(Text(f"  {index}. {option.label}", style="dim"))
-            answer = (await self.session.prompt_async(
-                HTML("<ansicyan>选择数字或输入自定义（空=跳过）></ansicyan> ")
-            )).strip()
-            if answer:
+            while True:
+                answer = (await self.session.prompt_async(
+                    HTML("<ansicyan>选择数字或输入自定义（空=跳过，Esc=取消）></ansicyan> ")
+                )).strip()
+                if answer.lower() in {"c", "q", "esc", "escape"}:
+                    return None
+                if not answer:
+                    if field.required:
+                        console.print(Text("此项必答，请选择选项或输入回答。", style="yellow"))
+                        continue
+                    break
                 try:
                     selected = int(answer)
                 except ValueError:
                     selected = -1
                 if 1 <= selected <= len(options):
                     option = options[selected - 1]
-                    args.setdefault("answers", {})[field.key] = option.value or option.label
-                else:
-                    args.setdefault("answers", {})[field.key] = answer
-        return args.get("answers")
+                    answers[field.key] = option.value or option.label
+                    break
+                if not field.allow_custom:
+                    console.print(Text("此题只能输入选项序号。", style="yellow"))
+                    continue
+                answers[field.key] = answer
+                break
+        return answers
 
 
 def _escape_cancel_bindings() -> KeyBindings:

@@ -129,7 +129,66 @@ InspectorTab.active {
 #composer-area {
     width: 1fr;
     height: auto;
+    min-height: 0;
     margin: 0;
+}
+
+#ask-panel {
+    width: 1fr;
+    height: auto;
+    max-height: 24;
+    min-height: 0;
+    padding: 1 2;
+    margin: 0 0 1 0;
+    background: $panel;
+    border-left: thick $accent;
+    overflow-y: auto;
+}
+
+#ask-kicker {
+    color: $accent;
+    text-style: bold;
+}
+
+#ask-prompt, #ask-progress, #ask-hint {
+    color: $text-muted;
+}
+
+#ask-question {
+    width: 1fr;
+    height: auto;
+    margin-top: 1;
+    color: $text;
+    text-style: bold;
+}
+
+#ask-options {
+    width: 1fr;
+    height: auto;
+    min-height: 0;
+    max-height: 12;
+    margin: 1 0;
+    scrollbar-size: 1 1;
+}
+
+AskOptionButton {
+    width: 1fr;
+    height: 3;
+    min-height: 3;
+    padding: 0 1;
+    margin: 0;
+    content-align: left middle;
+}
+
+AskOptionButton.selected {
+    color: $text;
+    background: $accent;
+    text-style: bold;
+}
+
+#ask-error {
+    color: $error;
+    text-style: bold;
 }
 
 #queue-status {
@@ -169,6 +228,10 @@ InspectorTab.active {
     margin: 0;
     border: round $primary;
     background: $surface;
+}
+
+#composer.ask-mode {
+    border: double $accent;
 }
 
 #composer:focus {

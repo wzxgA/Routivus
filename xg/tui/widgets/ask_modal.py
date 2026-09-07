@@ -12,7 +12,13 @@ from xg.tui.state import TuiState
 
 
 class AskModal(ModalScreen[TuiState]):
-    """一次 ask_user 的作答面板。
+    """Legacy Ask-User modal kept for compatibility.
+
+    The main Textual app now renders :class:`AskPanel` inline above the
+    Composer. This class is no longer opened by ``XgTuiApp`` and can be
+    removed after downstream integrations stop importing it.
+
+    一次 ask_user 的作答面板。
 
     每个问题可键盘（数字 1..n）或点击选项选择；也允许在 CustomInput 里输入自由文本。
     Esc 跳过本次询问（fail-closed，不代选默认值）。

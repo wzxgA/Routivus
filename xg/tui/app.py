@@ -22,6 +22,7 @@ from xg.safety.hitl import ApprovalDecision
 from xg.tui.controller import SessionController
 from xg.tui.messages import (
     AgentGroupToggled,
+    AskOptionSelected,
     CommandSuggestionSelected,
     InspectorViewSelected,
     StateChanged,
@@ -29,7 +30,7 @@ from xg.tui.messages import (
 )
 from xg.tui.state import TuiState
 from xg.tui.widgets.action_card import InlineApprovalCard
-from xg.tui.widgets.ask_modal import AskModal
+from xg.tui.widgets.ask_panel import AskPanel, AskSubmitResult
 from xg.tui.widgets.command_suggestions import CommandSuggestions
 from xg.tui.widgets.composer import Composer
 from xg.tui.widgets.footer import FooterBar
@@ -112,6 +113,7 @@ class XgTuiApp(App[None]):
             yield Static("", id="notification")
             yield QueueStatus(id="queue-status")
             yield CommandSuggestions()
+            yield AskPanel()
             yield Static("输入", id="composer-label")
             yield Composer()
 
@@ -131,27 +133,7 @@ class XgTuiApp(App[None]):
         self._state = message.state
         self._sync_progress_timer(message.state)
         self._pending_render_state = message.state
-        if message.state.pending_ask is not None and self.screen.id != "ask-screen":
-            self._modal_kind = "ask"
-            self.run_worker(
-                self._present_ask(message.state.pending_ask),
-                exclusive=False, name="ask-modal",
-            )
-        else:
-            self._modal_kind = ""
         self._schedule_render()
-
-    async def _present_ask(self, ask) -> None:
-        """弹 Ask 面板并等待用户作答；结果经 controller 回灌给模型。"""
-        if ask is None or not self.is_attached:
-            return
-        answer = await self.push_screen(
-            AskModal(ask),
-            wait_for_dismiss=True,
-        )
-        cancelled = answer is None
-        await self.controller.submit_ask_answer(answer if answer else {}, cancelled=cancelled)
-        self._modal_kind = ""
 
     def _progress_item(self, state: TuiState):
         return next(
@@ -247,6 +229,55 @@ class XgTuiApp(App[None]):
     def on_command_suggestion_selected(self, message: CommandSuggestionSelected) -> None:
         self.complete_command_suggestion(message.candidate)
 
+    def on_ask_option_selected(self, message: AskOptionSelected) -> None:
+        """Select an Ask-User option while keeping focus in the Composer."""
+        ask = self.controller.state.pending_ask
+        if ask is None or ask.id != message.request_id:
+            return
+        panel = self.query_one("#ask-panel", AskPanel)
+        if panel.select_option(message.option_index):
+            composer = self.query_one("#composer", Composer)
+            composer.value = ""
+            composer.focus()
+
+    def handle_ask_navigation(self, delta: int) -> bool:
+        ask = self.controller.state.pending_ask
+        if ask is None:
+            return False
+        return self.query_one("#ask-panel", AskPanel).move_selection(delta)
+
+    def handle_ask_option_key(self, option_index: int) -> bool:
+        ask = self.controller.state.pending_ask
+        if ask is None:
+            return False
+        selected = self.query_one("#ask-panel", AskPanel).select_option(option_index)
+        if selected:
+            self.query_one("#composer", Composer).focus()
+        return selected
+
+    def handle_ask_text_changed(self, text: str) -> None:
+        if self.controller.state.pending_ask is None:
+            return
+        self.query_one("#ask-panel", AskPanel).clear_selection_for_custom_input(text)
+
+    def _handle_ask_input(self, text: str, composer: Composer) -> bool:
+        """Consume Composer input as one Ask-User field answer."""
+        panel = self.query_one("#ask-panel", AskPanel)
+        result = panel.submit_text(text)
+        if result.error:
+            return True
+        composer.value = ""
+        composer.focus()
+        if result.complete:
+            asyncio.create_task(self._submit_ask_result(result))
+        return True
+
+    async def _submit_ask_result(self, result: AskSubmitResult) -> None:
+        await self.controller.submit_ask_answer(
+            result.answers,
+            request_id=result.request_id,
+        )
+
     def complete_command_suggestion(self, candidate) -> None:
         """Apply a layered candidate and refresh the suggestion list."""
         from xg.cli.completion import apply_completion
@@ -268,7 +299,12 @@ class XgTuiApp(App[None]):
         note.update(state.notification)
         note.display = bool(state.notification)
         self.query_one("#queue-status", QueueStatus).update_state(state)
+        ask_panel = self.query_one("#ask-panel", AskPanel)
+        ask_panel.update_request(state.pending_ask)
         composer = self.query_one("#composer", Composer)
+        composer.set_ask_mode(state.pending_ask)
+        if state.pending_ask is not None:
+            composer.focus()
         if state.pending_approval is not None:
             # Cards are read-only; the decision is typed into the Composer.
             # TranscriptView keeps the action card stable while its request
@@ -293,12 +329,15 @@ class XgTuiApp(App[None]):
             and state.phase != "awaiting_plan_review"
             and state.pending_approval is None
             and state.pending_confirmation is None
+            and state.pending_ask is None
             and self._modal_kind == ""
         )
         composer.set_suggestions_enabled(suggestions_allowed)
         if not suggestions_allowed:
             suggestions.close()
-        if state.pending_approval is not None:
+        if state.pending_ask is not None:
+            composer.placeholder = "选择选项或输入自定义回答，Enter 提交"
+        elif state.pending_approval is not None:
             if self._decision_mode == "approval_edit":
                 composer.placeholder = "修改参数：请输入完整 JSON，Esc 取消修改"
             elif self._decision_mode == "approval_confirm_modified":
@@ -461,6 +500,9 @@ class XgTuiApp(App[None]):
 
     def on_input_submitted(self, event: Composer.Submitted) -> None:
         text = event.value.strip()
+        if event.input.ask_mode:
+            self._handle_ask_input(text, event.input)
+            return
         help_query = parse_help_command(text)
         if help_query is not None:
             event.input.value = ""
@@ -579,6 +621,14 @@ class XgTuiApp(App[None]):
             # 确认类操作按未确认处理，不执行写入或清空。
             composer.value = ""
             self.handle_inline_confirmation(False)
+            return
+        if state.pending_ask is not None:
+            composer.value = ""
+            asyncio.create_task(self.controller.submit_ask_answer(
+                None,
+                cancelled=True,
+                request_id=state.pending_ask.id,
+            ))
             return
         if self.controller.busy:
             await self.controller.cancel()

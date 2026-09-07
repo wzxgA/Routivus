@@ -18,6 +18,8 @@ class Composer(Input):
         super().__init__(placeholder="输入任务或 /help …", id="composer")
         self.suggestions_enabled = True
         self.input_history: InputHistory | None = None
+        self.ask_request = None
+        self.ask_mode = False
 
     def set_input_history(self, history: InputHistory | None) -> None:
         self.input_history = history
@@ -34,8 +36,27 @@ class Composer(Input):
         if self.input_history is not None:
             self.input_history.reset_cursor()
 
+    def set_ask_mode(self, ask) -> bool:
+        """Switch the stable Composer between task and Ask-User input modes."""
+        request_id = getattr(ask, "id", "") if ask is not None else ""
+        previous_id = getattr(self.ask_request, "id", "") if self.ask_request is not None else ""
+        changed = request_id != previous_id
+        self.ask_request = ask
+        self.ask_mode = ask is not None
+        if self.ask_mode:
+            if changed:
+                self.value = ""
+            self.placeholder = "选择选项或输入自定义回答，Enter 提交"
+            self.add_class("ask-mode")
+        else:
+            if changed:
+                self.value = ""
+            self.placeholder = "输入任务或 /help …"
+            self.remove_class("ask-mode")
+        return changed
+
     def _history_blocked(self, app) -> bool:
-        if getattr(app, "_replan_mode", False):
+        if self.ask_mode or getattr(app, "_replan_mode", False):
             return True
         controller = getattr(app, "controller", None)
         state = getattr(controller, "state", None)
@@ -74,6 +95,11 @@ class Composer(Input):
     def on_input_changed(self, event: Input.Changed) -> None:
         """Keep filtering local and leave submission to the App."""
         if event.input is not self or not self.suggestions_enabled:
+            if event.input is self and self.ask_mode:
+                self.app.handle_ask_text_changed(event.value)
+            return
+        if self.ask_mode:
+            self.app.handle_ask_text_changed(event.value)
             return
         suggestions = self._suggestions()
         if suggestions is not None:
@@ -82,6 +108,19 @@ class Composer(Input):
     def on_key(self, event: Key) -> None:
         """Keep plan-review shortcuts working while the input stays enabled."""
         app = self.app
+        if self.ask_mode:
+            if event.key in ("up", "down"):
+                handled = app.handle_ask_navigation(-1 if event.key == "up" else 1)
+                if handled:
+                    event.prevent_default()
+                    event.stop()
+                return
+            if event.key.isdigit() and not self.value:
+                if app.handle_ask_option_key(int(event.key)):
+                    event.prevent_default()
+                    event.stop()
+                return
+            return
         suggestions = self._suggestions()
         if suggestions is not None and suggestions.is_open:
             if event.key == "up":

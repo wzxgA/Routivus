@@ -1039,11 +1039,23 @@ class SessionController:
         finally:
             self._ask_future = None
 
-    async def submit_ask_answer(self, answers: dict[str, str] | None, *, cancelled: bool = False) -> None:
+    async def submit_ask_answer(
+        self,
+        answers: dict[str, str] | None,
+        *,
+        cancelled: bool = False,
+        request_id: str = "",
+    ) -> None:
         """Ask 面板回调：把用户选择/自定义回灌；Esc 视为跳过（fail-closed）。"""
+        current = self.state.pending_ask
+        if current is None:
+            return
+        if request_id and current.id != request_id:
+            return
         future = self._ask_future
         self._set_state(replace(
             self.state,
+            phase="running",
             pending_ask=None,
             notification="" if cancelled else "已收到你的确认，继续执行",
             notification_level="info",

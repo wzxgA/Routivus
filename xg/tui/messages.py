@@ -43,3 +43,12 @@ class InspectorViewSelected(Message):
     def __init__(self, view: InspectorView) -> None:
         super().__init__()
         self.view = view
+
+
+class AskOptionSelected(Message):
+    """A user selected an Ask-User option without submitting it yet."""
+
+    def __init__(self, request_id: str, option_index: int) -> None:
+        super().__init__()
+        self.request_id = request_id
+        self.option_index = option_index

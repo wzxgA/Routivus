@@ -468,6 +468,19 @@ def reduce_agent_event(
         out.phase = "running"
         return out
     if kind == "ask_user" and event.ask:
+        # Ask-User is rendered as the interactive panel above the Composer.
+        # Keep the raw tool-call JSON collapsed while waiting so the
+        # transcript cannot consume the vertical space needed by the
+        # question and its options. The card remains expandable on demand.
+        for item in reversed(out.transcript):
+            if (
+                item.kind == "tool_call"
+                and item.tool_name == "ask_user"
+                and item.turn_id == turn_id
+                and item.trace_id == trace_id
+            ):
+                item.collapsed = True
+                break
         out.phase = "awaiting_ask"
         out.pending_ask = event.ask
         _append(out, TranscriptItem(
