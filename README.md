@@ -2,6 +2,8 @@
 
 Python Agent CLI。终端交互的 Agent 命令行工具，支持 ReAct 直接执行、`/plan` 计划模式和 `/team` Multi-Agent 协作，内置文件读写、代码搜索、命令执行与只读联网工具。附带 SmartRouter 智能路由与训练能力，可针对不同复杂度任务自动切换四档模型。
 
+![XG-CLI 全屏 TUI 演示](readme-assets/tuidemo.gif)
+
 ## 快速开始
 
 要求：Python 3.11+。
