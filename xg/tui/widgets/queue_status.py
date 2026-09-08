@@ -3,6 +3,7 @@ from __future__ import annotations
 from textual.widgets import Static
 
 from xg.tui.state import TuiState
+from xg.tui.i18n import normalize_language, translate
 
 
 class QueueStatus(Static):
@@ -17,7 +18,8 @@ class QueueStatus(Static):
             self.display = False
             return
 
-        lines = [f"队列 {len(state.queue)} 项"]
+        language = normalize_language(state.ui_language)
+        lines = [translate(language, "ui.queue.title", count=len(state.queue))]
         for item in state.queue[: self.MAX_PREVIEW_ITEMS]:
             preview = " ".join(item.text.split())
             if len(preview) > self.PREVIEW_LENGTH:
@@ -25,6 +27,6 @@ class QueueStatus(Static):
             lines.append(f"  #{item.id.removeprefix('queue-')} {preview}")
         remaining = len(state.queue) - self.MAX_PREVIEW_ITEMS
         if remaining > 0:
-            lines.append(f"  还有 {remaining} 项")
+            lines.append(translate(language, "ui.queue.remaining", count=remaining))
         self.update("\n".join(lines))
         self.display = True

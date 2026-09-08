@@ -16,6 +16,7 @@ from xg.tui.state import TuiState
 from xg.tui.widgets.action_card import InlineApprovalCard, InlineConfirmationCard
 from xg.tui.widgets.agent_group_card import AgentGroupCard
 from xg.tui.widgets.collapsible_card import CollapsibleCard
+from xg.tui.i18n import UiLanguage, normalize_language
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class TranscriptView(VerticalScroll):
         self._unmounted = False
         self._approval_mode = ""
         self._approval_modified_args: dict | None = None
+        self.language: UiLanguage = "zh"
 
     def update_progress(self, item_id: str, item) -> bool:
         """Update a local progress card without scheduling a full refresh."""
@@ -63,7 +65,7 @@ class TranscriptView(VerticalScroll):
         if isinstance(widget, CollapsibleCard):
             widget.update_item(item)
         elif isinstance(widget, Static):
-            widget.update(render_item(item))
+            widget.update(render_item(item, self.language))
         else:
             return False
         return True
@@ -77,6 +79,7 @@ class TranscriptView(VerticalScroll):
         if self._unmounted:
             return
         self._latest_state = state
+        self.language = normalize_language(state.ui_language)
         self._request_generation += 1
         self._content_refresh_pending = True
         desired_keys = tuple(item.key for item in self._desired_widgets(state))
@@ -249,35 +252,41 @@ class TranscriptView(VerticalScroll):
     def _create_widget(self, record: _DesiredWidget) -> Widget:
         if record.kind == "empty":
             return Static(
+                "Enter a task to start chatting with Agent\n\nTry: /help   /plan <task>   /model"
+                if self.language == "en" else
                 "输入任务开始与 Agent 对话\n\n试试：/help   /plan <任务>   /model",
                 classes="transcript-empty-state",
             )
         if record.kind == "agent_group":
-            return AgentGroupCard(record.value)
+            return AgentGroupCard(record.value, self.language)
         if record.kind == "trace":
-            return CollapsibleCard(record.value)
+            return CollapsibleCard(record.value, self.language)
         if record.kind == "approval":
-            widget = InlineApprovalCard(record.value)
+            widget = InlineApprovalCard(record.value, self.language)
             widget.set_mode(self._approval_mode, self._approval_modified_args)
             return widget
         if record.kind == "confirmation":
-            return InlineConfirmationCard(record.value)
-        widget = Static(render_item(record.value))
+            return InlineConfirmationCard(record.value, self.language)
+        widget = Static(render_item(record.value, self.language))
         widget.transcript_item_id = record.value.id
         return widget
 
     def _update_widget(self, widget: Widget, record: _DesiredWidget) -> None:
         if record.kind == "agent_group" and isinstance(widget, AgentGroupCard):
             widget.update_group(record.value)
+            widget.set_language(self.language)
         elif record.kind == "trace" and isinstance(widget, CollapsibleCard):
             widget.update_item(record.value)
+            widget.set_language(self.language)
         elif record.kind == "approval" and isinstance(widget, InlineApprovalCard):
             widget.update_request(record.value)
+            widget.set_language(self.language)
             widget.set_mode(self._approval_mode, self._approval_modified_args)
         elif record.kind == "confirmation" and isinstance(widget, InlineConfirmationCard):
             widget.update_request(record.value)
+            widget.set_language(self.language)
         elif record.kind == "text" and isinstance(widget, Static):
-            widget.update(render_item(record.value))
+            widget.update(render_item(record.value, self.language))
 
     async def _remove_widget(self, key: str, widget: Widget) -> None:
         if widget.parent is self:

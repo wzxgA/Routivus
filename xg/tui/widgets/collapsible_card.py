@@ -8,6 +8,7 @@ from textual.widgets import Static
 from xg.tui.messages import TraceCardToggled
 from xg.tui.renderables import trace_renderable
 from xg.tui.state import TranscriptItem
+from xg.tui.i18n import UiLanguage, normalize_language
 
 
 class CollapsibleCard(Static):
@@ -19,14 +20,19 @@ class CollapsibleCard(Static):
         ("space", "toggle", "展开/折叠"),
     ]
 
-    def __init__(self, item: TranscriptItem) -> None:
+    def __init__(self, item: TranscriptItem, language: UiLanguage = "zh") -> None:
         self.item_id = item.id
         self.item = item
-        super().__init__(trace_renderable(item))
+        self.language = normalize_language(language)
+        super().__init__(trace_renderable(item, self.language))
 
     def update_item(self, item: TranscriptItem) -> None:
         self.item = item
-        self.update(trace_renderable(item))
+        self.update(trace_renderable(item, self.language))
+
+    def set_language(self, language: UiLanguage) -> None:
+        self.language = normalize_language(language)
+        self.update(trace_renderable(self.item, self.language))
 
     def _toggle(self) -> None:
         self.post_message(TraceCardToggled(self.item_id))
@@ -37,4 +43,3 @@ class CollapsibleCard(Static):
 
     def action_toggle(self) -> None:
         self._toggle()
-

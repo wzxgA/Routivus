@@ -14,16 +14,17 @@ from textual.containers import Vertical
 from textual.widgets import Static
 
 from xg.tui.state import ApprovalRequest, ConfirmationRequest
+from xg.tui.i18n import UiLanguage, normalize_language, translate
 
-APPROVAL_HINT = "输入 y 批准 · a 全部放行 · r 拒绝 · s 跳过 · e 修改参数"
+APPROVAL_HINT = "ui.approval.hint"
 CONFIRMATION_HINTS = {
-    "init": "输入 y 确认写入 · n 取消",
-    "memory_clear": "输入 clear 确认清空 · 其他输入取消",
+    "init": "ui.confirm.write_hint",
+    "memory_clear": "ui.confirm.clear_hint",
 }
 
 
 class InlineConfirmationCard(Vertical):
-    def __init__(self, request: ConfirmationRequest) -> None:
+    def __init__(self, request: ConfirmationRequest, language: UiLanguage = "zh") -> None:
         # Per-kind class lets the theme give each confirmation its own
         # border color while sharing one simple layout.  No fixed widget id:
         # TranscriptView keeps this card stable and updates its content in
@@ -32,9 +33,10 @@ class InlineConfirmationCard(Vertical):
             classes=f"inline-action-card inline-confirmation-card confirmation-{request.kind}",
         )
         self.request = request
+        self.language = normalize_language(language)
         # The Static is created eagerly: compose() runs asynchronously, so
         # updates must not depend on the card being mounted already.
-        hint = CONFIRMATION_HINTS.get(self.request.kind, "输入 y 确认 · n 取消")
+        hint = translate(self.language, CONFIRMATION_HINTS.get(self.request.kind, "ui.confirm.write_hint"))
         self._text = Static(f"{self.request.title}\n\n{self.request.body}\n\n{hint}")
 
     def compose(self) -> ComposeResult:
@@ -43,14 +45,19 @@ class InlineConfirmationCard(Vertical):
     def update_request(self, request: ConfirmationRequest) -> None:
         """Update the stable card without replacing its DOM node."""
         self.request = request
-        hint = CONFIRMATION_HINTS.get(self.request.kind, "输入 y 确认 · n 取消")
+        hint = translate(self.language, CONFIRMATION_HINTS.get(self.request.kind, "ui.confirm.write_hint"))
         self._text.update(f"{self.request.title}\n\n{self.request.body}\n\n{hint}")
+
+    def set_language(self, language: UiLanguage) -> None:
+        self.language = normalize_language(language)
+        self.update_request(self.request)
 
 
 class InlineApprovalCard(Vertical):
-    def __init__(self, request: ApprovalRequest) -> None:
+    def __init__(self, request: ApprovalRequest, language: UiLanguage = "zh") -> None:
         super().__init__(classes="inline-action-card inline-approval-card")
         self.request = request
+        self.language = normalize_language(language)
         self._mode = ""
         self._modified_args: dict | None = None
         self._text = Static(self._render_text(), classes="inline-approval-text")
@@ -69,26 +76,30 @@ class InlineApprovalCard(Vertical):
         self._modified_args = modified_args
         self._text.update(self._render_text())
 
+    def set_language(self, language: UiLanguage) -> None:
+        self.language = normalize_language(language)
+        self._text.update(self._render_text())
+
     def _render_text(self) -> str:
         if self._mode == "approval_edit":
             return (
-                f"需要人工审批：{self.request.tool_name}\n\n"
-                "请输入修改后的完整 JSON 参数。\n"
-                "修改后的参数仍会经过 PathGuard / CommandGuard 检查。\n"
-                "输入 Esc 取消修改。"
+                f"{translate(self.language, 'ui.approval.title')}：{self.request.tool_name}\n\n"
+                f"{translate(self.language, 'ui.approval.edit')}\n"
+                f"{translate(self.language, 'ui.approval.guard')}\n"
+                f"{translate(self.language, 'ui.approval.cancel_edit')}"
             )
         if self._mode == "approval_confirm_modified":
             args = json.dumps(self._modified_args or {}, ensure_ascii=False, indent=2)
             return (
-                f"需要人工审批：{self.request.tool_name}\n\n"
-                f"参数已修改为：\n{args}\n\n"
-                "输入 y 确认执行 · r 拒绝执行 · Esc 取消"
+                f"{translate(self.language, 'ui.approval.title')}：{self.request.tool_name}\n\n"
+                f"{translate(self.language, 'ui.approval.modified')}\n{args}\n\n"
+                f"{translate(self.language, 'ui.approval.execute_hint')}"
             )
         args = json.dumps(self.request.args, ensure_ascii=False, indent=2)
         return (
-            "需要人工审批\n"
-            f"工具：{self.request.tool_name}\n"
-            f"敏感级别：{self.request.level}\n"
-            f"当前参数：\n{args}\n\n"
-            f"{APPROVAL_HINT}"
+            f"{translate(self.language, 'ui.approval.title')}\n"
+            f"{translate(self.language, 'ui.approval.tool', tool=self.request.tool_name)}\n"
+            f"{translate(self.language, 'ui.approval.level', level=self.request.level)}\n"
+            f"{translate(self.language, 'ui.approval.args')}\n{args}\n\n"
+            f"{translate(self.language, APPROVAL_HINT)}"
         )

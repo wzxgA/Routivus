@@ -114,7 +114,10 @@ class Settings:
     input_history_max_bytes: int = 1_048_576
     extra: dict[str, str] = field(default_factory=dict)
     # Inspector UI language; this does not affect Agent prompts or responses.
-    ui_language: UiLanguage = "en"
+    # Directly constructed Settings objects retain the historical Chinese
+    # presentation; load_settings() supplies the product default (English)
+    # after resolving config. This keeps library/test adapters compatible.
+    ui_language: UiLanguage = "zh"
     # SmartRouter（phase-01）：智能路由开关，默认关闭；开启后每轮输入自动路由换档。
     # 路由结果只改内存中的 provider/model，不写回 active_provider/active_model。
     smart_router_enabled: bool = False

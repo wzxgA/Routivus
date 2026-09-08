@@ -13,6 +13,7 @@ from xg.agent.team import TeamPlan
 from xg.tui.diagrams.model import FlowchartEdge, FlowchartModel, FlowchartNode
 from xg.tui.diagrams.renderer import render_flowchart
 from xg.tui.state import TranscriptItem
+from xg.tui.i18n import UiLanguage, normalize_language, translate
 
 
 @dataclass(frozen=True)
@@ -22,7 +23,7 @@ class PlanFlowchartData:
     ordered_ids: tuple[str, ...]
 
 
-def plan_to_flowchart(plan: Plan | TeamPlan) -> PlanFlowchartData:
+def plan_to_flowchart(plan: Plan | TeamPlan, language: UiLanguage = "zh") -> PlanFlowchartData:
     """Adapt an already validated Plan DAG to the text flowchart model."""
     tasks = {task.id: task for task in plan.tasks}
     ordered_ids: list[str] = []
@@ -51,7 +52,7 @@ def plan_to_flowchart(plan: Plan | TeamPlan) -> PlanFlowchartData:
     ]
     warnings = []
     missing = [
-        f"{task.id} 依赖不存在的任务 {dependency}"
+        translate(language, "ui.plan.missing_dependency", task=task.id, dependency=dependency)
         for task in plan.tasks
         for dependency in task.deps
         if dependency not in known
@@ -72,12 +73,12 @@ def _task_title_text(task: PlanTask) -> Text:
     return line
 
 
-def _task_summary_renderable(plan: Plan | TeamPlan, ordered_ids: tuple[str, ...], detailed: bool) -> Group:
+def _task_summary_renderable(plan: Plan | TeamPlan, ordered_ids: tuple[str, ...], detailed: bool, language: UiLanguage = "zh") -> Group:
     """Render the task heading, keyboard hint, and task content separately."""
     tasks = {task.id: task for task in plan.tasks}
     renderables: list[object] = [
-        Text("任务详情" if detailed else "任务概括"),
-        Text("按 d 收起详情" if detailed else "按 d 显示详情", style="dim"),
+        Text(translate(language, "ui.plan.task_detail" if detailed else "ui.plan.task_summary")),
+        Text(translate(language, "ui.plan.hide_detail" if detailed else "ui.plan.show_detail"), style="dim"),
     ]
     for task_id in ordered_ids:
         task = tasks.get(task_id)
@@ -85,22 +86,22 @@ def _task_summary_renderable(plan: Plan | TeamPlan, ordered_ids: tuple[str, ...]
             continue
         renderables.append(_task_title_text(task))
         if detailed:
-            deps = ", ".join(task.deps) if task.deps else "无"
+            deps = ", ".join(task.deps) if task.deps else translate(language, "ui.config.empty")
             renderables.extend([
-                Text(f"  描述：{task.description or '暂无描述'}", style="dim"),
-                Text(f"  依赖：{deps}", style="dim"),
+                Text(translate(language, "ui.plan.description", description=task.description or translate(language, "ui.config.empty")), style="dim"),
+                Text(translate(language, "ui.plan.dependencies", dependencies=deps), style="dim"),
             ])
             tools = getattr(task, "allowed_tools", ())
             if tools:
-                renderables.append(Text(f"  工具：{', '.join(tools)}", style="dim"))
+                renderables.append(Text(translate(language, "ui.plan.tools", tools=', '.join(tools)), style="dim"))
             for warning in getattr(task, "tool_warnings", ()):
-                renderables.append(Text(f"  工具提示：{warning}", style="yellow"))
+                renderables.append(Text(translate(language, "ui.plan.tool_hint", warning=warning), style="yellow"))
             mode = getattr(task, "resource_scope_mode", "")
             if mode:
-                renderables.append(Text(f"  资源模式：{mode}", style="dim"))
+                renderables.append(Text(translate(language, "ui.plan.resource_mode", mode=mode), style="dim"))
             for claim in getattr(task, "resource_claims", ()):
                 renderables.append(
-                    Text(f"  资源声明：{claim.access} {claim.pattern}", style="dim")
+                    Text(translate(language, "ui.plan.resource_claim", access=claim.access, pattern=claim.pattern), style="dim")
                 )
     return Group(*renderables)
 
@@ -108,24 +109,28 @@ def _task_summary_renderable(plan: Plan | TeamPlan, ordered_ids: tuple[str, ...]
 class PlanReviewCard:
     """Static review card: flowchart plus summary/details below it."""
 
-    def __init__(self, item: TranscriptItem) -> None:
+    def __init__(self, item: TranscriptItem, language: UiLanguage = "zh") -> None:
         self.item = item
+        self.language: UiLanguage = normalize_language(language)
+
+    def set_language(self, language: UiLanguage) -> None:
+        self.language = normalize_language(language)
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         plan = self.item.plan
         # /plan uses Plan while /team uses TeamPlan. Both expose the same
         # validated task/batch shape needed by this read-only renderer.
         if not isinstance(plan, (Plan, TeamPlan)):
-            yield Panel(Text(self.item.text or "计划不可用"), title="计划审阅", border_style="magenta")
+            yield Panel(Text(self.item.text or translate(self.language, "ui.plan.unavailable")), title=translate(self.language, "ui.transcript.plan_review"), border_style="magenta")
             return
-        data = plan_to_flowchart(plan)
+        data = plan_to_flowchart(plan, self.language)
         chart = render_flowchart(
             data.model,
             width=max(1, options.max_width - 8),
             rank_by_node=data.rank_by_node,
         )
         parts: list[object] = [
-            Text(f"目标：{plan.goal}\n共 {len(plan.batches)} 轮", style="bold"),
+            Text(f"{translate(self.language, 'ui.plan.goal', goal=plan.goal)}\n{translate(self.language, 'ui.plan.rounds', count=len(plan.batches))}", style="bold"),
         ]
         # Skip the flow-chart panel entirely when rendering falls back to
         # structured text: the panel would just repeat the task IDs already
@@ -134,14 +139,14 @@ class PlanReviewCard:
             chart_parts: list[object] = [Text(chart.text, no_wrap=True, overflow="crop")]
             if chart.warnings:
                 chart_parts.append(Text("\n\n⚠ " + "；".join(chart.warnings)))
-            parts.append(Panel(Group(*chart_parts), title="轮次流程", border_style="cyan"))
+            parts.append(Panel(Group(*chart_parts), title=translate(self.language, "ui.plan.flow"), border_style="cyan"))
         elif chart.warnings:
             parts.append(Text("⚠ " + "；".join(chart.warnings), style="dim"))
         batch_lines = [
-            f"第 {batch_no} 轮：{', '.join(batch)}"
+            translate(self.language, "ui.plan.round", round=batch_no, tasks=', '.join(batch))
             for batch_no, batch in enumerate(plan.batches, 1)
         ]
         parts.append(Text("\n".join(batch_lines), style="dim"))
-        parts.append(_task_summary_renderable(plan, data.ordered_ids, not self.item.collapsed))
-        parts.append(Text("\nEnter 执行 · r 重规划 · Esc 取消", style="dim"))
-        yield Panel(Group(*parts), title="计划审阅", border_style="magenta")
+        parts.append(_task_summary_renderable(plan, data.ordered_ids, not self.item.collapsed, self.language))
+        parts.append(Text("\n" + translate(self.language, "ui.plan.execute_hint"), style="dim"))
+        yield Panel(Group(*parts), title=translate(self.language, "ui.transcript.plan_review"), border_style="magenta")

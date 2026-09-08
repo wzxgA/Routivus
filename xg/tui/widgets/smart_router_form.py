@@ -13,22 +13,24 @@ from textual.widgets import Button, Input, Select, Static
 
 from xg.config.provider_service import validate_name
 from xg.config.smart_router_service import SmartRouterConfigService
+from xg.tui.i18n import UiLanguage, normalize_language, translate
 
 _TIER_ORDER = ("Basic", "Enhanced", "Superior", "Ultimate")
 _TIER_LABELS = {
-    "Basic": "Basic（闲聊/简单问答）",
-    "Enhanced": "Enhanced（写函数/改文件）",
-    "Superior": "Superior（重构/排查/多文件）",
-    "Ultimate": "Ultimate（架构/设计/高风险）",
+    "Basic": "ui.tier.basic",
+    "Enhanced": "ui.tier.enhanced",
+    "Superior": "ui.tier.superior",
+    "Ultimate": "ui.tier.ultimate",
 }
 
 
 class SmartRouterForm(ModalScreen[None]):
-    BINDINGS = [("escape", "cancel", "取消")]
+    BINDINGS = [("escape", "cancel", "Cancel")]
 
-    def __init__(self, service: SmartRouterConfigService, *, tier: str | None = None) -> None:
+    def __init__(self, service: SmartRouterConfigService, *, tier: str | None = None, language: UiLanguage = "zh") -> None:
         super().__init__()
         self.service = service
+        self.language = normalize_language(language)
         self.configs = {
             r["name"]: {"provider": r.get("provider", ""), "model": r.get("model", "")}
             for r in service.list_tiers()
@@ -44,23 +46,27 @@ class SmartRouterForm(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         cur = self.configs.get(self.tier, {"provider": "", "model": ""})
         with Vertical(id="tier-form"):
-            yield Static("SmartRouter 档位", id="tier-form-title")
-            yield Static("档位", id="t-tier-label")
+            yield Static(translate(self.language, "ui.config.tier_title"), id="tier-form-title")
+            yield Static(translate(self.language, "ui.config.tier"), id="t-tier-label")
             yield Select(
-                ((_TIER_LABELS.get(t), t) for t in _TIER_ORDER),
+                ((translate(self.language, _TIER_LABELS.get(t, t)), t) for t in _TIER_ORDER),
                 value=self.tier,
                 allow_blank=False,
                 id="tier",
             )
-            yield Static("provider（留空 = 清空该档位）", id="t-provider-label")
+            yield Static(translate(self.language, "ui.config.provider_empty"), id="t-provider-label")
             yield Input(
-                value=cur["provider"], id="provider", placeholder="如 deepseek"
+                value=cur["provider"], id="provider",
+                placeholder=translate(self.language, "ui.config.provider_placeholder")
             )
-            yield Static("model（可选，缺省取 default_model）", id="t-model-label")
-            yield Input(value=cur["model"], id="model", placeholder="如 deepseek-chat")
+            yield Static(translate(self.language, "ui.config.model_optional"), id="t-model-label")
+            yield Input(
+                value=cur["model"], id="model",
+                placeholder=translate(self.language, "ui.config.model_placeholder"),
+            )
             with Horizontal(id="tier-form-actions"):
-                yield Button("保存", id="save", variant="primary")
-                yield Button("取消", id="cancel")
+                yield Button(translate(self.language, "ui.config.save"), id="save", variant="primary")
+                yield Button(translate(self.language, "ui.config.cancel"), id="cancel")
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """切换档位时联动加载对应 provider/model 配置。"""
@@ -86,9 +92,12 @@ class SmartRouterForm(ModalScreen[None]):
         if not provider:
             result = self.service.clear_tier(tier)
         else:
-            err = validate_name(provider)
+            err = validate_name(provider, self.language)
             if err:
-                return self.notify(f"provider 名非法: {err}", severity="error")
+                return self.notify(
+                    translate(self.language, "ui.config.invalid_provider", error=err),
+                    severity="error",
+                )
             result = self.service.set_tier(tier, provider, model)
         self.notify(result.message, severity="error" if not result.ok else "information")
         if result.ok:

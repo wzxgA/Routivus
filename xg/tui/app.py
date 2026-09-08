@@ -38,6 +38,7 @@ from xg.tui.widgets.header import HeaderBar
 from xg.tui.widgets.inspector import InspectorPanel
 from xg.tui.widgets.queue_status import QueueStatus
 from xg.tui.widgets.transcript import TranscriptView
+from xg.tui.i18n import normalize_language, translate
 
 
 class XgTuiApp(App[None]):
@@ -114,10 +115,11 @@ class XgTuiApp(App[None]):
             yield QueueStatus(id="queue-status")
             yield CommandSuggestions()
             yield AskPanel()
-            yield Static("输入", id="composer-label")
+            yield Static(translate("en", "ui.input"), id="composer-label")
             yield Composer()
 
     def on_mount(self) -> None:
+        self._update_binding_labels(self._state.ui_language)
         self._render_state(self._state)
         composer = self.query_one("#composer", Composer)
         composer.set_input_history(self.input_history)
@@ -171,12 +173,12 @@ class XgTuiApp(App[None]):
         )
         if elapsed >= self.PROGRESS_SLOW_SECONDS:
             base = {
-                "plan": "计划生成较慢，请稍候",
-                "context": "上下文处理较慢，请稍候",
-                "response": "AI 响应较慢，请稍候",
+                "plan": translate(self._state.ui_language, "ui.progress.plan_slow"),
+                "context": translate(self._state.ui_language, "ui.progress.context_slow"),
+                "response": translate(self._state.ui_language, "ui.progress.response_slow"),
             }[progress.progress_kind]
         elif progress.progress_kind == "response" and elapsed >= self.PROGRESS_WAITING_SECONDS:
-            base = "等待 AI 响应"
+            base = translate(self._state.ui_language, "ui.progress.response_wait")
         else:
             base = progress.text
         return f"{base}{'.' * self._progress_frame}"
@@ -291,17 +293,23 @@ class XgTuiApp(App[None]):
         suggestions.update_query(value, cursor)
 
     def _render_state(self, state: TuiState) -> None:
+        language = normalize_language(state.ui_language)
+        self._update_binding_labels(language)
         self.query_one("#header", HeaderBar).update_state(state)
+        self.query_one("#footer", FooterBar).update_language(language)
         transcript = self.query_one("#transcript", TranscriptView)
         transcript.request_state(state)
         self.query_one("#inspector", InspectorPanel).update_state(state)
+        self.query_one("#composer-label", Static).update(translate(language, "ui.input"))
         note = self.query_one("#notification", Static)
         note.update(state.notification)
         note.display = bool(state.notification)
         self.query_one("#queue-status", QueueStatus).update_state(state)
         ask_panel = self.query_one("#ask-panel", AskPanel)
+        ask_panel.set_language(language)
         ask_panel.update_request(state.pending_ask)
         composer = self.query_one("#composer", Composer)
+        composer.set_language(language)
         composer.set_ask_mode(state.pending_ask)
         if state.pending_ask is not None:
             composer.focus()
@@ -336,27 +344,53 @@ class XgTuiApp(App[None]):
         if not suggestions_allowed:
             suggestions.close()
         if state.pending_ask is not None:
-            composer.placeholder = "选择选项或输入自定义回答，Enter 提交"
+            composer.placeholder = translate(language, "ui.ask.placeholder")
         elif state.pending_approval is not None:
             if self._decision_mode == "approval_edit":
-                composer.placeholder = "修改参数：请输入完整 JSON，Esc 取消修改"
+                composer.placeholder = translate(language, "ui.approval.edit_placeholder")
             elif self._decision_mode == "approval_confirm_modified":
-                composer.placeholder = "输入 y 确认执行 · r 拒绝执行"
+                composer.placeholder = translate(language, "ui.approval.confirm_placeholder")
             else:
-                composer.placeholder = "审批中：y 批准 · a 全部放行 · r 拒绝 · s 跳过 · e 修改参数"
+                composer.placeholder = translate(language, "ui.approval.placeholder")
         elif state.pending_confirmation is not None:
             if state.pending_confirmation.kind == "memory_clear":
-                composer.placeholder = "确认中：输入 clear 确认清空，其他输入取消"
+                composer.placeholder = translate(language, "ui.confirm.clear_placeholder")
             else:
-                composer.placeholder = "确认中：输入 y 确认写入 · n 取消"
+                composer.placeholder = translate(language, "ui.confirm.write_placeholder")
         elif self._replan_mode:
-            composer.placeholder = "输入重新规划要求，Enter 提交"
+            composer.placeholder = translate(language, "ui.plan.replan_placeholder")
         elif state.phase == "awaiting_plan_review" and state.pending_plan is not None:
-            composer.placeholder = "按 Enter 执行 · r 重规划 · Esc 取消"
+            composer.placeholder = translate(language, "ui.plan.review_placeholder")
         elif state.phase == "awaiting_team_input":
-            composer.placeholder = "输入 /team resume <任务ID> --write-scope <范围>，或 /cancel"
+            composer.placeholder = translate(language, "ui.team.resume_placeholder")
         else:
-            composer.placeholder = "输入任务或 /help …"
+            composer.placeholder = translate(language, "ui.composer.placeholder")
+
+    def _update_binding_labels(self, language) -> None:
+        """Keep app-level key hints synchronized with the selected UI language."""
+        english = normalize_language(language) == "en"
+        labels = {
+            "plan_execute": "Execute plan" if english else "执行计划",
+            "plan_details": "Plan details" if english else "计划详情",
+            "trace_group": "Trace details" if english else "轨迹详情",
+            "plan_replan": "Replan" if english else "重新规划",
+            "escape": "Cancel or clear" if english else "取消或清空",
+            "cancel_turn": "Cancel current task" if english else "取消当前任务",
+            "clear_transcript": "Clear screen" if english else "清屏",
+            "toggle_inspector": "Sidebar" if english else "侧栏",
+            "inspector_session": "Inspector session" if english else "Inspector 会话",
+            "inspector_plan": "Inspector plan" if english else "Inspector 计划",
+            "inspector_memory": "Inspector memory" if english else "Inspector 记忆",
+            "inspector_safety": "Inspector safety" if english else "Inspector 安全",
+            "inspector_next": "Next Inspector view" if english else "下一个 Inspector 视图",
+            "inspector_previous": "Previous Inspector view" if english else "上一个 Inspector 视图",
+            "config_panel": "Configuration" if english else "配置面板",
+        }
+        for _key, binding in self._bindings:
+            action = binding.action.split(".")[-1]
+            if action in labels:
+                object.__setattr__(binding, "description", labels[action])
+        self.refresh_bindings()
 
     def _render_state_immediately(self, state: TuiState) -> None:
         """Render an explicit local UI action without an older queued state."""
@@ -440,12 +474,12 @@ class XgTuiApp(App[None]):
         if lowered == "e":
             composer.value = ""
             self._decision_mode = "approval_edit"
-            self._show_decision_hint("参数修改：请输入完整 JSON，Esc 取消修改")
+            self._show_decision_hint(translate(self._state.ui_language, "ui.approval.edit_hint"))
             return
         command = self.APPROVAL_TEXT_COMMANDS.get(lowered)
         if command is None:
             # 无效输入保留在输入框，审批状态不变，工具不执行。
-            self._show_decision_hint("审批中仅接受 y / a / r / s / e，本次输入未执行任何操作")
+            self._show_decision_hint(translate(self._state.ui_language, "ui.approval.invalid_input"))
             return
         composer.value = ""
         self.handle_inline_approval(command)
@@ -456,12 +490,12 @@ class XgTuiApp(App[None]):
         except json.JSONDecodeError:
             parsed = None
         if not isinstance(parsed, dict):
-            self._show_decision_hint("JSON 无效：请输入完整的 JSON 对象，工具未执行")
+            self._show_decision_hint(translate(self._state.ui_language, "ui.approval.invalid_json"))
             return
         self._modified_args = parsed
         self._decision_mode = "approval_confirm_modified"
         composer.value = ""
-        self._show_decision_hint("参数已修改，输入 y 确认执行 · r 拒绝执行")
+        self._show_decision_hint(translate(self._state.ui_language, "ui.approval.modified_hint"))
 
     def _handle_modified_args_confirmation(self, text: str, composer: Composer) -> None:
         lowered = text.lower()
@@ -473,7 +507,7 @@ class XgTuiApp(App[None]):
             composer.value = ""
             self.handle_inline_approval("reject")
             return
-        self._show_decision_hint("输入 y 确认执行修改后的参数 · r 拒绝")
+        self._show_decision_hint(translate(self._state.ui_language, "ui.approval.modified_invalid"))
 
     def _handle_confirmation_decision(self, kind: str, text: str, composer: Composer) -> None:
         lowered = text.lower()
@@ -486,7 +520,7 @@ class XgTuiApp(App[None]):
                 composer.value = ""
                 self.handle_inline_confirmation(False)
                 return
-            self._show_decision_hint("清空长期记忆需精确输入 clear，本次输入未生效")
+            self._show_decision_hint(translate(self._state.ui_language, "ui.confirm.invalid_clear"))
             return
         if lowered in ("y", "yes"):
             composer.value = ""
@@ -496,7 +530,7 @@ class XgTuiApp(App[None]):
             composer.value = ""
             self.handle_inline_confirmation(False)
             return
-        self._show_decision_hint("输入 y 确认写入 · n 取消，本次输入未生效")
+        self._show_decision_hint(translate(self._state.ui_language, "ui.confirm.invalid_write"))
 
     def on_input_submitted(self, event: Composer.Submitted) -> None:
         text = event.value.strip()
@@ -513,7 +547,7 @@ class XgTuiApp(App[None]):
         if self._has_pending_plan() and not self._replan_mode:
             self._state = replace(
                 self.controller.snapshot(),
-                notification="当前处于计划审阅，请按 Enter 执行、r 重规划或 Esc 取消",
+                notification=translate(self._state.ui_language, "ui.plan.review_notice"),
                 notification_level="info",
             )
             self._render_state(self._state)
@@ -522,7 +556,7 @@ class XgTuiApp(App[None]):
         if text:
             if self._replan_mode:
                 self._replan_mode = False
-                event.input.placeholder = "输入任务或 /help …"
+                event.input.placeholder = translate(self._state.ui_language, "ui.composer.placeholder")
                 asyncio.create_task(
                     self.controller.review_plan(ReviewDecision(action="replan", feedback=text))
                 )
@@ -541,7 +575,7 @@ class XgTuiApp(App[None]):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self.notify(f"任务失败：{exc}", severity="error")
+            self.notify(f"{translate(self._state.ui_language, 'ui.error.default')}：{exc}", severity="error")
         finally:
             if text.lower() in ("/exit", "/quit"):
                 self.exit()
@@ -588,10 +622,10 @@ class XgTuiApp(App[None]):
             return
         self._replan_mode = True
         composer = self.query_one("#composer", Composer)
-        composer.placeholder = "输入重新规划要求，Enter 提交"
+        composer.placeholder = translate(self._state.ui_language, "ui.plan.replan_placeholder")
         composer.focus()
         note = self.query_one("#notification", Static)
-        note.update("请输入重新规划要求，Enter 提交；Esc 取消计划")
+        note.update(translate(self._state.ui_language, "ui.plan.review_notice"))
         note.display = True
 
     async def action_escape(self) -> None:
@@ -600,7 +634,7 @@ class XgTuiApp(App[None]):
             self._replan_mode = False
             composer = self.query_one("#composer", Composer)
             composer.value = ""
-            composer.placeholder = "输入任务或 /help …"
+            composer.placeholder = translate(self._state.ui_language, "ui.composer.placeholder")
             await self.controller.review_plan(ReviewDecision(action="cancel"))
             return
         composer = self.query_one("#composer", Composer)

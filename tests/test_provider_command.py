@@ -158,3 +158,23 @@ def test_command_service_routes_provider(tmp_path: Path):
     result = asyncio.run(CommandService(ctx).execute("/provider"))
     assert isinstance(result, CommandResult)
     assert "尚未配置任何 provider" in result.message
+
+
+def test_provider_and_tier_commands_render_english(tmp_path: Path):
+    manager = raw_manager(tmp_path)
+    msg, ok = execute_provider_command(
+        manager, None,
+        "/provider add myproxy https://gateway.my.com/v1 --model deepseek-v4",
+        language="en",
+    )
+    assert ok is True
+    assert "Added provider: myproxy" in msg
+    assert "写入" not in msg
+    msg, ok = execute_provider_command(manager, None, "/provider show myproxy", language="en")
+    assert ok is True
+    assert "config layer" in msg
+    from xg.cli.commands import execute_tier_command
+    msg, ok = execute_tier_command(manager, None, "/tier set Basic myproxy", language="en")
+    assert ok is True
+    assert "Tier Basic" in msg
+    assert "已" not in msg

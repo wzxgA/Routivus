@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from xg.tui.i18n import normalize_language
+from xg.tui.i18n import UiLanguage, normalize_language, translate
 
 
 @dataclass
@@ -318,10 +318,10 @@ SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
         "/lang",
         aliases=("/language",),
         usage="/lang [en|zh|reset]",
-        description="查看或切换 Inspector language",
+        description="查看或切换界面语言",
         category="session",
         details=(
-            "默认语言为 English；切换只影响 TUI 右侧 Inspector，不影响 Agent 对话。",
+            "默认语言为 English；切换影响产品 UI/CLI 展示文案，不影响 Agent 对话。",
             "reset 会清除用户级语言偏好并恢复 English。",
         ),
         examples=("/lang", "/lang zh", "/lang en", "/lang reset"),
@@ -449,10 +449,11 @@ class CommandService:
 
     async def execute(self, raw: str) -> CommandResult:
         raw = raw.strip()
+        language = normalize_language(getattr(self.context.settings, "ui_language", "zh"))
         if not raw:
-            return CommandResult(ok=False, message="命令不能为空")
+            return CommandResult(ok=False, message=translate(language, "ui.command.empty"))
         if raw.lower() in ("/cancel", "/c"):
-            return CommandResult(ok=True, message="已请求取消当前任务")
+            return CommandResult(ok=True, message=translate(language, "ui.command.cancel_requested"))
 
         parts = raw.split(maxsplit=1)
         if parts[0].lower() in ("/help", "/?"):
@@ -461,14 +462,17 @@ class CommandService:
             query = parts[1].strip() if len(parts) > 1 else ""
             return CommandResult(
                 ok=True,
-                message=format_command_help(query) if query else format_help(),
+                message=(
+                    format_command_help(query, language=normalize_language(getattr(self.context.settings, "ui_language", "zh")))
+                    if query else format_help(language=normalize_language(getattr(self.context.settings, "ui_language", "zh")))
+                ),
             )
 
         if parts[0].lower() in ("/lang", "/language"):
             return _execute_language_command(self.context.settings, self.context.manager, raw)
 
         if parts[0].lower() == "/provider":
-            message, ok = execute_provider_command(self.context.manager, self.context.settings, raw)
+            message, ok = execute_provider_command(self.context.manager, self.context.settings, raw, language=language)
             if ok and self.context.agent is not None:
                 # TUI/CommandService 路径：/provider 变更后热同步运行中 client
                 #（与 inline _handle_command 保持一致，配好即用、无需重启）。
@@ -477,24 +481,24 @@ class CommandService:
                 _reapply_active(self.context.agent, self.context.settings, self.context.manager)
             return CommandResult(ok=ok, message=message)
         if parts[0].lower() == "/tier":
-            message, ok = execute_tier_command(self.context.manager, self.context.settings, raw)
+            message, ok = execute_tier_command(self.context.manager, self.context.settings, raw, language=normalize_language(getattr(self.context.settings, "ui_language", "zh")))
             return CommandResult(ok=ok, message=message)
         if parts[0].lower() == "/path":
-            message, ok = execute_path_command(raw)
+            message, ok = execute_path_command(raw, language=normalize_language(getattr(self.context.settings, "ui_language", "zh")))
             return CommandResult(ok=ok, message=message)
         if parts[0].lower() == "/train":
-            return await execute_train_command(raw, log_sink=self.log_sink)
+            return await execute_train_command(raw, log_sink=self.log_sink, language=normalize_language(getattr(self.context.settings, "ui_language", "zh")))
         if parts[0].lower() == "/mcp":
-            message, ok = await execute_mcp_command(self.context.agent, raw)
+            message, ok = await execute_mcp_command(self.context.agent, raw, language=normalize_language(getattr(self.context.settings, "ui_language", "zh")))
             return CommandResult(ok=ok, message=message)
         if parts[0].lower() == "/web":
-            message, ok = await execute_web_command(self.context.agent, raw)
+            message, ok = await execute_web_command(self.context.agent, raw, language=normalize_language(getattr(self.context.settings, "ui_language", "zh")))
             return CommandResult(ok=ok, message=message)
         if parts[0].lower() == "/skill":
-            message, ok = await execute_skill_command(self.context.agent, raw)
+            message, ok = await execute_skill_command(self.context.agent, raw, language=normalize_language(getattr(self.context.settings, "ui_language", "zh")))
             return CommandResult(ok=ok, message=message)
         if parts[0].lower() == "/history":
-            message, ok = await execute_history_command(self.context.agent, raw)
+            message, ok = await execute_history_command(self.context.agent, raw, language=normalize_language(getattr(self.context.settings, "ui_language", "zh")))
             return CommandResult(ok=ok, message=message)
 
         # Lazy import avoids a cycle: app.py still owns the legacy renderer
@@ -505,7 +509,7 @@ class CommandService:
         if cmd == "/init":
             # Generation and confirmation are UI concerns.  The controller
             # handles this command separately so a TUI can show a modal.
-            return CommandResult(ok=True, open_modal="init", message="正在准备项目记忆草稿")
+            return CommandResult(ok=True, open_modal="init", message=translate(language, "ui.command.init_prepare"))
 
         if cmd in ("/save", "/memory"):
             message, should_exit = _handle_command(
@@ -516,13 +520,17 @@ class CommandService:
         message, should_exit = _handle_command(
             self.context.agent, self.context.settings, self.context.manager, raw
         )
-        return CommandResult(ok=not (message and message.startswith("未知命令")), message=message or "", should_exit=should_exit)
+        if message is None:
+            message = ""
+        unknown = message.startswith(("未知命令", "Unknown command"))
+        return CommandResult(ok=not unknown, message=message, should_exit=should_exit)
 
 
 def _execute_language_command(settings: Any, manager: Any, raw: str) -> CommandResult:
     """Handle the UI-only language preference without touching the Agent."""
     parts = raw.split()
     current = normalize_language(getattr(settings, "ui_language", "en"))
+    display_language = normalize_language(getattr(settings, "ui_language", "en"))
     if len(parts) == 1:
         source = "default"
         if hasattr(manager, "ui_language_source"):
@@ -530,16 +538,16 @@ def _execute_language_command(settings: Any, manager: Any, raw: str) -> CommandR
         return CommandResult(
             ok=True,
             message=(
-                f"Inspector language: {current} (source: {source})\n"
-                "Available: en, zh\n"
-                "Usage: /lang en|zh|reset"
+                f"{translate(display_language, 'ui.command.language_status', name=current, source=source)}\n"
+                f"{translate(display_language, 'ui.command.available_languages')}\n"
+                f"{translate(display_language, 'ui.command.language_usage')}"
             ),
             data={"ui_language": current, "persisted": True},
         )
     if len(parts) != 2 or parts[1].lower() not in {"en", "zh", "reset"}:
         return CommandResult(
             ok=False,
-            message="Usage: /lang [en|zh|reset]",
+            message=translate(display_language, "ui.command.language_usage"),
             data={"ui_language": current, "persisted": False},
         )
 
@@ -555,24 +563,25 @@ def _execute_language_command(settings: Any, manager: Any, raw: str) -> CommandR
         # A read-only or broken config directory must not prevent a session
         # from changing its presentation language.
         persisted = False
-        warning = f" (session only; could not persist: {exc})"
+        warning = str(exc)
     else:
         warning = ""
 
     settings.ui_language = language
-    action = "reset to English" if requested == "reset" else f"changed to {language}"
+    action = "reset" if requested == "reset" else "changed"
+    message_key = "ui.command.language_reset" if requested == "reset" else "ui.command.language_changed"
     return CommandResult(
         ok=True,
-        message=f"Inspector language {action}.{warning}",
+        message=translate(language, message_key, name=language) + (translate(language, "ui.command.session_only", error=warning) if warning else ""),
         data={"ui_language": language, "persisted": persisted},
     )
 
 
-async def execute_mcp_command(agent: Any, raw: str) -> tuple[str, bool]:
+async def execute_mcp_command(agent: Any, raw: str, *, language: UiLanguage = "zh") -> tuple[str, bool]:
     """Execute the shared asynchronous /mcp command group."""
     manager = getattr(agent, "mcp_manager", None)
     if manager is None:
-        return "MCP 未初始化。", False
+        return translate(language, "ui.command.mcp_uninitialized"), False
     await manager.ensure_started()
     parts = raw.split()
     sub = parts[1].lower() if len(parts) > 1 else "status"
@@ -583,35 +592,36 @@ async def execute_mcp_command(agent: Any, raw: str) -> tuple[str, bool]:
         return manager.format_resources(name or None), True
     if sub == "logs":
         if not name:
-            return "用法: /mcp logs <server>", False
+            return translate(language, "ui.command.mcp_usage", sub="logs"), False
         return manager.logs(name), name in {item.name for item in manager.snapshots()}
     if sub == "restart":
         if not name:
-            return "用法: /mcp restart <server>", False
+            return translate(language, "ui.command.mcp_usage", sub="restart"), False
         ok = await manager.restart(name)
-        return (f"MCP Server {name} 已重启。" if ok else f"MCP Server {name} 重启失败或不存在。"), ok
+        return (translate(language, "ui.command.mcp_restarted", server=name) if ok else translate(language, "ui.command.mcp_restart_failed", server=name)), ok
     if sub in {"enable", "disable"}:
         if not name:
-            return f"用法: /mcp {sub} <server>", False
+            return translate(language, "ui.command.mcp_usage", sub=sub), False
         enabled = sub == "enable"
         ok = await manager.set_enabled(name, enabled)
-        action = "启用" if enabled else "禁用"
-        return (f"MCP Server {name} 已{action}。" if ok else f"MCP Server {name} {action}失败或不存在。"), ok
-    return "用法: /mcp status|restart <server>|logs <server>|enable <server>|disable <server>|resources [server]", False
+        if ok:
+            return translate(language, "ui.command.mcp_enabled" if enabled else "ui.command.mcp_disabled", server=name), True
+        return translate(language, "ui.command.mcp_action_failed", server=name, action=sub), False
+    return translate(language, "ui.command.mcp_full_usage"), False
 
 
-async def execute_web_command(agent: Any, raw: str) -> tuple[str, bool]:
+async def execute_web_command(agent: Any, raw: str, *, language: UiLanguage = "zh") -> tuple[str, bool]:
     """Shared read-only Web command semantics for inline and TUI."""
     config = getattr(agent, "web_config", None)
     parts = raw.split(maxsplit=2)
     sub = parts[1].lower() if len(parts) > 1 else "status"
     if config is None:
-        return "Web 能力未初始化。", False
+        return translate(language, "ui.command.web_uninitialized"), False
     if sub in {"status", ""}:
         search = config.search
         configured = bool(search.api_base and (search.api_key or search.provider == "searxng"))
-        return (f"Web: {'启用' if config.enabled else '关闭'}\n"
-                f"search provider: {search.provider}（{'已配置' if configured else '未配置'}）\n"
+        return (f"Web: {translate(language, 'ui.command.enabled' if config.enabled else 'ui.command.disabled')}\n"
+                f"search provider: {search.provider} ({translate(language, 'ui.command.configured' if configured else 'ui.command.not_configured')})\n"
                 f"fetch: timeout={config.fetch.timeout}s, max={config.fetch.max_response_bytes} bytes, "
                 f"chars={config.fetch.max_chars}, redirects={config.fetch.max_redirects}"), True
     if sub == "providers":
@@ -621,32 +631,32 @@ async def execute_web_command(agent: Any, raw: str) -> tuple[str, bool]:
             active = name == config.search.provider
             has_key = bool((config.search.api_key if active else None) or data.get("api_key"))
             has_url = bool((config.search.api_base if active else None) or data.get("api_base") or data.get("url"))
-            lines.append(f"{name}: {'已配置' if has_url and (has_key or name == 'searxng') else '未配置'}")
+            lines.append(f"{name}: {translate(language, 'ui.command.configured' if has_url and (has_key or name == 'searxng') else 'ui.command.not_configured')}")
         return "\n".join(lines), True
     if sub == "search":
         if len(parts) < 3 or not parts[2].strip():
-            return "用法: /web search <query>", False
+            return translate(language, "ui.command.web_usage", sub="search"), False
         service = getattr(agent, "web_search", None)
         if service is None:
-            return "Web 搜索未启用或未配置 provider。", False
+            return translate(language, "ui.command.web_search_unavailable"), False
         ok, output = await service.search_tool({"query": parts[2].strip()})
         return output, ok
     if sub == "fetch":
         if len(parts) < 3 or not parts[2].strip():
-            return "用法: /web fetch <url>", False
+            return translate(language, "ui.command.web_usage", sub="fetch"), False
         service = getattr(agent, "web_fetch", None)
         if service is None:
-            return "Web 抓取未启用。", False
+            return translate(language, "ui.command.web_fetch_unavailable"), False
         ok, output = await service.fetch_tool({"url": parts[2].strip()})
         return output, ok
-    return "用法: /web status|providers|search <query>|fetch <url>", False
+    return translate(language, "ui.command.web_full_usage"), False
 
 
-async def execute_skill_command(agent: Any, raw: str) -> tuple[str, bool]:
+async def execute_skill_command(agent: Any, raw: str, *, language: UiLanguage = "zh") -> tuple[str, bool]:
     """Shared read-only Skill management command semantics."""
     registry = getattr(agent, "skill_registry", None)
     if registry is None or not registry.config.enabled:
-        return "Skill 能力未启用。", False
+        return translate(language, "ui.command.skill_disabled"), False
     parts = raw.split()
     sub = parts[1].lower() if len(parts) > 1 else "list"
     if sub == "list":
@@ -654,45 +664,46 @@ async def execute_skill_command(agent: Any, raw: str) -> tuple[str, bool]:
         return registry.format_list(), True
     if sub == "load":
         if len(parts) < 3:
-            return "用法: /skill load <name> [reference ...]", False
+            return translate(language, "ui.command.skill_load_usage"), False
         ok, output = registry.manual_load(parts[2], tuple(parts[3:]))
         return output, ok
     if sub in {"enable", "disable"}:
         if len(parts) < 3:
-            return f"用法: /skill {sub} <name>", False
+            return translate(language, "ui.command.skill_usage", sub=sub), False
         enabled = sub == "enable"
         ok = registry.set_enabled(parts[2], enabled)
-        action = "启用" if enabled else "禁用"
-        return (f"Skill {parts[2]} 已{action}。" if ok else f"Skill {parts[2]} 不存在或无法修改。"), ok
-    return "用法: /skill list|load <name> [reference ...]|enable <name>|disable <name>", False
+        if ok:
+            return translate(language, "ui.command.skill_enabled" if enabled else "ui.command.skill_disabled_item", name=parts[2]), True
+        return translate(language, "ui.command.skill_change_failed", name=parts[2]), False
+    return translate(language, "ui.command.skill_full_usage"), False
 
 
-async def execute_history_command(agent: Any, raw: str) -> tuple[str, bool]:
+async def execute_history_command(agent: Any, raw: str, *, language: UiLanguage = "zh") -> tuple[str, bool]:
     """Show or explicitly clear local input history without exposing entries."""
     history = getattr(agent, "input_history", None)
     if history is None:
-        return "输入历史未初始化。", False
+        return translate(language, "ui.command.history_uninitialized"), False
     parts = raw.split()
     sub = parts[1].lower() if len(parts) > 1 else "status"
     if sub in {"status", ""}:
         return history.status(), True
     if sub == "clear":
         count = history.clear(persistent=True)
-        return f"已清理输入历史（{count} 条）。", True
-    return "用法: /history status|clear", False
+        return translate(language, "ui.command.history_cleared", count=count), True
+    return translate(language, "ui.command.history_usage"), False
 
 
 # ---------------------------------------------------------------------------
 # /provider 命令（共享给 inline 与 TUI；确定性实现，确认动作走 --yes）
 # ---------------------------------------------------------------------------
 
-def _provider_service(manager: Any, settings: Any) -> Any:
+def _provider_service(manager: Any, settings: Any, language: UiLanguage = "zh") -> Any:
     from xg.config.provider_service import ProviderConfigService
 
-    return ProviderConfigService(manager, settings)
+    return ProviderConfigService(manager, settings, language=language)
 
 
-def _provider_usage(sub: str) -> str:
+def _provider_usage(sub: str, language: UiLanguage = "zh") -> str:
     usage = {
         "list": "/provider",
         "add": "/provider add <name> <api_base> [--model M] [--label L] [--key K] [--set-base]",
@@ -703,6 +714,17 @@ def _provider_usage(sub: str) -> str:
         "remove": "/provider remove <name> [--yes]",
         "model": "/provider <name> model <model> 或 /provider <name> model rm <model>",
     }
+    if normalize_language(language) == "en":
+        return {
+            "list": "/provider",
+            "add": "/provider add <name> <api_base> [--model M] [--label L] [--key K] [--set-base]",
+            "show": "/provider show <name>",
+            "set": "/provider set <name> <field> <value> (field: api_base|default_model|display_name)",
+            "switch": "/provider switch <name> [model]",
+            "key": "/provider key <name> <KEY> [--yes]",
+            "remove": "/provider remove <name> [--yes]",
+            "model": "/provider <name> model <model> or /provider <name> model rm <model>",
+        }.get(sub, "/provider [list|add|show|set|switch|key|remove|<name> model ...]")
     return usage.get(sub, "/provider [list|add|show|set|switch|key|remove|<name> model ...]")
 
 
@@ -735,7 +757,7 @@ def _consume_flags(tokens: list[str]) -> tuple[dict[str, str], list[str]]:
     return flags, positional
 
 
-def execute_provider_command(manager: Any, settings: Any, raw: str) -> tuple[str, bool]:
+def execute_provider_command(manager: Any, settings: Any, raw: str, *, language: UiLanguage = "zh") -> tuple[str, bool]:
     """执行 /provider 子命令，返回 (message, ok)。
 
     首个参数优先按子命令解析（list/add/show/set/switch/key）；否则若它
@@ -743,15 +765,16 @@ def execute_provider_command(manager: Any, settings: Any, raw: str) -> tuple[str
     """
     parts = raw.split()
     sub = parts[1].lower() if len(parts) > 1 else "list"
-    service = _provider_service(manager, settings)
+    language = normalize_language(language)
+    service = _provider_service(manager, settings, language)
 
     if sub in {"list", ""}:
-        return _render_provider_list(service), True
+        return _render_provider_list(service, language), True
 
     if sub == "add":
         flags, positional = _consume_flags(parts[2:])
         if len(positional) < 2:
-            return _provider_usage("add"), False
+            return _provider_usage("add", language), False
         name, api_base = positional[0], positional[1]
         result = service.add(
             name,
@@ -770,11 +793,11 @@ def execute_provider_command(manager: Any, settings: Any, raw: str) -> tuple[str
     if sub == "show":
         flags, positional = _consume_flags(parts[2:])
         if not positional:
-            return _provider_usage("show"), False
+            return _provider_usage("show", language), False
         row = service.get(positional[0])
         if row is None:
-            return f"未知 provider: {positional[0]}", False
-        models = "、".join(row["models"]) if row["models"] else "（无，可用 /provider <name> model <model> 添加）"
+            return translate(language, "ui.provider.unknown", name=positional[0]), False
+        models = ", ".join(row["models"]) if row["models"] else ("(none; use /provider <name> model <model> to add)" if language == "en" else "（无，可用 /provider <name> model <model> 添加）")
         return "\n".join(
             [
                 f"name:        {row['name']}",
@@ -783,16 +806,16 @@ def execute_provider_command(manager: Any, settings: Any, raw: str) -> tuple[str
                 f"default:     {row['default_model']}",
                 f"models:      {models}",
                 f"api_key:     {row['api_key_masked']}（config.json）",
-                f"key 已配置:    {'✓' if row['has_key'] else '✗'}",
-                f"is_base:     {'✓' if row['is_base'] else '✗'}",
-                f"来源层:       {row['layer']}",
+                f"key configured: {'✓' if row['has_key'] else '✗'}" if language == "en" else f"key 已配置:    {'✓' if row['has_key'] else '✗'}",
+                f"is_base:       {'✓' if row['is_base'] else '✗'}",
+                f"config layer:  {row['layer']}" if language == "en" else f"来源层:       {row['layer']}",
             ]
         ), True
 
     if sub == "switch":
         flags, positional = _consume_flags(parts[2:])
         if not positional:
-            return _provider_usage("switch"), False
+            return _provider_usage("switch", language), False
         model = positional[1] if len(positional) > 1 else None
         result = service.switch(positional[0], model)
         return result.message, result.ok
@@ -800,7 +823,7 @@ def execute_provider_command(manager: Any, settings: Any, raw: str) -> tuple[str
     if sub == "set":
         flags, positional = _consume_flags(parts[2:])
         if len(positional) < 3:
-            return _provider_usage("set"), False
+            return _provider_usage("set", language), False
         name, field, value = positional[0], positional[1], positional[2]
         result = service.update(name, {field: value})
         return result.message, result.ok
@@ -808,14 +831,14 @@ def execute_provider_command(manager: Any, settings: Any, raw: str) -> tuple[str
     if sub == "key":
         flags, positional = _consume_flags(parts[2:])
         if len(positional) < 2:
-            return _provider_usage("key"), False
+            return _provider_usage("key", language), False
         result = service.set_api_key(positional[0], positional[1], yes="--yes" in flags)
         return result.message, result.ok
 
     if sub == "remove":
         flags, positional = _consume_flags(parts[2:])
         if not positional:
-            return _provider_usage("remove"), False
+            return _provider_usage("remove", language), False
         result = service.remove(positional[0], yes="--yes" in flags)
         return result.message, result.ok
 
@@ -823,22 +846,23 @@ def execute_provider_command(manager: Any, settings: Any, raw: str) -> tuple[str
     if len(parts) >= 3 and parts[2].lower() == "model":
         tokens = [t.lower() if t.lower() in ("model", "rm") else t for t in parts[3:]]
         if not tokens:
-            return _provider_usage("model"), False
+            return _provider_usage("model", language), False
         if tokens[0] == "rm":
             if len(tokens) < 2:
-                return _provider_usage("model"), False
+                return _provider_usage("model", language), False
             result = service.remove_model(parts[1], tokens[1])
             return result.message, result.ok
         result = service.add_model(parts[1], tokens[0])
         return result.message, result.ok
 
-    return _provider_usage(""), False
+    return _provider_usage("", language), False
 
 
-def _render_provider_list(service: Any) -> str:
+def _render_provider_list(service: Any, language: UiLanguage = "zh") -> str:
+    language = normalize_language(language)
     rows = service.list()
     if not rows:
-        return "尚未配置任何 provider。\n用法: /provider add <name> <api_base> --model <M> [--key K] [--set-base]"
+        return translate(language, "ui.provider.empty")
     lines = ["NAME              DISPLAY        DEFAULT_MODEL   MODELS                                              KEY  BASE  LAYER"]
     for row in rows:
         models = "、".join(row["models"]) if row["models"] else "-"
@@ -854,36 +878,37 @@ def _render_provider_list(service: Any) -> str:
     return "\n".join(lines)
 
 
-def execute_tier_command(manager: Any, settings: Any, raw: str) -> tuple[str, bool]:
+def execute_tier_command(manager: Any, settings: Any, raw: str, *, language: UiLanguage = "zh") -> tuple[str, bool]:
     """执行 /tier 子命令（list/show/set/clear）。"""
     from xg.config.smart_router_service import (  # 延迟导入避免环
         SmartRouterConfigService,
         _SMART_ROUTER_TIERS,
     )
 
+    language = normalize_language(language)
     parts = raw.split()
     sub = parts[1].lower() if len(parts) > 1 else "list"
-    service = SmartRouterConfigService(manager, settings)
+    service = SmartRouterConfigService(manager, settings, language=normalize_language(language))
 
     if sub in {"list", ""}:
         rows = service.list_tiers()
-        lines = ["TIER       PROVIDER       MODEL"] 
+        lines = ["TIER       PROVIDER       MODEL"]
         for row in rows:
             mark = "*" if row["configured"] else "-"
-            provider = row["provider"] or "（回落 active）"
+            provider = row["provider"] or ("(fallback active)" if language == "en" else "（回落 active）")
             model = row["model"] or ""
             lines.append(f"{mark} {row['name']:<9}{provider:<14}{model}")
-        lines.append("*=显式配置  -=未配回落手动 active")
+        lines.append(translate(language, "ui.tier.list_mark"))
         return "\n".join(lines), True
 
     if sub == "show":
         if len(parts) < 3:
-            return "/tier show <tier>  （tier: " + _tiers_join() + "）", False
+            return ("/tier show <tier> (tiers: " + _tiers_join() + ")" if language == "en" else "/tier show <tier>  （tier: " + _tiers_join() + "）"), False
         result, row = service.get_tier(parts[2])
         if not result.ok:
             return result.message, False
-        state = "已配置" if row["provider"] else "未配置（回落 active）"
-        return (f"tier:    {row['name']}\nprovider: {row['provider'] or '-'}\nmodel:    {row['model'] or '-'}\n状态:     {state}", True)
+        state = translate(language, "ui.tier.configured") if row["provider"] else translate(language, "ui.tier.fallback")
+        return translate(language, "ui.tier.show", name=row["name"], provider=row["provider"] or "-", model=row["model"] or "-", status=state), True
 
     if sub == "set":
         if len(parts) < 4:
@@ -917,63 +942,68 @@ def _tier_usage(sub: str) -> str:
     return usage.get(sub, "/tier [list|show|set|clear]")
 
 
-def execute_path_command(raw: str) -> tuple[str, bool]:
+def execute_path_command(raw: str, *, language: UiLanguage = "zh") -> tuple[str, bool]:
     """执行 /path：status 查看命令目录 PATH 状态；add 立即执行自愈（PATH 或启动器）。"""
     from xg.cli import path_heal
 
     parts = raw.split()
     sub = parts[1].lower() if len(parts) > 1 else "status"
+    language = normalize_language(language)
     status = path_heal.path_status()
     scripts = status["scripts_dir"]
 
     if sub in {"status", ""}:
         if not scripts:
-            return "未找到命令 scripts 目录（当前 Python 环境异常）。", False
+            return translate(language, "ui.path.not_found"), False
         lines = [
-            "PATH 状态",
-            f"命令目录:   {scripts}",
-            f"命令文件:   {status['command_file'] or '（未生成，请先 pip install xg-cli）'}",
-            f"启动器:     {status['shim_file'] or '（未生成，用 /path add 配置）'}",
-            f"当前会话:   {'已在 PATH 中' if status['in_current_path'] else '不在 PATH 中'}",
-            f"持久 PATH:  {'已写入' if status['in_persisted_path'] else '未写入（用 /path add 配置）'}",
-            f"自动自愈:   {'关闭（XG_AUTO_PATH=0）' if status['auto_path_disabled'] else '开启'}",
+            translate(language, "ui.path.status_title"),
+            translate(language, "ui.path.scripts_dir", value=scripts),
+            translate(language, "ui.path.command_file", value=status['command_file'] or ("(not generated; run pip install xg-cli first)" if language == "en" else "（未生成，请先 pip install xg-cli）")),
+            translate(language, "ui.path.shim_file", value=status['shim_file'] or ("(not generated; use /path add)" if language == "en" else "（未生成，用 /path add 配置）")),
+            translate(language, "ui.path.current", value=translate(language, "ui.path.in_path" if status['in_current_path'] else "ui.path.not_in_path")),
+            translate(language, "ui.path.persisted", value=translate(language, "ui.path.written" if status['in_persisted_path'] else "ui.path.not_written")),
+            translate(language, "ui.path.auto", value=translate(language, "ui.path.auto_off" if status['auto_path_disabled'] else "ui.path.auto_on")),
         ]
         if not status["command_file"] and not status["shim_file"]:
             if status["store_python"]:
                 lines.append(
-                    "提示：微软商店版 Python 不生成命令入口，/path add 会改用启动器（shim）方案。"
+                    translate(language, "ui.path.store_hint")
                 )
             else:
-                lines.append("提示：目录里没有 xg-cli 可执行文件时，/path add 会改用启动器（shim）方案。")
+                lines.append(translate(language, "ui.path.shim_hint"))
         return "\n".join(lines), True
 
     if sub == "add":
         if status["auto_path_disabled"]:
-            return "自动 PATH 已被 XG_AUTO_PATH=0 关闭，如需配置请移除该环境变量。", False
+            return translate(language, "ui.path.disabled"), False
         if not scripts:
-            return "未找到命令 scripts 目录，无法配置 PATH。", False
+            return translate(language, "ui.path.not_configured"), False
         if status["in_persisted_path"] and status["command_file"]:
-            return f"持久 PATH 已包含命令目录，无需重复配置：{scripts}", True
+            return translate(language, "ui.path.already", path=scripts), True
         if path_heal.ensure_on_path():
             after = path_heal.path_status()
             if after["command_file"] and after["in_persisted_path"]:
                 return (
-                    f"已将命令目录写入持久 PATH：{scripts}\n请重开一个终端后直接运行 xg-cli。"
+                    translate(language, "ui.path.added", path=scripts)
                 ), True
             if after["shim_file"]:
                 return (
-                    f"已生成启动器：{after['shim_file']}\n请重开一个终端后直接运行 xg-cli。"
+                    translate(language, "ui.path.shim_added", path=after['shim_file'])
                 ), True
-            return "已配置完成，请重开一个终端后直接运行 xg-cli。", True
+            return translate(language, "ui.path.completed"), True
         return (
-            "写入失败（可能权限不足）。可手动把上面的命令目录加入用户 PATH，"
-            "或改用 tools/install.ps1 / install.sh 安装器。"
+            translate(language, "ui.path.failed")
         ), False
 
-    return "/path [add]  （不带参数查看状态）", False
+    return translate(language, "ui.path.usage"), False
 
 
-async def execute_train_command(raw: str, log_sink: callable | None = None) -> CommandResult:
+async def execute_train_command(
+    raw: str,
+    log_sink: callable | None = None,
+    *,
+    language: UiLanguage = "zh",
+) -> CommandResult:
     """执行 /train：不带 --yes 只返回确认提示；带 --yes 才 spawn 训练并流式上报日志。
 
     log_sink 由 TUI 提供，逐行即时上屏；缺失时日志合并进返回的 message。
@@ -986,21 +1016,21 @@ async def execute_train_command(raw: str, log_sink: callable | None = None) -> C
         run_training_async,
     )
 
-    plan, err = parse_train_command(raw)
+    plan, err = parse_train_command(raw, language=language)
     if err:
         return CommandResult(ok=False, message=err)
-    dep_err = check_train_deps()
+    dep_err = check_train_deps(language=language)
     if dep_err:
         return CommandResult(ok=False, message=dep_err)
     if not plan.overwrite:
-        return CommandResult(ok=False, message=confirmation_message(plan))
+        return CommandResult(ok=False, message=confirmation_message(plan, language=language))
 
     ok, lines = await run_training_async(plan, log_sink)
     # log_sink 存在时行日志已逐行实时上屏，这里不再重复，只给简短收尾。
     if ok:
         return CommandResult(
             ok=True,
-            message="训练完成，产物已写入。" if log_sink else ("\n".join(lines[-3:]) or "训练完成。"),
+            message=translate(language, "ui.command.train_done") if log_sink else ("\n".join(lines[-3:]) or translate(language, "ui.command.train_done")),
         )
-    tail = "\n".join(lines[-6:]) or "训练失败（无输出）"
-    return CommandResult(ok=False, message="训练失败" if log_sink else f"训练失败：\n{tail}")
+    tail = "\n".join(lines[-6:]) or ("Training failed (no output)" if language == "en" else "训练失败（无输出）")
+    return CommandResult(ok=False, message=translate(language, "ui.command.train_failed") if log_sink else f"{translate(language, 'ui.command.train_failed')}：\n{tail}")

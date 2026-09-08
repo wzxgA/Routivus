@@ -17,6 +17,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from xg.tui.i18n import UiLanguage, normalize_language, translate
+
 _TRAIN_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "train_router.py"
 _TRAIN_DEPS = ("lightgbm", "sklearn", "joblib", "numpy")
 
@@ -48,18 +50,14 @@ def _default_semantic_onnx() -> Path | None:
     return bundled if bundled.exists() else None
 
 
-def check_train_deps() -> str | None:
+def check_train_deps(language: UiLanguage = "zh") -> str | None:
     """缺训练依赖时返回安装提示；全部可用返回 None。
 
     注意：语义编码器（bge）非必需——缺失时 train_router 自动回退 TF-IDF 特征。
     """
     missing = [m for m in _TRAIN_DEPS if _import_safe(m) is False]
     if missing:
-        return (
-            "缺少训练依赖："
-            + ", ".join(missing)
-            + "。请先 `pip install -e .` 安装核心依赖后再试。"
-        )
+        return translate(language, "ui.train.missing_deps", deps=", ".join(missing))
     return None
 
 
@@ -71,7 +69,7 @@ def _import_safe(mod: str) -> bool:
         return False
 
 
-def parse_train_command(raw: str) -> tuple[TrainPlan, str | None]:
+def parse_train_command(raw: str, language: UiLanguage = "zh") -> tuple[TrainPlan, str | None]:
     """解析 `/train [...]` 参数，返回 (plan, error)。错误时 plan 不保证完整。"""
     plan = TrainPlan()
     tokens = raw.split(maxsplit=1)[1].split() if len(raw.split(maxsplit=1)) > 1 else []
@@ -87,17 +85,17 @@ def parse_train_command(raw: str) -> tuple[TrainPlan, str | None]:
         elif t in ("--output", "--out", "-o"):
             i += 1
             if i >= len(tokens):
-                return plan, "--output 需要一个路径参数"
+                return plan, translate(language, "ui.train.output_required")
             plan.output = tokens[i]
         elif t.startswith("-"):
-            return plan, f"未知参数: {t}"
+            return plan, translate(language, "ui.train.unknown_option", option=t)
         else:
             if plan.dataset is not None:
-                return plan, f"多余参数: {t}"
+                return plan, translate(language, "ui.train.extra_arg", arg=t)
             plan.dataset = t
         i += 1
     if plan.dataset and plan.feedback_only:
-        return plan, "不能同时指定数据集与 --feedback-only"
+        return plan, translate(language, "ui.train.conflict")
     if not plan.dataset and not plan.feedback_only:
         plan.feedback_only = True  # 缺省：仅用 feedback.log
     if plan.output is not None:
@@ -105,19 +103,13 @@ def parse_train_command(raw: str) -> tuple[TrainPlan, str | None]:
     return plan, None
 
 
-def confirmation_message(plan: TrainPlan) -> str:
+def confirmation_message(plan: TrainPlan, language: UiLanguage = "zh") -> str:
     """未带 --yes 时返回的确认提示：告知将如何训练、需加 --yes 才执行。"""
-    src = "反馈日志 feedback.log" if plan.feedback_only else f"数据集 {plan.dataset}"
+    language = normalize_language(language)
+    src = translate(language, "ui.train.feedback") if plan.feedback_only else translate(language, "ui.train.dataset", name=plan.dataset)
     out = plan.output or str(_default_output())
-    sem_note = "带语义列（默认，自动探测语义编码器）" if plan.semantic else "纯 TF-IDF（--no-semantic）"
-    return (
-        "确认将运行 SmartRouter 训练：\n"
-        f"  样本来源: {src}\n"
-        f"  产物路径: {out}\n"
-        f"  语义特征: {sem_note}\n"
-        "完整数据集 / feedback 样本会被去噪后用于训练；训练为手动触发，"
-        "不会自动运行。确认执行请在命令末尾加 --yes。"
-    )
+    sem_note = translate(language, "ui.train.semantic" if plan.semantic else "ui.train.no_semantic")
+    return translate(language, "ui.train.confirm", source=src, output=out, semantic=sem_note)
 
 
 def build_argv(plan: TrainPlan) -> list[str]:

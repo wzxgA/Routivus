@@ -24,6 +24,7 @@ from xg.tui.state import (
     TuiState,
     TranscriptItem,
 )
+from xg.tui.i18n import translate
 
 
 def _copy(state: TuiState) -> TuiState:
@@ -434,13 +435,13 @@ def reduce_agent_event(
         _append(out, TranscriptItem(
             id=f"retry-{len(out.transcript)}", kind="system",
             text=(
-                f"{event.text or 'API 临时故障，正在重试'} "
+                f"{event.text or translate(state.ui_language, 'ui.error.retry')} "
                 f"({event.retry_attempts}/{event.retry_max_attempts})，"
                 f"等待 {event.retry_delay or 0:.1f}s"
             ),
             turn_id=turn_id, trace_id=trace_id,
         ))
-        out.notification = event.text or "API 临时故障，正在重试"
+        out.notification = event.text or translate(state.ui_language, "ui.error.retry")
         out.notification_level = "warning"
         return out
     if kind == "thinking":
@@ -485,7 +486,11 @@ def reduce_agent_event(
         out.pending_ask = event.ask
         _append(out, TranscriptItem(
             id=f"ask-{event.ask.id}", kind="system",
-            text=f"[需要你确认 @{event.ask.origin}]" if event.ask.origin else "[需要你确认]",
+            text=(
+                f"[{translate(state.ui_language, 'ui.ask.confirm', source=translate(state.ui_language, 'ui.ask.source', origin=event.ask.origin))}]"
+                if event.ask.origin
+                else f"[{translate(state.ui_language, 'ui.ask.confirm', source='')}]"
+            ),
             turn_id=turn_id, trace_id=trace_id,
         ))
         return out
@@ -532,13 +537,13 @@ def reduce_agent_event(
         return out
     if kind in ("context_compacted", "context_warning"):
         if kind == "context_compacted":
-            _update_progress(out, turn_id, "正在整理上下文")
+            _update_progress(out, turn_id, translate(state.ui_language, "ui.context.processing"))
         _append(out, TranscriptItem(id=f"context-{len(out.transcript)}", kind="context", text=event.text, turn_id=turn_id))
         out.notification = event.text
         out.notification_level = "warning" if kind == "context_warning" else "info"
         return out
     if kind in ("error", "context_overflow", "budget_exceeded"):
-        text = event.text or "任务执行失败"
+        text = event.text or translate(state.ui_language, "ui.error.default")
         _append(out, TranscriptItem(id=f"error-{len(out.transcript)}", kind="error", text=text, turn_id=turn_id))
         out.phase = "error"
         out.notification = text
@@ -559,7 +564,7 @@ def reduce_agent_event(
         out.pending_approval = None
         out.pending_ask = None
         if kind == "step_limit":
-            out.notification = "已达到本轮步骤上限"
+            out.notification = translate(state.ui_language, "ui.error.step_limit")
             out.notification_level = "warning"
         return out
     return out
@@ -804,9 +809,8 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
         _append(out, TranscriptItem(
             id=f"team-task-retry-{len(out.transcript)}", kind="system",
             text=(
-                f"[{event.role or event.task.owner_role}/{event.task.id}] 恢复执行："
-                f"第 {event.attempt} 次，预算 {event.retry_steps} 步；"
-                f"已保留 Artifact {len(event.preserved_artifacts)} 个"
+                f"[{event.role or event.task.owner_role}/{event.task.id}] "
+                f"{translate(state.ui_language, 'ui.team.retry', attempt=event.attempt, steps=event.retry_steps, artifacts=len(event.preserved_artifacts))}"
             ),
             turn_id=turn_id, trace_id=f"{turn_id}:{event.task.id}:retry",
         ))
@@ -838,13 +842,15 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
         if kind == "task_started":
             _append(out, TranscriptItem(
                 id=f"team-task-{len(out.transcript)}", kind="system",
-                text=f"[{event.role or event.task.owner_role}/{event.task.id}] 开始：{event.task.title}",
+                text=f"[{event.role or event.task.owner_role}/{event.task.id}] "
+                f"{translate(state.ui_language, 'ui.team.task_started')}: {event.task.title}",
                 turn_id=turn_id, trace_id=f"{turn_id}:{event.task.id}",
             ))
         elif kind == "task_blocked":
             _append(out, TranscriptItem(
                 id=f"team-task-blocked-{len(out.transcript)}", kind="system",
-                text=f"[{event.role or event.task.owner_role}/{event.task.id}] 阻塞：{event.message or event.task.result}",
+                text=f"[{event.role or event.task.owner_role}/{event.task.id}] "
+                f"{translate(state.ui_language, 'ui.team.task_blocked')}: {event.message or event.task.result}",
                 turn_id=turn_id, trace_id=f"{turn_id}:{event.task.id}",
                 status="cancelled",
             ))
@@ -862,7 +868,7 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
             attempt=event.attempt or group.attempt,
             effective_steps=event.effective_steps or group.effective_steps,
             failure_category=event.failure_category or group.failure_category,
-            latest_summary="Agent 已启动",
+            latest_summary=translate(state.ui_language, "ui.team.agent_started"),
         )
         return out
     if kind == "subtask_event" and event.agent_event:
@@ -874,7 +880,7 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
         out.agent_groups[group_id] = replace(
             group,
             status="done",
-            latest_summary=event.message[:240] or "Agent 已完成",
+            latest_summary=event.message[:240] or translate(state.ui_language, "ui.team.agent_done"),
         )
         return out
     if kind == "agent_failed" and event.task:
@@ -885,7 +891,7 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
             attempt=event.attempt or group.attempt,
             effective_steps=event.effective_steps or group.effective_steps,
             failure_category=event.failure_category or group.failure_category,
-            latest_error=event.message[:240] or "Agent 执行失败",
+            latest_error=event.message[:240] or translate(state.ui_language, "ui.team.agent_failed"),
         )
         return out
     if kind == "artifact_produced" and event.artifact:
@@ -909,11 +915,11 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
             out, event, group_id=f"{event.team_id}:reviewer:{event.task.id}", role="reviewer"
         )
         out.agent_groups[group_id] = replace(
-            group, status="reviewing", latest_summary="正在审查任务证据"
+            group, status="reviewing", latest_summary=translate(state.ui_language, "ui.team.reviewing")
         )
         return out
     if kind == "task_review_done" and event.task and event.review:
-        detail = "；".join(event.review.findings) or "验收通过"
+        detail = "；".join(event.review.findings) or translate(state.ui_language, "ui.team.accepted")
         group, group_id = _ensure_agent_group(
             out, event, group_id=f"{event.team_id}:reviewer:{event.task.id}", role="reviewer"
         )
@@ -943,7 +949,7 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
         group, group_id = _ensure_agent_group(
             out, event, group_id=f"{event.team_id}:reviewer:{event.task.id}", role="reviewer"
         )
-        summary = event.message[:240] or "Reviewer 输出异常"
+        summary = event.message[:240] or translate(state.ui_language, "ui.team.reviewer_invalid")
         out.agent_groups[group_id] = replace(
             group,
             status="reviewing",
@@ -986,7 +992,7 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
             group,
             status="repairing",
             repair_attempt=repair_attempt,
-            latest_summary=event.message[:240] or "等待 Repairer 启动",
+            latest_summary=event.message[:240] or translate(state.ui_language, "ui.team.repairer_waiting"),
         )
         return out
     if kind == "team_resume_requested":

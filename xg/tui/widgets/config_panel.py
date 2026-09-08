@@ -18,43 +18,45 @@ from xg.config.provider_service import ProviderConfigService
 from xg.config.smart_router_service import SmartRouterConfigService
 from xg.tui.widgets.provider_form import ProviderForm
 from xg.tui.widgets.smart_router_form import SmartRouterForm
+from xg.tui.i18n import UiLanguage, normalize_language, translate
 
 
 class ConfigScreen(ModalScreen[None]):
-    BINDINGS = [("escape", "close", "关闭")]
+    BINDINGS = [("escape", "close", "Close")]
 
     def __init__(self, manager, settings=None) -> None:
         super().__init__()
         self.manager = manager
         self.settings = settings
-        self.provider_service = ProviderConfigService(manager, settings)
-        self.router_service = SmartRouterConfigService(manager, settings)
+        self.language: UiLanguage = normalize_language(getattr(settings, "ui_language", "en"))
+        self.provider_service = ProviderConfigService(manager, settings, language=self.language)
+        self.router_service = SmartRouterConfigService(manager, settings, language=self.language)
         self._rows: list[dict] = []
         self._sel = 0
 
     def compose(self) -> ComposeResult:
         with Vertical(id="config-dialog"):
-            yield Static("配置中心", id="cfg-title")
+            yield Static(translate(self.language, "ui.config.title"), id="cfg-title")
             with Vertical(id="cfg-body"):
                 with Vertical(id="provider-section"):
-                    yield Static("Provider 管理（或 /provider 命令）", id="cfg-sec-title")
-                    yield Static("↑↓ 选中行 · 操作作用于当前选中", id="provider-hint")
+                    yield Static(translate(self.language, "ui.config.provider_section"), id="cfg-sec-title")
+                    yield Static(translate(self.language, "ui.config.provider_hint"), id="provider-hint")
                     yield OptionList(id="provider-list")
                     yield Static("", id="provider-detail")
                     with Horizontal(id="provider-actions"):
-                        yield Button("新增", id="add", variant="primary")
-                        yield Button("编辑", id="edit")
-                        yield Button("设为base", id="switch")
-                        yield Button("删除", id="remove", variant="error")
-                        yield Button("写Key", id="key")
+                        yield Button(translate(self.language, "ui.config.add"), id="add", variant="primary")
+                        yield Button(translate(self.language, "ui.config.edit"), id="edit")
+                        yield Button(translate(self.language, "ui.config.set_base"), id="switch")
+                        yield Button(translate(self.language, "ui.config.remove"), id="remove", variant="error")
+                        yield Button(translate(self.language, "ui.config.write_key"), id="key")
                 with Vertical(id="sr-section"):
-                    yield Static("SmartRouter（或 /tier 命令）", id="cfg-sec-title")
+                    yield Static(translate(self.language, "ui.config.router_section"), id="cfg-sec-title")
                     yield Static(self._render_router(), id="sr-body")
                     with Horizontal(id="sr-actions"):
-                        yield Button("开关", id="toggle")
-                        yield Button("编辑档位", id="tier", variant="primary")
-                        yield Button("刷新", id="refresh")
-                        yield Button("关闭", id="close")
+                        yield Button(translate(self.language, "ui.config.toggle"), id="toggle")
+                        yield Button(translate(self.language, "ui.config.edit_tier"), id="tier", variant="primary")
+                        yield Button(translate(self.language, "ui.config.refresh"), id="refresh")
+                        yield Button(translate(self.language, "ui.config.close"), id="close")
 
     def _provider_label(self, row: dict) -> str:
         return (
@@ -89,28 +91,31 @@ class ConfigScreen(ModalScreen[None]):
     def _update_detail(self) -> None:
         """展示当前选中 provider 的详情（等价 /provider show，key 脱敏）。"""
         if not self._rows:
-            detail = "（无 provider，请新增）"
+            detail = translate(self.language, "ui.config.no_provider")
         else:
             name = self._rows[self._sel]["name"]
             info = self.provider_service.get(name)
             if info is None:
-                detail = f"{name}: 未知 provider"
+                detail = translate(self.language, "ui.config.unknown_provider", name=name)
             else:
                 lines = [
-                    f"{info['name']}{'  ●base' if info['is_base'] else ''}  [{info['layer']} 层]",
+                    f"{info['name']}{'  ●base' if info['is_base'] else ''}  [{info['layer']} "
+                    f"{translate(self.language, 'ui.config.layer')}]",
                     f"api_base     : {info['api_base']}",
                     f"default_model: {info['default_model']}",
                 ]
                 if info.get("display_name"):
                     lines.insert(1, f"display_name : {info['display_name']}")
                 models = info.get("models") or []
-                lines.append(f"models({len(models)})    : {', '.join(models) if models else '（空）'}")
+                lines.append(f"models({len(models)})    : {', '.join(models) if models else translate(self.language, 'ui.config.empty')}")
                 lines.append(
-                    f"api_key      : {info['api_key_masked'] if info['has_key'] else '（未配置）'}"
+                    f"api_key      : {info['api_key_masked'] if info['has_key'] else translate(self.language, 'ui.config.not_configured')}"
                 )
                 refs = self.provider_service.referenced_by(name)
                 if refs:
-                    lines.append(f"SmartRouter 引用: {', '.join(refs)}")
+                    lines.append(
+                        f"{translate(self.language, 'ui.config.references')}: {', '.join(refs)}"
+                    )
                 detail = "\n".join(lines)
         self.query_one("#provider-detail", Static).update(detail)
 
@@ -118,13 +123,13 @@ class ConfigScreen(ModalScreen[None]):
         cfg = self.router_service.get()
         enabled = bool(cfg.get("enabled", False))
         rows = self.router_service.list_tiers()
-        lines = [f"SmartRouter: {'开启' if enabled else '关闭'}",
+        lines = [translate(self.language, "ui.config.enabled" if enabled else "ui.config.disabled"),
                  "TIER       PROVIDER       MODEL"]
         for row in rows:
             if row["configured"]:
                 lines.append(f"{row['name']:<10}{row['provider']:<14}{row['model']}")
             else:
-                lines.append(f"{row['name']:<10}{'（回落 active）':<14}-")
+                lines.append(f"{row['name']:<10}{translate(self.language, 'ui.config.fallback_active'):<14}-")
         return "\n".join(lines)
 
     def _refresh(self) -> None:
@@ -151,7 +156,7 @@ class ConfigScreen(ModalScreen[None]):
             return
         if bid == "add":
             return self.app.push_screen(
-                ProviderForm(self.provider_service, mode="add"),
+                ProviderForm(self.provider_service, mode="add", language=self.language),
                 callback=self._after_form,
             )
         if bid == "toggle":
@@ -163,14 +168,14 @@ class ConfigScreen(ModalScreen[None]):
             return
         if bid == "tier":
             return self.app.push_screen(
-                SmartRouterForm(self.router_service), callback=self._after_form
+                SmartRouterForm(self.router_service, language=self.language), callback=self._after_form
             )
         if not self._rows:
-            self.notify("请先新增 provider", severity="warning")
+            self.notify(translate(self.language, "ui.config.no_provider"), severity="warning")
             return
         if bid == "edit":
             return self.app.push_screen(
-                ProviderForm(self.provider_service, name=self._rows[self._sel]["name"], mode="edit"),
+                ProviderForm(self.provider_service, name=self._rows[self._sel]["name"], mode="edit", language=self.language),
                 callback=self._after_form,
             )
         if bid == "switch":
@@ -184,7 +189,7 @@ class ConfigScreen(ModalScreen[None]):
             return
         if bid == "key":
             return self.app.push_screen(
-                ProviderForm(self.provider_service, name=self._rows[self._sel]["name"], mode="key"),
+                ProviderForm(self.provider_service, name=self._rows[self._sel]["name"], mode="key", language=self.language),
                 callback=self._after_form,
             )
 

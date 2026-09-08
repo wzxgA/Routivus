@@ -10,6 +10,7 @@ from textual.widgets import Button, Static
 
 from xg.ask.models import AskField, AskRequest
 from xg.tui.messages import AskOptionSelected
+from xg.tui.i18n import UiLanguage, normalize_language, translate
 
 
 class AskOptionButton(Button):
@@ -50,6 +51,7 @@ class AskPanel(Vertical):
     def __init__(self, **kwargs) -> None:
         super().__init__(id="ask-panel", classes="ask-panel", **kwargs)
         self.request: AskRequest | None = None
+        self.language: UiLanguage = "en"
         self._view = AskViewState()
         self._kicker = Static("", id="ask-kicker")
         self._prompt = Static("", id="ask-prompt")
@@ -94,6 +96,10 @@ class AskPanel(Vertical):
         self.display = request is not None
         self._sync_render()
 
+    def set_language(self, language: UiLanguage) -> None:
+        self.language = normalize_language(language)
+        self._sync_render()
+
     def _sync_render(self) -> None:
         request = self.request
         if request is None:
@@ -101,23 +107,21 @@ class AskPanel(Vertical):
             return
 
         self.display = True
-        source = f" · {request.origin}" if request.origin else ""
-        self._kicker.update(f"需要你确认{source}")
+        source = translate(self.language, "ui.ask.source", origin=request.origin) if request.origin else ""
+        self._kicker.update(translate(self.language, "ui.ask.confirm", source=source))
         self._prompt.update(request.prompt)
         self._prompt.display = bool(request.prompt)
 
         field = self.current_field
         if field is None:
-            self._progress.update("补充说明")
-            self._question.update("请补充你的要求")
+            self._progress.update(translate(self.language, "ui.ask.more"))
+            self._question.update(translate(self.language, "ui.ask.question"))
             options: tuple = ()
             allow_custom = True
         else:
             total = len(request.fields)
-            self._progress.update(
-                f"问题 {self._view.field_index + 1} / {total} · {len(field.options)} 个选项"
-            )
-            required = "（必答）" if field.required else ""
+            self._progress.update(translate(self.language, "ui.ask.progress", current=self._view.field_index + 1, total=total, options=len(field.options)))
+            required = translate(self.language, "ui.ask.required") if field.required else ""
             self._question.update(f"{field.question}{required}")
             options = field.options
             allow_custom = field.allow_custom
@@ -142,11 +146,11 @@ class AskPanel(Vertical):
             self._error.display = False
 
         if field is not None and not allow_custom and options:
-            hint = "↑↓/数字选择 · Enter 提交 · 此题只能选择已有选项 · Esc 跳过"
+            hint = translate(self.language, "ui.ask.hint.options_only")
         elif self._view.field_index + 1 < len(request.fields):
-            hint = "↑↓/数字选择 · Enter 下一题 · 输入自定义回答 · Esc 跳过"
+            hint = translate(self.language, "ui.ask.hint.next")
         else:
-            hint = "↑↓/数字选择 · Enter 提交 · 输入自定义回答 · Esc 跳过"
+            hint = translate(self.language, "ui.ask.hint.submit")
         self._hint.update(hint)
 
     def select_option(self, option_index: int) -> bool:
@@ -177,7 +181,7 @@ class AskPanel(Vertical):
         """Consume the current Composer text and advance one field."""
         request = self.request
         if request is None:
-            return AskSubmitResult(request_id="", error="当前没有等待中的询问")
+            return AskSubmitResult(request_id="", error=translate(self.language, "ui.ask.no_pending"))
 
         field = self.current_field
         if field is None:
@@ -195,14 +199,14 @@ class AskPanel(Vertical):
                 value = option.value or option.label
                 self._view.selected_option = int(raw)
             elif not field.allow_custom:
-                return self._reject("此题只能输入选项序号")
+                return self._reject(translate(self.language, "ui.ask.options_only_error"))
             else:
                 value = raw
         elif self._view.selected_option is not None:
             option = field.options[self._view.selected_option - 1]
             value = option.value or option.label
         elif field.required:
-            return self._reject("这是必答项，请选择一个选项或输入回答")
+            return self._reject(translate(self.language, "ui.ask.required_error"))
 
         if value is not None:
             self._view.answers[field.key] = value

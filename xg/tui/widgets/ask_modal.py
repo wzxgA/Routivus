@@ -9,6 +9,7 @@ from textual.widgets import Button, Input, Label, Static
 
 from xg.ask.models import AskOption, AskRequest
 from xg.tui.state import TuiState
+from xg.tui.i18n import UiLanguage, normalize_language, translate
 
 
 class AskModal(ModalScreen[TuiState]):
@@ -24,16 +25,18 @@ class AskModal(ModalScreen[TuiState]):
     Esc 跳过本次询问（fail-closed，不代选默认值）。
     """
 
-    def __init__(self, ask: AskRequest) -> None:
+    def __init__(self, ask: AskRequest, language: UiLanguage = "zh") -> None:
         super().__init__(id="ask-screen")
         self.ask = ask
+        self.language = normalize_language(language)
         # 选项的索引 {field_key: {'opt': index, 'custom': bool}}
         self._selection: dict[str, dict] = {}
         self._focus_index: dict[str, int] = {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="ask-dialog"):
-            title = f"需要你确认（来自 {self.ask.origin}）" if self.ask.origin else "需要你确认"
+            source = translate(self.language, "ui.ask.source", origin=self.ask.origin) if self.ask.origin else ""
+            title = translate(self.language, "ui.ask.confirm", source=source)
             yield Static(title)
             if self.ask.prompt:
                 yield Static(self.ask.prompt)
@@ -42,7 +45,7 @@ class AskModal(ModalScreen[TuiState]):
                 for field in self.ask.fields:
                     options = field.options
                     with Vertical(classes="ask-field"):
-                        required = "（必答）" if field.required else ""
+                        required = translate(self.language, "ui.ask.required") if field.required else ""
                         yield Label(f"Q: {field.question}{required}")
                         if options:
                             for index, option in enumerate(options, start=1):
@@ -52,14 +55,23 @@ class AskModal(ModalScreen[TuiState]):
                                     classes="ask-option",
                                 )
                         custom_input = Input(
-                            placeholder=("输入自定义内容（可选）" if field.allow_custom else "此项不可自定义"),
+                            placeholder=translate(
+                                self.language,
+                                "ui.ask.custom_placeholder" if field.allow_custom else "ui.ask.no_custom_placeholder",
+                            ),
                             id=f"ask-input-{field.key}",
                         )
                         self._field_inputs[field.key] = custom_input
                         yield custom_input
             with Vertical(id="ask-actions"):
-                yield Button("提交 (Enter)", id="ask-confirm", variant="primary")
-                yield Button("跳过 (Esc)", id="ask-skip", variant="error")
+                yield Button(
+                    "Submit (Enter)" if self.language == "en" else "提交 (Enter)",
+                    id="ask-confirm", variant="primary",
+                )
+                yield Button(
+                    "Skip (Esc)" if self.language == "en" else "跳过 (Esc)",
+                    id="ask-skip", variant="error",
+                )
 
     def on_mount(self) -> None:
         # 聚焦第一个可输入框，方便直接键入自定义答案

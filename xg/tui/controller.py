@@ -46,6 +46,7 @@ from xg.tui.state import (
     TranscriptItem,
     UsageSnapshot,
 )
+from xg.tui.i18n import normalize_language, translate
 
 
 StateListener = Callable[[TuiState], None]
@@ -309,6 +310,10 @@ class SessionController:
         self.state = state
         self._publish()
 
+    def _t(self, key: str, **values: object) -> str:
+        """Translate controller-owned UI copy using the live preference."""
+        return translate(normalize_language(self.settings.ui_language), key, **values)
+
     async def _on_mcp_event(self, event) -> None:
         """Expose MCP lifecycle/resource events without coupling MCP to Textual."""
         if self._shutting_down:
@@ -317,13 +322,13 @@ class SessionController:
             self._append_item(TranscriptItem(
                 id=f"mcp-{event.server}-{len(self.state.transcript)}",
                 kind="error",
-                text=f"MCP Server {event.server} 不可用：{event.text}",
+                text=self._t("ui.mcp.server_unavailable", server=event.server, error=event.text),
             ))
         elif event.kind == "mcp_resource_read":
             self._append_item(TranscriptItem(
                 id=f"mcp-resource-{len(self.state.transcript)}",
                 kind="context",
-                text=f"已读取 MCP resource：{event.server}:{event.text}",
+                text=self._t("ui.mcp.resource_read", server=event.server, resource=event.text),
                 collapsible=True,
                 collapsed=True,
             ))
@@ -331,8 +336,10 @@ class SessionController:
             self._set_state(replace(
                 self.state,
                 notification=(
-                    f"MCP Server {event.server} 已连接"
-                    f"（{event.tool_count or 0} tools / {event.resource_count or 0} resources）"
+                    self._t(
+                        "ui.mcp.server_ready", server=event.server,
+                        tools=event.tool_count or 0, resources=event.resource_count or 0,
+                    )
                 ),
                 notification_level="info",
             ))
@@ -341,7 +348,7 @@ class SessionController:
         # The queue worker may be alive while it is starting the next turn;
         # only an active turn itself prevents a new turn from beginning.
         if self._active_task is not None and not self._active_task.done():
-            self._set_state(replace(self.state, notification="当前任务仍在运行，请先取消", notification_level="warning"))
+            self._set_state(replace(self.state, notification=self._t("ui.task.running_cancel"), notification_level="warning"))
             return None
         turn_id = f"turn-{next(self._counter)}"
         self._active_turn_id = turn_id
@@ -373,7 +380,7 @@ class SessionController:
         if len(self._queue) >= MAX_QUEUE_SIZE:
             self._set_state(replace(
                 self.state,
-                notification=f"任务队列已满（最多 {MAX_QUEUE_SIZE} 项），请稍后再试",
+                notification=self._t("ui.queue.full", count=MAX_QUEUE_SIZE),
                 notification_level="warning",
             ))
             return False
@@ -383,7 +390,7 @@ class SessionController:
             kind=self._submission_kind(text),
         )
         self._queue.append(item)
-        self._publish_queue(notification=f"已加入队列 #{item.id.removeprefix('queue-')}")
+        self._publish_queue(notification=self._t("ui.queue.enqueued", id=item.id.removeprefix("queue-")))
         return True
 
     def _ensure_queue_worker(self) -> None:
@@ -397,7 +404,7 @@ class SessionController:
         try:
             while self._queue and not self._shutting_down:
                 submission = self._queue.popleft()
-                self._publish_queue(notification=f"开始执行队列 #{submission.id.removeprefix('queue-')}")
+                self._publish_queue(notification=self._t("ui.queue.started", id=submission.id.removeprefix("queue-")))
                 turn_task = asyncio.create_task(self._execute_one(submission.text))
                 try:
                     await turn_task
@@ -409,7 +416,7 @@ class SessionController:
                 except Exception as exc:
                     self._set_state(replace(
                         self.state,
-                        notification=f"队列任务失败：{exc}",
+                        notification=self._t("ui.queue.failed", error=exc),
                         notification_level="error",
                     ))
         finally:
@@ -571,12 +578,12 @@ class SessionController:
             self._shutting_down = True
             await self.cancel()
             self._queue.clear()
-            self._publish_queue(notification="正在退出，已清理等待队列")
+            self._publish_queue(notification=self._t("ui.queue.exit"))
             return True
         if self.state.phase == "awaiting_plan_review" and not self._is_language_command(text):
             self._set_state(replace(
                 self.state,
-                notification="当前处于计划审阅，请按 Enter 执行、r 重规划或 Esc 取消",
+                notification=self._t("ui.plan.review_notice"),
                 notification_level="info",
             ))
             return False
@@ -585,7 +592,7 @@ class SessionController:
                 return await self._resume_team_command(text)
             self._set_state(replace(
                 self.state,
-                notification="当前 Team 任务等待输入，请使用 /team resume <任务ID> --write-scope <范围>，或 /cancel",
+                notification=self._t("ui.team.waiting_input"),
                 notification_level="info",
             ))
             return False
@@ -630,12 +637,12 @@ class SessionController:
         is_ask = lowered.startswith("/ask")
         goal = text[5:].strip() if (is_plan or is_team or is_ask) else ""
         if (is_plan or is_team or is_ask) and not goal:
-            self._append_system(f"用法: {'/team' if is_team else '/plan' if is_plan else '/ask'} <任务描述>")
+            self._append_system(self._t("ui.plan.usage", command="/team" if is_team else "/plan" if is_plan else "/ask"))
             return True
         if is_plan or is_team:
-            progress_text = "正在生成执行计划"
+            progress_text = self._t("ui.plan.generating")
         else:
-            progress_text = "正在准备响应"
+            progress_text = self._t("ui.response.preparing")
         self._append_item(TranscriptItem(
             id=f"progress-{turn_id}",
             kind="progress",
@@ -660,7 +667,7 @@ class SessionController:
                 await self._run_agent(text, turn_id)
         except asyncio.CancelledError:
             cancelled = finalize_trace(self.state, turn_id, status="cancelled")
-            self._set_state(replace(cancelled, phase="idle", pending_approval=None, pending_plan=None, notification="当前任务已取消"))
+            self._set_state(replace(cancelled, phase="idle", pending_approval=None, pending_plan=None, notification=self._t("ui.task.cancelled")))
             raise
         finally:
             self._remove_progress(turn_id)
@@ -732,28 +739,28 @@ class SessionController:
     async def _resume_team_command(self, text: str) -> bool:
         executor = self._team_executor
         if executor is None:
-            self._set_state(replace(self.state, notification="没有可恢复的 Team 任务", notification_level="warning"))
+            self._set_state(replace(self.state, notification=self._t("ui.team.no_resumable"), notification_level="warning"))
             return False
         try:
             parts = shlex.split(text)
         except ValueError as exc:
-            self._set_state(replace(self.state, notification=f"恢复命令格式错误：{exc}", notification_level="error"))
+            self._set_state(replace(self.state, notification=self._t("ui.team.resume_invalid", error=exc), notification_level="error"))
             return False
         if len(parts) < 5 or parts[0].lower() != "/team" or parts[1].lower() != "resume":
-            self._set_state(replace(self.state, notification="用法：/team resume <任务ID> --write-scope <项目内路径模式>", notification_level="info"))
+            self._set_state(replace(self.state, notification=self._t("ui.team.resume_usage"), notification_level="info"))
             return False
         task_id = parts[2]
         claims: list[ResourceClaim] = []
         index = 3
         while index < len(parts):
             if parts[index] != "--write-scope" or index + 1 >= len(parts):
-                self._set_state(replace(self.state, notification="用法：/team resume <任务ID> --write-scope <项目内路径模式>", notification_level="info"))
+                self._set_state(replace(self.state, notification=self._t("ui.team.resume_usage"), notification_level="info"))
                 return False
             claims.append(ResourceClaim(parts[index + 1], "write"))
             index += 2
         current = asyncio.current_task()
         self._active_task = current
-        self._set_state(replace(self.state, phase="running", notification="正在按确认范围恢复 Team 任务"))
+        self._set_state(replace(self.state, phase="running", notification=self._t("ui.team.resuming")))
         try:
             async for event in executor.resume_task_with_repair_scope(task_id, claims):
                 self._set_state(reduce_team_event(self.state, event, self._active_turn_id))
@@ -775,7 +782,7 @@ class SessionController:
             return False
         if task.resume_count >= self.settings.task_max_resumes:
             self._set_state(replace(
-                self.state, notification=f"该任务已恢复 {task.resume_count} 次，超过上限，请重新发起任务",
+                self.state, notification=self._t("ui.team.resume_limit", count=task.resume_count),
                 notification_level="warning",
             ))
             return True
@@ -831,7 +838,7 @@ class SessionController:
         self._append_item(TranscriptItem(id=f"user-{len(self.state.transcript)}", kind="user", text=instruction, turn_id=turn_id))
         self._append_item(TranscriptItem(
             id=f"progress-{turn_id}", kind="progress",
-            progress_kind="plan", text="正在恢复执行", turn_id=turn_id,
+            progress_kind="plan", text=self._t("ui.team.resume_progress"), turn_id=turn_id,
             trace_id=turn_id, status="running",
         ))
         task.resume_count += 1
@@ -847,7 +854,7 @@ class SessionController:
                     self._set_state(reduce_plan_event(self.state, event, turn_id))
                     self._finalize_task_registry(event, turn_id, task=task)
         except asyncio.CancelledError:
-            self._set_state(replace(self.state, phase="idle", notification="任务已取消"))
+            self._set_state(replace(self.state, phase="idle", notification=self._t("ui.task.cancelled")))
             raise
         finally:
             self._remove_progress(turn_id)
@@ -860,13 +867,13 @@ class SessionController:
     async def _resume_with_scope(self, task: ResumableTask, text: str) -> bool:
         """needs_input 场景：从用户自然语言里提取写入范围，过安全校验后恢复 Repairer（fail-closed）。"""
         if task.kind != "team":
-            self._set_state(replace(self.state, notification="仅 Team 任务需要补充写入范围", notification_level="info"))
+            self._set_state(replace(self.state, notification=self._t("ui.team.scope_only"), notification_level="info"))
             return False
         claims = self._extract_scope_claims(text)
         if not claims:
             self._set_state(replace(
                 self.state,
-                notification="请回复允许修改的项目内路径，例如「继续，允许修改 xg/auth/」；或使用 /team resume <ID> --write-scope <路径>",
+                notification=self._t("ui.team.scope_prompt"),
                 notification_level="warning",
             ))
             return True
@@ -879,11 +886,11 @@ class SessionController:
                     task_id = t.id
                     break
         if not task_id:
-            self._set_state(replace(self.state, notification="当前没有等待写入范围的 Team 任务", notification_level="warning"))
+            self._set_state(replace(self.state, notification=self._t("ui.team.no_scope_waiting"), notification_level="warning"))
             return True
         current = asyncio.current_task()
         self._active_task = current
-        self._set_state(replace(self.state, phase="running", notification="正在校验写入范围并恢复 Team 任务"))
+        self._set_state(replace(self.state, phase="running", notification=self._t("ui.team.validating_scope")))
         try:
             async for event in task.executor.resume_task_with_repair_scope(task_id, claims):  # type: ignore[union-attr]
                 self._set_state(reduce_team_event(self.state, event, self._active_turn_id))
@@ -921,7 +928,7 @@ class SessionController:
         elif kind in ("plan_failed", "team_failed"):
             if entry.turn_id == turn_id:
                 self._append_task_summary(entry, terminal="失败")
-                self._set_state(replace(self.state, notification=f"{event.message}（输入「继续」可从失败处恢复）", notification_level="warning"))
+                self._set_state(replace(self.state, notification=self._t("ui.task.failed_resume", error=event.message), notification_level="warning"))
         elif kind == "cancelled":
             # 用户取消会经 cancel() 清除；此处兜底（系统 fail-closed 取消保留）
             if entry.turn_id == turn_id:
@@ -961,7 +968,7 @@ class SessionController:
             return True
         task = self._active_task
         if task is None or task.done():
-            self._set_state(replace(self.state, notification="当前没有运行中的任务", notification_level="info"))
+            self._set_state(replace(self.state, notification=self._t("ui.task.none_running"), notification_level="info"))
             return False
         if self._approval_future and not self._approval_future.done():
             self._approval_future.set_result(ApprovalDecision(allow=False, reason="user_cancelled"))
@@ -1031,7 +1038,10 @@ class SessionController:
             self.state,
             phase="awaiting_ask",
             pending_ask=ask,
-            notification=("请完成下方确认（Esc 跳过）" if ask.prompt else "请完成下方确认"),
+            notification=self._t(
+                "ui.ask.pending_notice",
+                skip=self._t("ui.ask.skip_hint") if ask.prompt else "",
+            ),
             notification_level="info",
         ))
         try:
@@ -1057,7 +1067,7 @@ class SessionController:
             self.state,
             phase="running",
             pending_ask=None,
-            notification="" if cancelled else "已收到你的确认，继续执行",
+            notification="" if cancelled else self._t("ui.ask.received"),
             notification_level="info",
         ))
         if future is not None and not future.done():
@@ -1158,10 +1168,10 @@ class SessionController:
         is_help = parse_help_command(raw) is not None
         is_language = self._is_language_command(raw)
         if self.busy and self._active_task is not current and not self._is_readonly_mcp_command(raw) and not is_help and not is_language:
-            return CommandResult(ok=False, message="当前任务正在运行，请通过输入提交命令以加入队列")
+            return CommandResult(ok=False, message=self._t("ui.task.queued_busy"))
         if raw.strip().lower() in ("/cancel", "/c"):
             await self.cancel()
-            return CommandResult(ok=True, message="已取消当前任务")
+            return CommandResult(ok=True, message=self._t("ui.task.cancelled"))
         cleared = raw.strip().lower() == "/clear"
         if cleared:
             self.agent.clear()
@@ -1172,32 +1182,32 @@ class SessionController:
             try:
                 draft = await memory.generate_init_draft(self.agent.llm)
             except Exception as exc:
-                return CommandResult(ok=False, message=f"生成 XG.md 失败：{exc}")
+                return CommandResult(ok=False, message=self._t("ui.error.memory_draft", error=exc))
             request = ConfirmationRequest(
                 "init",
-                "写入项目记忆",
-                f"已生成 XG.md 草稿，将写入项目根目录的 XG.md：\n\n{draft}",
+                self._t("ui.memory.write_title"),
+                self._t("ui.memory.draft_ready", draft=draft),
                 draft,
             )
             self._confirmation = request
             self._confirmation_future = asyncio.get_running_loop().create_future()
-            self._set_state(replace(self.state, pending_confirmation=request, notification="请输入 y 确认写入 · n 取消"))
+            self._set_state(replace(self.state, pending_confirmation=request, notification=self._t("ui.memory.confirm_write")))
             return CommandResult(ok=True, open_modal="init")
         if lowered == "/memory clear" and memory is not None:
             try:
                 count = memory.count()
             except Exception as exc:
-                return CommandResult(ok=False, message=f"记忆操作失败：{exc}")
+                return CommandResult(ok=False, message=self._t("ui.memory.operation_failed", error=exc))
             if count == 0:
-                return CommandResult(ok=True, message="当前项目没有长期记忆")
+                return CommandResult(ok=True, message=self._t("ui.memory.no_entries"))
             request = ConfirmationRequest(
                 "memory_clear",
-                "清空长期记忆",
-                f"当前项目有 {count} 条长期记忆。\n清空后不可通过 XG 恢复。",
+                self._t("ui.memory.clear_title"),
+                self._t("ui.memory.clear_body", count=count),
             )
             self._confirmation = request
             self._confirmation_future = asyncio.get_running_loop().create_future()
-            self._set_state(replace(self.state, pending_confirmation=request, notification="请输入 clear 确认清空长期记忆"))
+            self._set_state(replace(self.state, pending_confirmation=request, notification=self._t("ui.memory.confirm_clear")))
             return CommandResult(ok=True, open_modal="memory_clear")
         result = await self.command_service.execute(raw)
         current_usage = self.state.inspector.usage
@@ -1266,18 +1276,18 @@ class SessionController:
         self._confirmation = None
         if request is None:
             return
-        message = "已取消操作"
+        message = self._t("ui.operation.cancelled")
         if confirmed:
             try:
                 memory = self.agent.memory_manager
                 if request.kind == "init":
                     path = memory.write_init_draft(str(request.payload))
-                    message = f"已生成项目记忆：{path.name}"
+                    message = self._t("ui.operation.memory_written", name=path.name)
                 elif request.kind == "memory_clear":
                     removed = memory.clear()
-                    message = f"已清空 {removed} 条长期记忆"
+                    message = self._t("ui.operation.memory_cleared", count=removed)
             except Exception as exc:
-                message = f"操作失败：{exc}"
+                message = self._t("ui.operation.failed", error=exc)
         memory = getattr(self.agent, "memory_manager", None)
         operation = "init" if request.kind == "init" else "clear"
         self._set_state(replace(
@@ -1330,13 +1340,13 @@ class SessionController:
             return
         await mcp_manager.ensure_started()
         for error in mcp_manager.config_errors:
-            self._append_system(f"MCP 配置提示：{error}")
+            self._append_system(self._t("ui.mcp.config_notice", error=error))
         snapshots = mcp_manager.snapshots()
         if snapshots:
             ready = sum(item.status == "ready" for item in snapshots)
             self._set_state(replace(
                 self.state,
-                notification=f"MCP: {ready}/{len(snapshots)} 个 Server 可用",
+                notification=self._t("ui.mcp.status", ready=ready, total=len(snapshots)),
                 notification_level="info" if ready == len(snapshots) else "warning",
             ))
 

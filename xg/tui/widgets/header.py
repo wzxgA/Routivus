@@ -6,6 +6,7 @@ from rich.text import Text
 from textual.widgets import Static
 
 from xg.tui.state import SmartRouterSnapshot, SmartRouterTierSnapshot, TuiState
+from xg.tui.i18n import UiLanguage, normalize_language, translate, ui_status
 
 
 def _compact(value: int) -> str:
@@ -23,15 +24,15 @@ def _watermelon_mark() -> str:
     return "[XG CLI]" if os.environ.get("TERM", "").lower() == "dumb" else "🍉 XG CLI"
 
 
-def _status_label(phase: str) -> str:
+def _status_label(phase: str, language: UiLanguage = "en") -> str:
     return {
-        "idle": "Idle",
-        "running": "Working",
-        "awaiting_approval": "Waiting approval",
-        "awaiting_plan_review": "Plan review",
-        "awaiting_team_input": "Waiting team input",
-        "error": "Error",
-    }.get(phase, phase)
+        "idle": ui_status(language, "idle"),
+        "running": ui_status(language, "working"),
+        "awaiting_approval": translate(language, "status.waiting_approval"),
+        "awaiting_plan_review": ui_status(language, "plan review"),
+        "awaiting_team_input": translate(language, "status.waiting_team_input"),
+        "error": ui_status(language, "error"),
+    }.get(phase, ui_status(language, phase))
 
 
 def _tier_segment(tier: SmartRouterTierSnapshot) -> Text:
@@ -65,7 +66,8 @@ class HeaderBar(Static):
         super().__init__(*args, **kwargs)
 
     def update_state(self, state: TuiState) -> None:
-        status = _status_label(state.phase)
+        language = normalize_language(state.ui_language)
+        status = _status_label(state.phase, language)
         inspector = state.inspector
         usage = inspector.usage
         level = "usage-normal"
@@ -83,9 +85,9 @@ class HeaderBar(Static):
             if available else "-/-"
         )
         percentage = f"{usage.window_ratio * 100:.1f}%" if available else "-"
-        provider_model = f"{inspector.provider}/{inspector.model}".strip("/") or "provider/model unavailable"
+        provider_model = f"{inspector.provider}/{inspector.model}".strip("/") or translate(language, "ui.header.unavailable")
         hitl_enabled = inspector.safety.hitl_enabled if inspector.safety else inspector.hitl_enabled
-        queue = f"  ·  Queue {len(state.queue)}" if state.queue else ""
+        queue = f"  ·  {translate(language, 'ui.header.queue', count=len(state.queue))}" if state.queue else ""
 
         # Textual terminals cannot reliably display an SVG/PNG in the normal
         # text pipeline. The watermelon emoji is the color-capable mark, with
@@ -108,9 +110,9 @@ class HeaderBar(Static):
         status_style = "red" if state.phase == "error" else "yellow" if state.phase != "idle" else "dim"
         text.append(status, style=status_style)
         text.append("  ·  ")
-        text.append(f"Context {context} · {percentage}")
+        text.append(f"{translate(language, 'ui.header.context')} {context} · {percentage}")
         text.append("\n")
-        text.append("HITL ON" if hitl_enabled else "HITL OFF", style="yellow" if not hitl_enabled else "dim")
+        text.append(translate(language, "ui.header.hitl_on" if hitl_enabled else "ui.header.hitl_off"), style="yellow" if not hitl_enabled else "dim")
         text.append(queue, style="cyan")
         # Static.update(Rich Text) needs an active Textual app console in
         # Textual 8.x. Keep standalone render tests and lightweight adapters

@@ -6,16 +6,18 @@ from textual.events import Key
 from textual.widgets import Input
 
 from xg.input_history import InputHistory
+from xg.tui.i18n import UiLanguage, normalize_language, translate
 from xg.tui.widgets.command_suggestions import CommandSuggestions
 
 
 class Composer(Input):
     """Single-line Composer with bounded XG input history navigation."""
 
-    BINDINGS = [("escape", "escape_input", "清除输入或取消当前操作")]
+    BINDINGS = [("escape", "escape_input", "Clear input or cancel current action")]
 
     def __init__(self) -> None:
-        super().__init__(placeholder="输入任务或 /help …", id="composer")
+        super().__init__(placeholder=translate("en", "ui.composer.placeholder"), id="composer")
+        self.language: UiLanguage = "en"
         self.suggestions_enabled = True
         self.input_history: InputHistory | None = None
         self.ask_request = None
@@ -23,6 +25,13 @@ class Composer(Input):
 
     def set_input_history(self, history: InputHistory | None) -> None:
         self.input_history = history
+
+    def set_language(self, language: UiLanguage) -> None:
+        self.language = normalize_language(language)
+        if self.ask_mode:
+            self.placeholder = translate(self.language, "ui.ask.placeholder")
+        else:
+            self.placeholder = translate(self.language, "ui.composer.placeholder")
 
     def record_submission(self, text: str, accepted: bool) -> None:
         if self.input_history is None:
@@ -46,12 +55,12 @@ class Composer(Input):
         if self.ask_mode:
             if changed:
                 self.value = ""
-            self.placeholder = "选择选项或输入自定义回答，Enter 提交"
+            self.placeholder = translate(self.language, "ui.ask.placeholder")
             self.add_class("ask-mode")
         else:
             if changed:
                 self.value = ""
-            self.placeholder = "输入任务或 /help …"
+            self.placeholder = translate(self.language, "ui.composer.placeholder")
             self.remove_class("ask-mode")
         return changed
 

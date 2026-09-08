@@ -6,23 +6,25 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
 from xg.agent.plan import Plan, ReviewDecision
+from xg.tui.i18n import UiLanguage, normalize_language, translate
 
 
 class PlanModal(ModalScreen[str]):
-    BINDINGS = [("escape", "cancel", "取消"), ("enter", "execute", "执行"), ("d", "details", "详情"), ("r", "replan", "重新规划")]
+    BINDINGS = [("escape", "cancel", "Cancel"), ("enter", "execute", "Execute"), ("d", "details", "Details"), ("r", "replan", "Replan")]
 
-    def __init__(self, plan: Plan) -> None:
+    def __init__(self, plan: Plan, language: UiLanguage = "zh") -> None:
         super().__init__()
         self.plan = plan
+        self.language = normalize_language(language)
         self._details = False
 
     def compose(self) -> ComposeResult:
         yield from self._content()
 
     def _content(self) -> list:
-        lines = [f"目标：{self.plan.goal}", f"任务：{len(self.plan.tasks)} 个，共 {len(self.plan.batches)} 轮"]
+        lines = [translate(self.language, "ui.plan.goal", goal=self.plan.goal), translate(self.language, "ui.plan.rounds", count=len(self.plan.batches))]
         for round_no, batch in enumerate(self.plan.batches, 1):
-            lines.append(f"第 {round_no} 轮")
+            lines.append(translate(self.language, "ui.plan.round", round=round_no, tasks=', '.join(batch)))
             for task_id in batch:
                 task = self.plan.task_by_id(task_id)
                 if task is None:
@@ -30,7 +32,7 @@ class PlanModal(ModalScreen[str]):
                 lines.append(f"{task.id} [{task.status}] {task.title}")
                 if self._details:
                     lines.append(f"  {task.description}")
-        return [Vertical(Static("\n".join(lines)), Input(placeholder="按 r 输入重新规划要求", id="plan-feedback"), Button("执行 (Enter)", id="execute", variant="success"), Button("取消 (Esc)", id="cancel", variant="error"))]
+        return [Vertical(Static("\n".join(lines)), Input(placeholder=translate(self.language, "ui.plan.replan_placeholder"), id="plan-feedback"), Button(translate(self.language, "ui.plan.execute"), id="execute", variant="success"), Button(translate(self.language, "ui.config.cancel"), id="cancel", variant="error"))]
 
     def action_details(self) -> None:
         self._details = not self._details
