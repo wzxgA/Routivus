@@ -1,12 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 
 import pytest
 
-from xg.skill.errors import SkillContentError, SkillDisabledError, SkillNotFoundError
-from xg.skill.models import SkillConfig, SkillLoadRequest
-from xg.skill.registry import SkillRegistry
+from routivus.skill.errors import SkillContentError, SkillDisabledError, SkillNotFoundError
+from routivus.skill.models import SkillConfig, SkillLoadRequest
+from routivus.skill.registry import SkillRegistry
 
 
 def make_registry(tmp_path, config=None):

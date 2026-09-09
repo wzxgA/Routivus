@@ -1,12 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import httpx
 import pytest
 
-from xg.web.errors import WebContentError
-from xg.web.fetch import WebFetchService
-from xg.web.models import FetchRequest, WebConfig, WebFetchConfig
-from xg.web.url_policy import URLPolicy
+from routivus.web.errors import WebContentError
+from routivus.web.fetch import WebFetchService
+from routivus.web.models import FetchRequest, WebConfig, WebFetchConfig
+from routivus.web.url_policy import URLPolicy
 
 
 async def test_fetch_static_html_to_wrapped_markdown():

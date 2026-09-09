@@ -7,9 +7,9 @@ import re
 from io import StringIO
 from typing import AsyncIterator
 
-from xg.agent.plan import ReviewDecision
-from xg.agent.react import AgentEvent
-from xg.agent.team import (
+from routivus.agent.plan import ReviewDecision
+from routivus.agent.react import AgentEvent
+from routivus.agent.team import (
     AgentProfile,
     ReviewResult,
     ResourceClaim,
@@ -24,14 +24,12 @@ from xg.agent.team import (
     parse_team_tasks,
     validate_task_resource_policy,
 )
-from xg.llm.client import LlmClient
-from xg.llm.types import Message, StreamEvent, ToolCall, ToolResult
-from xg.tool.builtin import build_registry
-from xg.tui.reducer import reduce_team_event
-from xg.tui.plan_renderables import PlanReviewCard
-from xg.tui.renderables import agent_group_renderable
-from xg.tui.state import AgentGroupState, TuiState
-from xg.tui.widgets.agent_group_card import AgentGroupCard
+from routivus.llm.client import LlmClient
+from routivus.llm.types import Message, StreamEvent, ToolCall, ToolResult
+from routivus.tool.builtin import build_registry
+from routivus.tui.reducer import reduce_team_event
+
+from routivus.tui.state import AgentGroupState, TuiState
 
 
 TEAM_PLAN = json.dumps({"tasks": [
@@ -540,7 +538,7 @@ async def test_explicit_empty_tools_do_not_fallback_to_profile_tools(tmp_path):
 
 
 def test_failed_task_marks_downstream_as_blocked_not_failed():
-    from xg.agent.team import TeamPlan
+    from routivus.agent.team import TeamPlan
 
     t1 = TeamTask("t1", "根任务", "", [], status="failed")
     t2 = TeamTask("t2", "直接依赖", "", ["t1"])
@@ -561,7 +559,7 @@ def test_team_events_keep_role_and_task_progress_in_tui_state():
         "id": "t1", "title": "实现", "description": "实现代码", "deps": [],
         "owner_role": "coder", "acceptance_criteria": ["完成"],
     }]}))
-    from xg.agent.team import TeamPlan, TeamEvent
+    from routivus.agent.team import TeamPlan, TeamEvent
 
     plan = TeamPlan("demo", tasks, [["t1"]])
     state = TuiState(active_turn_id="turn-1")
@@ -573,7 +571,7 @@ def test_team_events_keep_role_and_task_progress_in_tui_state():
 
 
 def test_team_needs_input_is_visible_without_becoming_failure():
-    from xg.agent.team import TeamEvent, TeamPlan
+    from routivus.agent.team import TeamEvent, TeamPlan
 
     tasks, _ = parse_team_tasks(json.dumps({"tasks": [{
         "id": "t1", "title": "修复认证", "description": "修复问题", "deps": [],
@@ -595,34 +593,8 @@ def test_team_needs_input_is_visible_without_becoming_failure():
     assert state.notification == "请确认写入范围"
 
 
-def test_team_plan_review_card_shows_full_plan_before_execution():
-    from rich.console import Console
-    from xg.agent.team import TeamEvent, TeamPlan
-
-    tasks, _ = parse_team_tasks(json.dumps({"tasks": [
-        {"id": "t1", "title": "读取项目结构", "description": "检查目录和配置", "deps": []},
-        {"id": "t2", "title": "汇总调研结果", "description": "整理调研结论", "deps": ["t1"]},
-    ]}))
-    plan = TeamPlan("调研项目", tasks, [["t1"], ["t2"]])
-    state = reduce_team_event(
-        TuiState(active_turn_id="turn-1"),
-        TeamEvent("team_plan_generated", team_id="team-1", plan=plan),
-        "turn-1",
-    )
-
-    output = StringIO()
-    Console(file=output, width=120).print(PlanReviewCard(state.transcript[-1]))
-    rendered = output.getvalue()
-
-    assert "共 2 轮" in rendered
-    assert "第 1 轮：t1" in rendered
-    assert "第 2 轮：t2" in rendered
-    assert "t1 读取项目结构" in rendered
-    assert "t2 汇总调研结果" in rendered
-
-
 def test_team_agent_events_are_isolated_in_default_collapsed_groups():
-    from xg.agent.team import TeamEvent, TeamPlan
+    from routivus.agent.team import TeamEvent, TeamPlan
 
     tasks, _ = parse_team_tasks(json.dumps({"tasks": [
         {"id": "t1", "title": "实现 A", "description": "实现 A", "deps": []},
@@ -659,7 +631,7 @@ def test_team_agent_events_are_isolated_in_default_collapsed_groups():
 
 
 def test_team_repair_and_review_have_separate_group_identities():
-    from xg.agent.team import TeamEvent, TeamPlan
+    from routivus.agent.team import TeamEvent, TeamPlan
 
     tasks, _ = parse_team_tasks(json.dumps({"tasks": [{
         "id": "t1", "title": "实现登录", "description": "实现登录", "deps": [],
@@ -709,21 +681,6 @@ def test_team_repair_and_review_have_separate_group_identities():
     assert state.agent_groups["team-1:agent-repair"].task_id == "t1-repair-1"
     assert state.agent_groups["team-1:reviewer:t1"].status == "failed"
     assert any(item.kind == "agent_group" for item in state.transcript)
-
-
-def test_agent_group_card_starts_collapsed_and_uses_group_identity():
-    group = AgentGroupState(
-        group_id="team-1:agent-a", team_id="team-1", agent_id="agent-a",
-        role="coder", task_id="t1", task_title="实现登录", status="running",
-    )
-    card = AgentGroupCard(group)
-
-    assert card.group_id == "team-1:agent-a"
-    assert card.group.collapsed is True
-    output = StringIO()
-    from rich.console import Console
-    Console(file=output, width=120).print(agent_group_renderable(group))
-    assert "coder/t1" in output.getvalue()
 
 
 async def test_readonly_step_limit_recovers_once_with_preserved_artifacts(tmp_path, settings):

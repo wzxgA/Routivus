@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import httpx
 
-from xg.web.models import SearchRequest, WebSearchConfig
-from xg.web.serpapi import SerpAPISearchProvider
-from xg.web.searxng import SearXNGSearchProvider
-from xg.web.zhipu import ZhipuSearchProvider
+from routivus.web.models import SearchRequest, WebSearchConfig
+from routivus.web.serpapi import SerpAPISearchProvider
+from routivus.web.searxng import SearXNGSearchProvider
+from routivus.web.zhipu import ZhipuSearchProvider
 
 
 async def test_provider_response_shapes_are_normalized():

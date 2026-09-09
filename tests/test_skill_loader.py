@@ -1,7 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from xg.skill.loader import SkillLoader
-from xg.skill.models import SkillConfig, SkillRoot
+from routivus.skill.loader import SkillLoader
+from routivus.skill.models import SkillConfig, SkillRoot
 
 
 def write_skill(root, name, body, metadata=None):

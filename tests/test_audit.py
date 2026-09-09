@@ -1,11 +1,11 @@
-"""AuditLogger 单元测试：JSONL 结构 + 脱敏。"""
+﻿"""AuditLogger 单元测试：JSONL 结构 + 脱敏。"""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from xg.safety.audit import AuditLogger, redact
+from routivus.safety.audit import AuditLogger, redact
 
 
 class TestRedact:

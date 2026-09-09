@@ -1,4 +1,4 @@
-"""测试 /provider 命令（execute_provider_command / CommandService 路由）。"""
+﻿"""测试 /provider 命令（execute_provider_command / CommandService 路由）。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from tests.test_config import make_manager
 from tests.test_provider_service import raw_manager
-from xg.cli.commands import (
+from routivus.cli.commands import (
     CommandContext,
     CommandResult,
     CommandService,
@@ -173,7 +173,7 @@ def test_provider_and_tier_commands_render_english(tmp_path: Path):
     msg, ok = execute_provider_command(manager, None, "/provider show myproxy", language="en")
     assert ok is True
     assert "config layer" in msg
-    from xg.cli.commands import execute_tier_command
+    from routivus.cli.commands import execute_tier_command
     msg, ok = execute_tier_command(manager, None, "/tier set Basic myproxy", language="en")
     assert ok is True
     assert "Tier Basic" in msg

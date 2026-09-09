@@ -1,4 +1,4 @@
-"""phase-04 A3（reset 与观测）测试。
+﻿"""phase-04 A3（reset 与观测）测试。
 
 覆盖：reset 后回到无校准无规则状态、rule_hit_stats 命中统计、
 route() 透传 hysteresis（迟滞在整条路由链路生效）。
@@ -10,13 +10,13 @@ import json
 import tempfile
 from pathlib import Path
 
-from xg.adaptive.calibrate import (aggregate, load_calibration, recalibrate,
+from routivus.adaptive.calibrate import (aggregate, load_calibration, recalibrate,
                                    save_calibration)
-from xg.adaptive.learned_rules import (LearnedRules, load_learned_rules,
+from routivus.adaptive.learned_rules import (LearnedRules, load_learned_rules,
                                        re_learn, rule_hit_stats)
-from xg.adaptive.store import reset_adaptive_data
-from xg.router import route
-from xg.router.postprocess import Hysteresis
+from routivus.adaptive.store import reset_adaptive_data
+from routivus.router import route
+from routivus.router.postprocess import Hysteresis
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:

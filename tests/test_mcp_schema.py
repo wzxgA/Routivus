@@ -1,6 +1,6 @@
-"""MCP tool schema normalization tests."""
+﻿"""MCP tool schema normalization tests."""
 
-from xg.mcp.schema import exposed_tool_name, sanitize_schema
+from routivus.mcp.schema import exposed_tool_name, sanitize_schema
 
 
 def test_local_ref_is_expanded_and_required_is_filtered():

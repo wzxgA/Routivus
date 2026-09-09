@@ -1,4 +1,4 @@
-"""phase-03 步骤 D：集成与验收测试。
+﻿"""phase-03 步骤 D：集成与验收测试。
 
 覆盖文档 §D + §8 验收标准：
 - 集成链路：连续追问累积信号 → 聚合 → 同类输入档位上调一档；
@@ -13,9 +13,9 @@ from unittest.mock import patch
 
 import pytest
 
-from xg.adaptive.calibrate import MAX_BIAS, Calibration, recalibrate
-from xg.adaptive.feedback import FeedbackRecorder, SignalType
-from xg.router import TIER_NAMES, route
+from routivus.adaptive.calibrate import MAX_BIAS, Calibration, recalibrate
+from routivus.adaptive.feedback import FeedbackRecorder, SignalType
+from routivus.router import TIER_NAMES, route
 
 
 # ---------- 集成链路：连续追问 → 同类输入档位上调一档 ----------
@@ -117,7 +117,7 @@ def test_second_round_buffered_until_flush_again(adapt_dir):
 
 def test_route_user_turn_off_never_collects_or_touches_disk():
     """`_route_user_turn` 在开关关闭时立即返回，不路由、不采集、不切模型。"""
-    import xg.tui.controller as ctrl
+    import routivus.tui.controller as ctrl
 
     fake = object.__new__(ctrl.SessionController)
     fake.settings = type("S", (), {"smart_router_enabled": False})()
@@ -136,8 +136,8 @@ def test_route_user_turn_off_never_collects_or_touches_disk():
 
 def test_startup_loads_empty_state_cleanly(adapt_dir):
     """启动路径：空的 adaptive 目录 → feedback 空、calibration 空、不写盘。"""
-    from xg.adaptive.feedback import read_feedback
-    from xg.adaptive.calibrate import load_calibration
+    from routivus.adaptive.feedback import read_feedback
+    from routivus.adaptive.calibrate import load_calibration
 
     assert read_feedback() == []          # 无 feedback.log → 空记录
     assert recalibrate().total == 0.0     # 无记录 → 空校准，不写盘

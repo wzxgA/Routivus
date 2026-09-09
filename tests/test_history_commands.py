@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
-from xg.cli.commands import execute_history_command
-from xg.input_history import InputHistory
+from routivus.cli.commands import execute_history_command
+from routivus.input_history import InputHistory
 
 
 class Agent:

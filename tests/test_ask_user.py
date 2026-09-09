@@ -1,4 +1,4 @@
-"""Ask-User 交互询问单元测试：ReAct 拦截 + fail-closed + 答案回灌。"""
+﻿"""Ask-User 交互询问单元测试：ReAct 拦截 + fail-closed + 答案回灌。"""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ from typing import AsyncIterator
 
 import pytest
 
-from xg.ask.models import AskField, AskOption, AskRequest
-from xg.agent.react import AgentEvent, ReActAgent
-from xg.llm.client import LlmClient
-from xg.llm.types import Message, StreamEvent, ToolCall
+from routivus.ask.models import AskField, AskOption, AskRequest
+from routivus.agent.react import AgentEvent, ReActAgent
+from routivus.llm.client import LlmClient
+from routivus.llm.types import Message, StreamEvent, ToolCall
 
 ASK_ARGS = {
     "prompt": "我需要先确认一下",
@@ -168,6 +168,6 @@ class TestAskToolRegistered:
         assert "fields" in tool.parameters["required"]
 
     def test_disabled_when_ask_user_enabled_false(self, tmp_project):
-        from xg.tool.builtin import build_registry
+        from routivus.tool.builtin import build_registry
         reg = build_registry(base_dir=tmp_project, ask_user_enabled=False)
         assert reg.get("ask_user") is None

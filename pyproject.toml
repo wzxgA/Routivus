@@ -1,7 +1,7 @@
 [project]
-name = "xg-cli"
-version = "1.1.7"
-description = "XG-CLI: a commercial-grade Python Agent CLI"
+name = "routivus"
+version = "0.1.0"
+description = "Routivus: smart-routing multi-agent backend (port of XG-CLI core)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,7 +9,6 @@ dependencies = [
     "rich>=13.7.0",
     "httpx>=0.27.0",
     "python-dotenv>=1.0.1",
-    "textual>=0.70.0",
     # SmartRouter ML 精判（原 ml extras 并入核心）：TF-IDF + LightGBM 离线训练与精判
     "numpy>=1.26",
     "scikit-learn>=1.4",
@@ -29,8 +28,8 @@ semantic = [
     "safetensors>=0.4",
 ]
 
+# 桌面客户端前端由 Routivus 客户端另行接入，暂不提供 CLI 脚本入口
 [project.scripts]
-xg-cli = "xg.cli.app:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -44,7 +43,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["xg"]
+packages = ["routivus"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

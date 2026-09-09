@@ -1,12 +1,12 @@
-"""Real subprocess smoke test for MCP stdio framing and cleanup."""
+﻿"""Real subprocess smoke test for MCP stdio framing and cleanup."""
 
 from __future__ import annotations
 
 import asyncio
 import sys
 
-from xg.mcp.models import McpServerConfig
-from xg.mcp.stdio import StdioTransport
+from routivus.mcp.models import McpServerConfig
+from routivus.mcp.stdio import StdioTransport
 
 
 async def test_stdio_request_notification_stderr_and_close():

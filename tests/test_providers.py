@@ -1,11 +1,11 @@
-"""Provider 注册表单元测试。
+﻿"""Provider 注册表单元测试。
 
 provider 无内置预设，全部由用户自定义。
 """
 
 from __future__ import annotations
 
-from xg.config.providers import Provider, ProviderRegistry
+from routivus.config.providers import Provider, ProviderRegistry
 
 
 class TestRegistry:

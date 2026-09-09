@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from xg.skill.errors import SkillParseError
-from xg.skill.parser import parse_metadata, read_metadata, validate_name
+from routivus.skill.errors import SkillParseError
+from routivus.skill.parser import parse_metadata, read_metadata, validate_name
 
 
 def test_metadata_preserves_utf8_and_decodes_only_contract_escapes(tmp_path: Path):

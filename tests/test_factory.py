@@ -1,9 +1,9 @@
-"""LLM 工厂单元测试。"""
+﻿"""LLM 工厂单元测试。"""
 
 from __future__ import annotations
 
-from xg.llm.factory import create_client
-from xg.llm.openai_compat import OpenAICompatClient
+from routivus.llm.factory import create_client
+from routivus.llm.openai_compat import OpenAICompatClient
 
 
 def test_create_client_passthrough():

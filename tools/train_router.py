@@ -1,4 +1,4 @@
-"""SmartRouter 离线训练脚本（第 5 期 B1）。
+﻿"""SmartRouter 离线训练脚本（第 5 期 B1）。
 
 标注数据 + feedback.log → TF-IDF + LightGBM，产物写 ~/.xg/adaptive/router.lgb。
 
@@ -31,9 +31,9 @@ from typing import Any, Sequence
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))  # 脚本独立可跑：保证能 import xg
+    sys.path.insert(0, str(_REPO_ROOT))  # 脚本独立可跑：保证能 import routivus
 
-from xg.adaptive.feedback import read_feedback  # noqa: E402
+from routivus.adaptive.feedback import read_feedback  # noqa: E402
 
 TIER_NAMES = ("Basic", "Enhanced", "Superior", "Ultimate")
 
@@ -345,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
     # 第 6 期 C2：可选语义编码器（--semantic-onnx），可就可用性打印提示
     semantic = None
     if args.semantic_onnx:
-        from xg.router.semantic import SemanticEncoder  # noqa: PLC0415
+        from routivus.router.semantic import SemanticEncoder  # noqa: PLC0415
         semantic = SemanticEncoder(Path(args.semantic_onnx))
         if not semantic.available:
             print("提示：语义编码器不可用（产物/依赖缺失），本次训练不含语义列",
@@ -366,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _repo_default_artifact_path() -> Path:
     """默认产物路径：用户数据目录 ~/.xg/adaptive/router.lgb（与 feedback.log 同目录）。"""
-    from xg.adaptive.store import data_dir
+    from routivus.adaptive.store import data_dir
     return data_dir() / "router.lgb"
 
 

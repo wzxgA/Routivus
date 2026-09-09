@@ -1,4 +1,4 @@
-"""Streamable HTTP JSON/SSE/session behavior."""
+﻿"""Streamable HTTP JSON/SSE/session behavior."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import json
 
 import httpx
 
-from xg.mcp.http import StreamableHttpTransport
-from xg.mcp.models import McpServerConfig
+from routivus.mcp.http import StreamableHttpTransport
+from routivus.mcp.models import McpServerConfig
 
 
 async def test_http_json_response_and_session_header():

@@ -1,10 +1,10 @@
-"""HITLPolicy 单元测试：审批决策、敏感度、fail closed。"""
+﻿"""HITLPolicy 单元测试：审批决策、敏感度、fail closed。"""
 
 from __future__ import annotations
 
 import pytest
 
-from xg.safety.hitl import ApprovalDecision, HITLPolicy
+from routivus.safety.hitl import ApprovalDecision, HITLPolicy
 
 
 class TestSensitivity:

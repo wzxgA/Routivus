@@ -1,4 +1,4 @@
-"""adaptive 反馈骨架单测（phase-03 步骤 A）。"""
+﻿"""adaptive 反馈骨架单测（phase-03 步骤 A）。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from xg.adaptive.feedback import (
+from routivus.adaptive.feedback import (
     FeedbackRecorder,
     SignalType,
     read_feedback,

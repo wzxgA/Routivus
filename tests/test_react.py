@@ -1,13 +1,13 @@
-"""ReAct 循环单元测试：mock LlmClient 驱动。"""
+﻿"""ReAct 循环单元测试：mock LlmClient 驱动。"""
 
 from __future__ import annotations
 
 from typing import AsyncIterator
 
-from xg.agent.react import AgentEvent, ReActAgent
-from xg.config.settings import Settings
-from xg.llm.client import LlmClient, LlmError
-from xg.llm.types import Message, StreamEvent, ToolCall
+from routivus.agent.react import AgentEvent, ReActAgent
+from routivus.config.settings import Settings
+from routivus.llm.client import LlmClient, LlmError
+from routivus.llm.types import Message, StreamEvent, ToolCall
 
 
 class ScriptedClient(LlmClient):

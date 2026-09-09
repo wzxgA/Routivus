@@ -1,13 +1,13 @@
-"""并行工具执行单元测试：并发限流、保序、超时、取消。"""
+﻿"""并行工具执行单元测试：并发限流、保序、超时、取消。"""
 
 from __future__ import annotations
 
 import asyncio
 import time
 
-from xg.llm.types import ToolCall, ToolResult
-from xg.tool.builtin import build_registry
-from xg.tool.registry import Tool, ToolRegistry
+from routivus.llm.types import ToolCall, ToolResult
+from routivus.tool.builtin import build_registry
+from routivus.tool.registry import Tool, ToolRegistry
 
 
 def make_registry() -> ToolRegistry:
@@ -93,10 +93,10 @@ class TestSyncCompatibility:
 
 class TestGuardIntegration:
     def test_guard_rejection_returns_error(self, tmp_path):
-        from xg.safety.guards import guard_tool_call
+        from routivus.safety.guards import guard_tool_call
 
         registry = ToolRegistry(guard=lambda n, a: guard_tool_call(tmp_path, n, a))
-        from xg.tool.builtin import build_registry
+        from routivus.tool.builtin import build_registry
 
         registry = build_registry(base_dir=tmp_path, guard=lambda n, a: guard_tool_call(tmp_path, n, a))
         result = registry.execute("read_file", {"path": "../escape.txt"})
@@ -104,7 +104,7 @@ class TestGuardIntegration:
         assert "策略拒绝" in result.error
 
     async def test_guard_rejection_in_parallel_batch(self, tmp_path):
-        from xg.safety.guards import guard_tool_call
+        from routivus.safety.guards import guard_tool_call
 
         (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
         registry = build_registry(base_dir=tmp_path, guard=lambda n, a: guard_tool_call(tmp_path, n, a))
@@ -122,11 +122,11 @@ class TestAuditIntegration:
     def test_registry_audits_tool_calls(self, tmp_path):
         import json
 
-        from xg.safety.audit import AuditLogger
+        from routivus.safety.audit import AuditLogger
 
         log_path = tmp_path / ".xg" / "audit.log"
         audit = AuditLogger(log_path)
-        from xg.tool.builtin import build_registry
+        from routivus.tool.builtin import build_registry
 
         registry = build_registry(base_dir=tmp_path, audit=audit)
         registry.execute("write_file", {"path": "x.txt", "content": "hi"})

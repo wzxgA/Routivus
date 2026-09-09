@@ -1,17 +1,17 @@
-"""MCP lifecycle, dynamic tools, resources, notifications and isolation."""
+﻿"""MCP lifecycle, dynamic tools, resources, notifications and isolation."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 
-from xg.config.mcp import McpConfigManager
-from xg.llm.types import ToolCall
-from xg.mcp.manager import McpManager
-from xg.mcp.protocol import McpUnavailableError
-from xg.mcp.transport import McpTransport
-from xg.safety.hitl import HITLPolicy
-from xg.tool.registry import ToolRegistry
+from routivus.config.mcp import McpConfigManager
+from routivus.llm.types import ToolCall
+from routivus.mcp.manager import McpManager
+from routivus.mcp.protocol import McpUnavailableError
+from routivus.mcp.transport import McpTransport
+from routivus.safety.hitl import HITLPolicy
+from routivus.tool.registry import ToolRegistry
 
 
 class FakeTransport(McpTransport):

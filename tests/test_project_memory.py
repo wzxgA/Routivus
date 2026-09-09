@@ -1,4 +1,4 @@
-"""第五期 XG.md / XG.local.md 测试。"""
+﻿"""第五期 XG.md / XG.local.md 测试。"""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ from typing import AsyncIterator
 
 import pytest
 
-from xg.llm.client import LlmClient
-from xg.llm.types import StreamEvent
-from xg.memory.manager import MemoryManager
-from xg.memory.project import ProjectMemoryLoader
+from routivus.llm.client import LlmClient
+from routivus.llm.types import StreamEvent
+from routivus.memory.manager import MemoryManager
+from routivus.memory.project import ProjectMemoryLoader
 
 
 class DraftClient(LlmClient):

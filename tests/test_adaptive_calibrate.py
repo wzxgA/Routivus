@@ -1,4 +1,4 @@
-"""校准聚合与应用单测（phase-03 步骤 C）。
+﻿"""校准聚合与应用单测（phase-03 步骤 C）。
 
 覆盖：样本不足跳过、±0.15/±0.1 夹紧边界、方向语义（upgrade 多 → bias 负）、
 置信门（硬规则不动/置信足够不动/边界输入按偏置方向移动且最多一档）、
@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from xg.adaptive.calibrate import (
+from routivus.adaptive.calibrate import (
     MAX_BIAS,
     MAX_THRESHOLD_ADJUST,
     MIN_SAMPLES_PER_TIER,
@@ -22,8 +22,8 @@ from xg.adaptive.calibrate import (
     recalibrate,
     save_calibration,
 )
-from xg.adaptive.feedback import read_feedback
-from xg.router import route, TIER_NAMES
+from routivus.adaptive.feedback import read_feedback
+from routivus.router import route, TIER_NAMES
 
 
 def _rec(tier: str, signal: str, weight: float = 1.0) -> dict:
@@ -172,7 +172,7 @@ def test_recalibrate_no_records_writes_nothing(adapt_dir):
 
 
 def test_recalibrate_aggregates_and_persists(adapt_dir):
-    from xg.adaptive.feedback import FeedbackRecorder, SignalType
+    from routivus.adaptive.feedback import FeedbackRecorder, SignalType
 
     rec = FeedbackRecorder(session="t")
     for _ in range(30):

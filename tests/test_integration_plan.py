@@ -1,17 +1,17 @@
-"""第 4 期集成测试：mock LLM 驱动真实工具，/plan 端到端流程。"""
+﻿"""第 4 期集成测试：mock LLM 驱动真实工具，/plan 端到端流程。"""
 
 from __future__ import annotations
 
 import json
 from typing import AsyncIterator
 
-from xg.agent.plan import PlanEvent, PlanExecutor, ReviewDecision
-from xg.llm.client import LlmClient
-from xg.llm.types import StreamEvent, ToolCall
-from xg.safety.audit import AuditLogger
-from xg.safety.guards import guard_tool_call
-from xg.safety.hitl import HITLPolicy
-from xg.tool.builtin import build_registry
+from routivus.agent.plan import PlanEvent, PlanExecutor, ReviewDecision
+from routivus.llm.client import LlmClient
+from routivus.llm.types import StreamEvent, ToolCall
+from routivus.safety.audit import AuditLogger
+from routivus.safety.guards import guard_tool_call
+from routivus.safety.hitl import HITLPolicy
+from routivus.tool.builtin import build_registry
 
 
 class RoutingScriptClient(LlmClient):
@@ -203,7 +203,7 @@ async def test_plan_subtask_hitl_integration(tmp_path, settings):
 
     async def requester(tool_name, level, args):
         decisions.append(tool_name)
-        from xg.safety.hitl import ApprovalDecision
+        from routivus.safety.hitl import ApprovalDecision
 
         return ApprovalDecision(allow=True, reason="user_approved")
 

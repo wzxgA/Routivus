@@ -1,14 +1,14 @@
-"""集成测试：mock LLM 驱动真实工具，端到端多步任务。"""
+﻿"""集成测试：mock LLM 驱动真实工具，端到端多步任务。"""
 
 from __future__ import annotations
 
 import json
 from typing import AsyncIterator
 
-from xg.agent.react import ReActAgent
-from xg.llm.client import LlmClient
-from xg.llm.types import StreamEvent, ToolCall
-from xg.tool.builtin import build_registry
+from routivus.agent.react import ReActAgent
+from routivus.llm.client import LlmClient
+from routivus.llm.types import StreamEvent, ToolCall
+from routivus.tool.builtin import build_registry
 
 
 class TaskScriptClient(LlmClient):

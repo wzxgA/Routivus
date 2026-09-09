@@ -1,17 +1,17 @@
-"""测试 /train 命令（解析、确认、依赖检查、CommandService 路由）。"""
+﻿"""测试 /train 命令（解析、确认、依赖检查、CommandService 路由）。"""
 
 from __future__ import annotations
 
 import asyncio
 
-from xg.cli.commands import (
+from routivus.cli.commands import (
     SLASH_COMMANDS,
     CommandContext,
     CommandResult,
     CommandService,
     execute_train_command,
 )
-from xg.cli.train import (
+from routivus.cli.train import (
     TrainPlan,
     _default_semantic_onnx,
     build_argv,

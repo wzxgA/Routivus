@@ -1,4 +1,4 @@
-"""内置工具单元测试：正常路径 + 异常路径。"""
+﻿"""内置工具单元测试：正常路径 + 异常路径。"""
 
 from __future__ import annotations
 
@@ -100,8 +100,8 @@ class TestExecuteCommand:
         assert "退出码 3" in result.error
 
     def test_writes_audit_log(self, tmp_project):
-        from xg.safety.audit import AuditLogger
-        from xg.tool.builtin import build_registry
+        from routivus.safety.audit import AuditLogger
+        from routivus.tool.builtin import build_registry
 
         audit = AuditLogger(tmp_project / ".xg" / "audit.log")
         reg = build_registry(base_dir=tmp_project, audit=audit)
@@ -127,7 +127,7 @@ class TestRegistry:
         assert "未知工具" in result.error
 
     def test_output_truncation(self, tmp_project):
-        from xg.tool.builtin import build_registry
+        from routivus.tool.builtin import build_registry
 
         reg = build_registry(base_dir=tmp_project, max_output_chars=100)
         (tmp_project / "big.txt").write_text("a" * 500, encoding="utf-8")
@@ -137,7 +137,7 @@ class TestRegistry:
         assert "截断" in result.output
 
     def test_execute_calls_preserves_order(self, registry, tmp_project):
-        from xg.llm.types import ToolCall
+        from routivus.llm.types import ToolCall
 
         calls = [
             ToolCall(id="1", name="write_file", arguments=json.dumps({"path": "o.txt", "content": "one"})),

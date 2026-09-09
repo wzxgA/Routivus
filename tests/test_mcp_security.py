@@ -1,14 +1,14 @@
-"""MCP trust boundary, HITL defaults and audit redaction."""
+﻿"""MCP trust boundary, HITL defaults and audit redaction."""
 
 from __future__ import annotations
 
 import json
 
-from xg.config.mcp import McpConfigManager
-from xg.mcp.manager import McpManager
-from xg.safety.audit import AuditLogger
-from xg.safety.hitl import HITLPolicy
-from xg.tool.registry import ToolRegistry
+from routivus.config.mcp import McpConfigManager
+from routivus.mcp.manager import McpManager
+from routivus.safety.audit import AuditLogger
+from routivus.safety.hitl import HITLPolicy
+from routivus.tool.registry import ToolRegistry
 
 from tests.test_mcp_manager import FakeTransport
 

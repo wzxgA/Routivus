@@ -1,4 +1,4 @@
-"""第 6 期 C2（语义编码器接入 ml_router 精判）测试。
+﻿"""第 6 期 C2（语义编码器接入 ml_router 精判）测试。
 
 无 onnxruntime/无产物时：SemanticEncoder 与带语义产的 MLRouter 整段回落
 （available=False），与"产物缺依赖时静默回落"的主进程语义一致。
@@ -13,8 +13,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
-from xg.router.ml_router import MLRouter, ARTIFACT_FORMAT  # noqa: E402
-from xg.router.semantic import SemanticEncoder, load_semantic_encoder  # noqa: E402
+from routivus.router.ml_router import MLRouter, ARTIFACT_FORMAT  # noqa: E402
+from routivus.router.semantic import SemanticEncoder, load_semantic_encoder  # noqa: E402
 
 
 def _ml_available() -> bool:
@@ -56,7 +56,7 @@ class TestSemanticFallback:
 
     def test_import_guarded(self):
         # 加载模块不触发 onnxruntime 导入（主进程零硬依赖）
-        import xg.router.semantic as s
+        import routivus.router.semantic as s
         assert callable(s.load_semantic_encoder)
 
     def test_factory_returns_unavailable(self, tmp_path):

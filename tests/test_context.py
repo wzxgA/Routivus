@@ -1,13 +1,13 @@
-"""第五期短期上下文与自动压缩测试。"""
+﻿"""第五期短期上下文与自动压缩测试。"""
 
 from __future__ import annotations
 
 from typing import AsyncIterator
 
-from xg.config.settings import Settings
-from xg.llm.client import LlmClient
-from xg.llm.types import Message, StreamEvent, ToolCall
-from xg.memory.context import ConversationContext
+from routivus.config.settings import Settings
+from routivus.llm.client import LlmClient
+from routivus.llm.types import Message, StreamEvent, ToolCall
+from routivus.memory.context import ConversationContext
 
 
 class SummaryClient(LlmClient):

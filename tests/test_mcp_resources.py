@@ -1,6 +1,6 @@
-"""MCP resource reference parsing, binary fallback and URI redaction."""
+﻿"""MCP resource reference parsing, binary fallback and URI redaction."""
 
-from xg.mcp.resources import decode_resource_contents, find_resource_references, redact_uri
+from routivus.mcp.resources import decode_resource_contents, find_resource_references, redact_uri
 
 
 def test_reference_parser_keeps_server_and_uri_and_trims_punctuation():

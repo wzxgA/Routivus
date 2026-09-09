@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
-from xg.web.errors import WebSecurityError
-from xg.web.url_policy import URLPolicy
+from routivus.web.errors import WebSecurityError
+from routivus.web.url_policy import URLPolicy
 
 
 @pytest.mark.parametrize("url", [

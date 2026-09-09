@@ -1,4 +1,4 @@
-"""SmartRouter 离线语义编码器导出脚本（第 6 期 C1）。
+﻿"""SmartRouter 离线语义编码器导出脚本（第 6 期 C1）。
 
 ``BAAI/bge-small-zh-v1.5`` → ONNX 并 int8 量化，产物写
 ``~/.xg/adaptive/router_semantics.onnx``（数据目录可由 XG_ADAPTIVE_DIR 覆盖）。
@@ -26,7 +26,7 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))  # 保证能 import xg
+    sys.path.insert(0, str(_REPO_ROOT))  # 保证能 import routivus
 
 DEFAULT_MODEL = "BAAI/bge-small-zh-v1.5"
 EMBED_DIM = 512                     # bge-small-zh-v1.5 输出维度
@@ -38,7 +38,7 @@ MAX_LATENCY_MS = 100.0              # CPU 单句延迟上限
 
 def default_onnx_path() -> Path:
     """默认产物路径：数据目录/router_semantics.onnx（与 feedback.log 同目录）。"""
-    from xg.adaptive.store import semantic_onnx_path
+    from routivus.adaptive.store import semantic_onnx_path
     return semantic_onnx_path()
 
 

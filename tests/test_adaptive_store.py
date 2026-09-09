@@ -1,4 +1,4 @@
-"""adaptive 存储层单测（phase-03 步骤 A）。"""
+﻿"""adaptive 存储层单测（phase-03 步骤 A）。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from xg.adaptive import data_dir
-from xg.adaptive import store
+from routivus.adaptive import data_dir
+from routivus.adaptive import store
 
 
 @pytest.fixture()

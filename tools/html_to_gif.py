@@ -1,4 +1,4 @@
-"""把 tuidemo.html 演示录制成 GIF。
+﻿"""把 tuidemo.html 演示录制成 GIF。
 
 不修改源 HTML：通过 Playwright 注入 init script 给大延迟提速（>=120ms 的
 setTimeout 按倍率压缩），逐帧截图 .term 区域，最后用 Pillow 合成全局调色板 GIF。

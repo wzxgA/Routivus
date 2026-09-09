@@ -1,4 +1,4 @@
-"""测试 /tier 命令（execute_tier_command / CommandService 路由）。"""
+﻿"""测试 /tier 命令（execute_tier_command / CommandService 路由）。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 
 from tests.test_smart_router_service import svc
-from xg.cli.commands import (
+from routivus.cli.commands import (
     CommandContext,
     CommandResult,
     CommandService,
@@ -27,7 +27,7 @@ def test_default_list_when_no_subcommand(tmp_path: Path):
 
 def test_list_shows_configured(tmp_path: Path):
     _, manager = svc(tmp_path)
-    from xg.config.smart_router_service import SmartRouterConfigService
+    from routivus.config.smart_router_service import SmartRouterConfigService
 
     SmartRouterConfigService(manager).set_tier("Basic", "deepseek", "deepseek-chat")
     msg, ok = cmd(manager, "/tier list")

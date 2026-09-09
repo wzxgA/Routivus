@@ -1,4 +1,4 @@
-"""测试 :class:`xg.config.provider_service.ProviderConfigService`。"""
+﻿"""测试 :class:`xg.config.provider_service.ProviderConfigService`。"""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from xg.config.manager import ConfigManager
-from xg.config.provider_service import (
+from routivus.config.manager import ConfigManager
+from routivus.config.provider_service import (
     ProviderConfigService,
     validate_api_base,
     validate_model,

@@ -1,10 +1,10 @@
-"""测试 :class:`xg.config.smart_router_service.SmartRouterConfigService`。"""
+﻿"""测试 :class:`xg.config.smart_router_service.SmartRouterConfigService`。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from xg.config.smart_router_service import SmartRouterConfigService
+from routivus.config.smart_router_service import SmartRouterConfigService
 from tests.test_config import make_manager
 
 

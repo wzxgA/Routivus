@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 
-from xg.config.web import WebConfigManager
+from routivus.config.web import WebConfigManager
 
 
 def test_web_config_project_overrides_user_and_expands_env(tmp_path):

@@ -1,4 +1,4 @@
-"""PathGuard / CommandGuard 单元测试。"""
+﻿"""PathGuard / CommandGuard 单元测试。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from xg.safety.guards import command_guard, guard_tool_call, path_guard
+from routivus.safety.guards import command_guard, guard_tool_call, path_guard
 
 
 class TestCommandGuard:

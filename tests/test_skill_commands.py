@@ -1,12 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 
 import pytest
 
-from xg.cli.commands import execute_skill_command
-from xg.skill.models import SkillConfig
-from xg.skill.registry import SkillRegistry
+from routivus.cli.commands import execute_skill_command
+from routivus.skill.models import SkillConfig
+from routivus.skill.registry import SkillRegistry
 
 
 class Agent:

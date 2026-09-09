@@ -1,4 +1,4 @@
-"""自适应信号判定与采集挂点单测（phase-03 步骤 B）。
+﻿"""自适应信号判定与采集挂点单测（phase-03 步骤 B）。
 
 重点：
 - 四类信号的触发/不触发边界（含权重 panic：权重应由 SIGNAL_META 决定，不在此处写死）；
@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from xg.adaptive.feedback import FeedbackRecorder, SignalType
-from xg.adaptive.signals import (
+from routivus.adaptive.feedback import FeedbackRecorder, SignalType
+from routivus.adaptive.signals import (
     capture_interrupt,
     capture_turn_signals,
     detect_clarify,
@@ -90,8 +90,8 @@ def test_non_chatty_no_signal(rec):
 def test_clarify_weight_persisted(rec):
     capture_turn_signals(rec, "不对", {}, prev_tier="Enhanced", cur_tier="Enhanced", TIER_NAMES=TIER_NAMES)
     rec.flush()
-    from xg.adaptive.feedback import read_feedback
-    from xg.adaptive.store import feedback_log_path
+    from routivus.adaptive.feedback import read_feedback
+    from routivus.adaptive.store import feedback_log_path
     rows = read_feedback(feedback_log_path())
     assert rows and rows[0]["source"] == "clarify"
     assert rows[0]["weight"] == 1.0      # SIGNAL_META 定义
@@ -101,8 +101,8 @@ def test_clarify_weight_persisted(rec):
 def test_short_high_tier_is_downgrade(rec):
     capture_turn_signals(rec, "你好", {"is_chatty": 1}, prev_tier=None, cur_tier="Superior", TIER_NAMES=TIER_NAMES)
     rec.flush()
-    from xg.adaptive.feedback import read_feedback
-    from xg.adaptive.store import feedback_log_path
+    from routivus.adaptive.feedback import read_feedback
+    from routivus.adaptive.store import feedback_log_path
     rows = read_feedback(feedback_log_path())
     assert rows[0]["signal"] == "downgrade"
     assert rows[0]["weight"] == 0.3
@@ -113,8 +113,8 @@ def test_short_high_tier_is_downgrade(rec):
 def test_interrupt_records_with_tier(rec):
     assert capture_interrupt(rec, "Superior") is True
     rec.flush()
-    from xg.adaptive.feedback import read_feedback
-    from xg.adaptive.store import feedback_log_path
+    from routivus.adaptive.feedback import read_feedback
+    from routivus.adaptive.store import feedback_log_path
     rows = read_feedback(feedback_log_path())
     assert rows[0]["source"] == "interrupt"
     assert rows[0]["model_tier"] == "Superior"
@@ -123,8 +123,8 @@ def test_interrupt_records_with_tier(rec):
 def test_interrupt_skipped_without_tier(rec):
     assert capture_interrupt(rec, None) is False
     rec.flush()
-    from xg.adaptive.feedback import read_feedback
-    from xg.adaptive.store import feedback_log_path
+    from routivus.adaptive.feedback import read_feedback
+    from routivus.adaptive.store import feedback_log_path
     assert read_feedback(feedback_log_path()) == []
 
 
@@ -138,6 +138,6 @@ def test_multiple_signals_same_turn(rec):
     # clarify + cmd_retry（短+闲聊+高档还含 short_high_tier）
     assert len(emitted) >= 2
     rec.flush()
-    from xg.adaptive.feedback import read_feedback
-    from xg.adaptive.store import feedback_log_path
+    from routivus.adaptive.feedback import read_feedback
+    from routivus.adaptive.store import feedback_log_path
     assert len(read_feedback(feedback_log_path())) == len(emitted)

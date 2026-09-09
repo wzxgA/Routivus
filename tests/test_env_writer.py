@@ -1,10 +1,10 @@
-"""测试 :mod:`xg.config.env_writer`。"""
+﻿"""测试 :mod:`xg.config.env_writer`。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from xg.config.env_writer import (
+from routivus.config.env_writer import (
     decide_env_path,
     env_value,
     find_env_file,

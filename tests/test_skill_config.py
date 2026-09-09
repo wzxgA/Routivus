@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 
-from xg.config.skills import SkillConfigManager
+from routivus.config.skills import SkillConfigManager
 
 
 def test_project_skill_config_overrides_user_and_merges_enabled(tmp_path):

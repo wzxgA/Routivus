@@ -1,4 +1,4 @@
-"""phase-04 步骤 A1：learned_rules 聚合与消费测试。
+﻿"""phase-04 步骤 A1：learned_rules 聚合与消费测试。
 
 覆盖：
 - 候选谓词生成（_candidates）
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from xg.adaptive.learned_rules import (
+from routivus.adaptive.learned_rules import (
     LearnedRule,
     LearnedRules,
     MAX_CONFIDENCE,
@@ -22,8 +22,8 @@ from xg.adaptive.learned_rules import (
     load_learned_rules,
     re_learn,
 )
-from xg.router.features import extract
-from xg.router.postprocess import postprocess
+from routivus.router.features import extract
+from routivus.router.postprocess import postprocess
 
 # 只命中 num_debug_kw 单谓词（len_chars>60，避免 len<=60 谓词干扰）
 _DEBUG_ONLY = {"num_debug_kw": 1, "len_chars": 100, "num_code_blocks": 0}
@@ -42,7 +42,7 @@ def _down(features) -> dict:
 # ---------- 候选谓词生成 ----------
 
 def test_candidates_from_features():
-    from xg.adaptive.learned_rules import _candidates
+    from routivus.adaptive.learned_rules import _candidates
 
     preds = _candidates({"num_debug_kw": 1, "len_chars": 12})
     assert ("num_debug_kw", ">=", 1.0) in preds

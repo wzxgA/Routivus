@@ -1,4 +1,4 @@
-"""第 3 期集成测试：并行执行 + HITL 审批 + 策略层端到端。"""
+﻿"""第 3 期集成测试：并行执行 + HITL 审批 + 策略层端到端。"""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ from typing import AsyncIterator
 
 import pytest
 
-from xg.agent.react import ReActAgent
-from xg.config.settings import Settings
-from xg.llm.client import LlmClient
-from xg.llm.types import StreamEvent, ToolCall
-from xg.safety.audit import AuditLogger
-from xg.safety.guards import guard_tool_call
-from xg.safety.hitl import ApprovalDecision, HITLPolicy
-from xg.tool.builtin import build_registry
+from routivus.agent.react import ReActAgent
+from routivus.config.settings import Settings
+from routivus.llm.client import LlmClient
+from routivus.llm.types import StreamEvent, ToolCall
+from routivus.safety.audit import AuditLogger
+from routivus.safety.guards import guard_tool_call
+from routivus.safety.hitl import ApprovalDecision, HITLPolicy
+from routivus.tool.builtin import build_registry
 
 
 class ScriptedClient(LlmClient):

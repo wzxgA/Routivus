@@ -1,8 +1,8 @@
-"""Pure unit tests for the P0/P1 completion module (xg.cli.completion)."""
+﻿"""Pure unit tests for the P0/P1 completion module (xg.cli.completion)."""
 
 from __future__ import annotations
 
-from xg.cli.completion import (
+from routivus.cli.completion import (
     CompletionCandidate,
     apply_completion,
     complete_command_token,
@@ -227,7 +227,7 @@ def test_p1_apply_completion_preserves_non_command_text():
 
 
 def _registry():
-    from xg.cli.completion import CompletionProviderRegistry, CompletionCandidate
+    from routivus.cli.completion import CompletionProviderRegistry, CompletionCandidate
 
     reg = CompletionProviderRegistry()
     reg.register(
@@ -257,35 +257,35 @@ def _registry():
 
 
 def test_p2_dynamic_provider_candidates_for_model():
-    from xg.cli.completion import dynamic_candidates
+    from routivus.cli.completion import dynamic_candidates
 
     got = dynamic_candidates("/model dee", None, _registry())
     assert [c.insert_text for c in got] == ["openai", "deepseek", "glm"]
 
 
 def test_p2_dynamic_mcp_server_candidates():
-    from xg.cli.completion import dynamic_candidates
+    from routivus.cli.completion import dynamic_candidates
 
     got = dynamic_candidates("/mcp restart ", len("/mcp restart "), _registry())
     assert [c.insert_text for c in got] == ["local"]
 
 
 def test_p2_dynamic_skill_candidates():
-    from xg.cli.completion import dynamic_candidates
+    from routivus.cli.completion import dynamic_candidates
 
     got = dynamic_candidates("/skill disable co", None, _registry())
     assert [c.insert_text for c in got] == ["code-review"]
 
 
 def test_p2_dynamic_memory_id_candidates():
-    from xg.cli.completion import dynamic_candidates
+    from routivus.cli.completion import dynamic_candidates
 
     got = dynamic_candidates("/memory delete 1", None, _registry())
     assert [c.insert_text for c in got] == ["1"]
 
 
 def test_p2_dynamic_team_scope_option_value():
-    from xg.cli.completion import dynamic_candidates
+    from routivus.cli.completion import dynamic_candidates
 
     got = dynamic_candidates(
         "/team resume t4 --write-scope xg/a", None, _registry()
@@ -294,7 +294,7 @@ def test_p2_dynamic_team_scope_option_value():
 
 
 def test_p2_dynamic_result_is_capped():
-    from xg.cli.completion import dynamic_candidates
+    from routivus.cli.completion import dynamic_candidates
 
     reg = _registry()
     got = dynamic_candidates("/model ", len("/model "), reg, limit=2)
@@ -302,20 +302,20 @@ def test_p2_dynamic_result_is_capped():
 
 
 def test_p2_dynamic_returns_empty_for_non_command():
-    from xg.cli.completion import dynamic_candidates
+    from routivus.cli.completion import dynamic_candidates
 
     assert dynamic_candidates("普通文本", None, _registry()) == []
 
 
 def test_p2_dynamic_missing_provider_never_raises():
-    from xg.cli.completion import CompletionProviderRegistry, dynamic_candidates
+    from routivus.cli.completion import CompletionProviderRegistry, dynamic_candidates
 
     reg = CompletionProviderRegistry()  # empty registry
     assert dynamic_candidates("/mcp restart lo", None, reg) == []
 
 
 def test_p2_dynamic_failing_provider_degrades_to_empty():
-    from xg.cli.completion import CompletionProviderRegistry, dynamic_candidates
+    from routivus.cli.completion import CompletionProviderRegistry, dynamic_candidates
 
     def boom(_ctx):
         raise RuntimeError("provider failure")
@@ -342,7 +342,7 @@ def _make_workspace(root):
 
 
 def test_p3_normalize_path_value_strips_quotes_and_dots():
-    from xg.cli.completion import normalize_path_value
+    from routivus.cli.completion import normalize_path_value
 
     assert normalize_path_value("xg/auth") == "xg/auth"
     assert normalize_path_value("./xg/") == "xg"
@@ -355,7 +355,7 @@ def test_p3_normalize_path_value_strips_quotes_and_dots():
 
 
 def test_p3_enumerate_workspace_names_lists_dirs_and_files(tmp_path):
-    from xg.cli.completion import enumerate_workspace_names
+    from routivus.cli.completion import enumerate_workspace_names
 
     root = _make_workspace(tmp_path)
     names = enumerate_workspace_names(root, "xg/a")
@@ -367,7 +367,7 @@ def test_p3_enumerate_workspace_names_lists_dirs_and_files(tmp_path):
 
 
 def test_p3_enumerate_root_level_omits_hidden_and_sensitive(tmp_path):
-    from xg.cli.completion import enumerate_workspace_names
+    from routivus.cli.completion import enumerate_workspace_names
 
     root = _make_workspace(tmp_path)
     names = enumerate_workspace_names(root, "")
@@ -378,7 +378,7 @@ def test_p3_enumerate_root_level_omits_hidden_and_sensitive(tmp_path):
 
 
 def test_p3_deny_patterns_filter_sensitive_files(tmp_path):
-    from xg.cli.completion import enumerate_workspace_names
+    from routivus.cli.completion import enumerate_workspace_names
 
     root = _make_workspace(tmp_path)
     names = enumerate_workspace_names(root, "xg/")
@@ -388,7 +388,7 @@ def test_p3_deny_patterns_filter_sensitive_files(tmp_path):
 
 
 def test_p3_traversal_and_absolute_never_escape_workspace(tmp_path):
-    from xg.cli.completion import enumerate_workspace_names, path_completion_candidates
+    from routivus.cli.completion import enumerate_workspace_names, path_completion_candidates
 
     root = _make_workspace(tmp_path)
     assert enumerate_workspace_names(root, "..") == []
@@ -397,7 +397,7 @@ def test_p3_traversal_and_absolute_never_escape_workspace(tmp_path):
 
 
 def test_p3_allow_patterns_constrain_scope_hints(tmp_path):
-    from xg.cli.completion import enumerate_workspace_names
+    from routivus.cli.completion import enumerate_workspace_names
 
     root = _make_workspace(tmp_path)
     names = enumerate_workspace_names(root, "xg/", allow_patterns=("xg/lib/**",))
@@ -406,7 +406,7 @@ def test_p3_allow_patterns_constrain_scope_hints(tmp_path):
 
 
 def test_p3_result_cap(tmp_path):
-    from xg.cli.completion import enumerate_workspace_names
+    from routivus.cli.completion import enumerate_workspace_names
 
     root = _make_workspace(tmp_path)
     names = enumerate_workspace_names(root, "xg/a", limit=1)
@@ -414,7 +414,7 @@ def test_p3_result_cap(tmp_path):
 
 
 def test_p3_path_completion_line(tmp_path):
-    from xg.cli.completion import path_completion_candidates
+    from routivus.cli.completion import path_completion_candidates
 
     root = _make_workspace(tmp_path)
     cands = path_completion_candidates("/team resume t1 --write-scope xg/a", None, root)
@@ -424,7 +424,7 @@ def test_p3_path_completion_line(tmp_path):
 
 
 def test_p3_apply_completion_keeps_trailing_tokens_and_cursor():
-    from xg.cli.completion import apply_completion, CompletionCandidate
+    from routivus.cli.completion import apply_completion, CompletionCandidate
 
     line = "/team resume t1 --write-scope xg/au extra"
     cursor_idx = line.index("xg/au")

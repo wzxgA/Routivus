@@ -1,4 +1,4 @@
-"""ConfigManager 单元测试：三层合并、持久化、旧环境变量兼容。"""
+﻿"""ConfigManager 单元测试：三层合并、持久化、旧环境变量兼容。"""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from xg.config.manager import ConfigManager, ProviderNotConfigured, mask_key
-from xg.config.settings import load_settings
+from routivus.config.manager import ConfigManager, ProviderNotConfigured, mask_key
+from routivus.config.settings import load_settings
 
 from tests.conftest import seed_config
 

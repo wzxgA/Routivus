@@ -1,4 +1,4 @@
-"""共享测试夹具。"""
+﻿"""共享测试夹具。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from xg.config.settings import Settings
-from xg.tool.builtin import build_registry
+from routivus.config.settings import Settings
+from routivus.tool.builtin import build_registry
 
 
 # 测试用默认自定义 providers：等价于用户在 config.json 中自行定义的一组服务商。

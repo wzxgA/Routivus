@@ -1,10 +1,10 @@
-"""MCP configuration merge, validation and secret expansion tests."""
+﻿"""MCP configuration merge, validation and secret expansion tests."""
 
 from __future__ import annotations
 
 import json
 
-from xg.config.mcp import McpConfigManager
+from routivus.config.mcp import McpConfigManager
 
 
 def _write(path, data) -> None:

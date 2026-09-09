@@ -1,17 +1,17 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
-from xg.web.errors import WebRateLimitError
-from xg.web.models import SearchRequest, SearchResponse, SearchResult, WebConfig, WebSearchConfig
-from xg.web.search import WebSearchService
+from routivus.web.errors import WebRateLimitError
+from routivus.web.models import SearchRequest, SearchResponse, SearchResult, WebConfig, WebSearchConfig
+from routivus.web.search import WebSearchService
 
 
 class FakeProvider:
     name = "fake"
 
     def health(self):
-        from xg.web.models import ProviderHealth
+        from routivus.web.models import ProviderHealth
         return ProviderHealth("fake", True)
 
     async def search(self, request):

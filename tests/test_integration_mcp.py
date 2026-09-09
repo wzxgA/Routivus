@@ -1,4 +1,4 @@
-"""MCP end-to-end integration through ReAct and shared commands."""
+﻿"""MCP end-to-end integration through ReAct and shared commands."""
 
 from __future__ import annotations
 
@@ -6,17 +6,17 @@ import json
 import sys
 from typing import AsyncIterator
 
-from xg.agent.react import ReActAgent
-from xg.cli.commands import CommandContext, CommandService
-from xg.config.mcp import McpConfigManager
-from xg.config.settings import Settings
-from xg.llm.client import LlmClient
-from xg.llm.types import StreamEvent, ToolCall
-from xg.mcp.manager import McpManager
-from xg.mcp.http import StreamableHttpTransport
-from xg.mcp.transport import McpTransport
-from xg.safety.hitl import HITLPolicy
-from xg.tool.registry import ToolRegistry
+from routivus.agent.react import ReActAgent
+from routivus.cli.commands import CommandContext, CommandService
+from routivus.config.mcp import McpConfigManager
+from routivus.config.settings import Settings
+from routivus.llm.client import LlmClient
+from routivus.llm.types import StreamEvent, ToolCall
+from routivus.mcp.manager import McpManager
+from routivus.mcp.http import StreamableHttpTransport
+from routivus.mcp.transport import McpTransport
+from routivus.safety.hitl import HITLPolicy
+from routivus.tool.registry import ToolRegistry
 import httpx
 
 

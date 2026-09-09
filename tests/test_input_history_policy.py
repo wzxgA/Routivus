@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
-from xg.input_history.policy import is_sensitive, normalize_text, should_record
+from routivus.input_history.policy import is_sensitive, normalize_text, should_record
 
 
 @pytest.mark.parametrize("text", [

@@ -1,4 +1,4 @@
-"""phase-04 A2 稳定层（会话内迟滞）测试。
+﻿"""phase-04 A2 稳定层（会话内迟滞）测试。
 
 覆盖：连续跳档冻结、硬规则解冻、窗口过期自动解冻、冻结压制 learned_rules、
 与 600s 防降级叠加共存。
@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
-from xg.adaptive.learned_rules import LearnedRules
-from xg.router.postprocess import Hysteresis, postprocess
+from routivus.adaptive.learned_rules import LearnedRules
+from routivus.router.postprocess import Hysteresis, postprocess
 
 
 def _lr_upgrade_on_short() -> LearnedRules:

@@ -1,4 +1,4 @@
-"""第 4 期单元测试：拆解解析 / DAG 批次 / 审阅 / 执行器。"""
+﻿"""第 4 期单元测试：拆解解析 / DAG 批次 / 审阅 / 执行器。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import AsyncIterator
 
 import pytest
 
-from xg.agent.plan import (
+from routivus.agent.plan import (
     PlanError,
     PlanEvent,
     PlanExecutor,
@@ -19,13 +19,13 @@ from xg.agent.plan import (
     build_batches,
     parse_tasks,
 )
-from xg.config.settings import Settings
-from xg.llm.client import LlmClient, LlmError
-from xg.llm.types import Message, StreamEvent, ToolCall, ToolResult
-from xg.safety.guards import guard_tool_call
-from xg.safety.hitl import HITLPolicy
-from xg.tool.builtin import build_registry
-from xg.tool.registry import Tool, ToolRegistry
+from routivus.config.settings import Settings
+from routivus.llm.client import LlmClient, LlmError
+from routivus.llm.types import Message, StreamEvent, ToolCall, ToolResult
+from routivus.safety.guards import guard_tool_call
+from routivus.safety.hitl import HITLPolicy
+from routivus.tool.builtin import build_registry
+from routivus.tool.registry import Tool, ToolRegistry
 
 
 def _task(tid: str, deps: list[str] | None = None) -> PlanTask:

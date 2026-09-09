@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
-from xg.skill.errors import SkillSecurityError
-from xg.skill.policy import validate_reference_path
+from routivus.skill.errors import SkillSecurityError
+from routivus.skill.policy import validate_reference_path
 
 
 @pytest.mark.parametrize("raw", ["../x.md", "/tmp/x.md", "references/../x.md", "references\\..\\x.md", ""])

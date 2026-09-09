@@ -1,4 +1,4 @@
-"""LLM 层测试：respx mock SSE 流。"""
+﻿"""LLM 层测试：respx mock SSE 流。"""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import httpx
 import pytest
 import respx
 
-from xg.llm.client import LlmError
-from xg.llm.openai_compat import OpenAICompatClient
-from xg.llm.types import Message, StreamEvent
+from routivus.llm.client import LlmError
+from routivus.llm.openai_compat import OpenAICompatClient
+from routivus.llm.types import Message, StreamEvent
 
 API_URL = "https://api.test/v1/chat/completions"
 
@@ -244,7 +244,7 @@ class TestErrors:
 
 class TestMessageFormat:
     def test_assistant_tool_calls_to_api(self):
-        from xg.llm.types import ToolCall
+        from routivus.llm.types import ToolCall
 
         msg = Message(
             role="assistant",

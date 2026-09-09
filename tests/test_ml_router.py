@@ -1,4 +1,4 @@
-"""第 5 期 B2（ML 精判接入与静默回落）测试。
+﻿"""第 5 期 B2（ML 精判接入与静默回落）测试。
 
 缺 ML 依赖/无产物时：MLRouter 整类 skip（与"产物缺依赖时静默回落"的
 主进程语义一致）；纯逻辑的回落/门控测试在依赖缺失时降级为构造性跳过。
@@ -13,9 +13,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
-from xg.adaptive.calibrate import Calibration  # noqa: E402
-from xg.router import route  # noqa: E402
-from xg.router.ml_router import MLRouter, ARTIFACT_FORMAT  # noqa: E402
+from routivus.adaptive.calibrate import Calibration  # noqa: E402
+from routivus.router import route  # noqa: E402
+from routivus.router.ml_router import MLRouter, ARTIFACT_FORMAT  # noqa: E402
 
 
 def _ml_available() -> bool:
@@ -66,7 +66,7 @@ class TestFallback:
 
     def test_available_preserves_import(self):
         """即便产物缺失，import MLRouter 也不触发 ML 依赖导入（主进程零硬依赖）。"""
-        import xg.router.ml_router as m
+        import routivus.router.ml_router as m
         assert m.ARTIFACT_FORMAT == ARTIFACT_FORMAT
 
 
@@ -162,7 +162,7 @@ class TestBundledBootstrap:
     def test_default_dir_uses_bundled_artifacts(self, tmp_path, monkeypatch):
         """空数据目录首启：随包 router.lgb + 语义编码器自动落位，ML 精判开箱可用。"""
         monkeypatch.setenv("XG_ADAPTIVE_DIR", str(tmp_path))
-        from xg.router.semantic import load_semantic_encoder
+        from routivus.router.semantic import load_semantic_encoder
         sem = load_semantic_encoder(None)
         r = MLRouter(None, semantic=sem)  # 默认路径 → 触发随包落位
         assert r.available

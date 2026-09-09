@@ -1,8 +1,8 @@
-"""第五期 SQLite 长期记忆测试。"""
+﻿"""第五期 SQLite 长期记忆测试。"""
 
 from __future__ import annotations
 
-from xg.memory.store import SQLiteMemoryStore
+from routivus.memory.store import SQLiteMemoryStore
 
 
 def test_store_crud_duplicate_and_unicode_search(tmp_path):

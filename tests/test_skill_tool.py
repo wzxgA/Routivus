@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
-from xg.skill.models import SkillConfig
-from xg.skill.registry import SkillRegistry
-from xg.tool.builtin import build_registry
+from routivus.skill.models import SkillConfig
+from routivus.skill.registry import SkillRegistry
+from routivus.tool.builtin import build_registry
 
 
 def make_registry(tmp_path, enabled=True):

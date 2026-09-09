@@ -1,4 +1,4 @@
-"""第 6 期 C1（bge → ONNX 导出脚本）测试。
+﻿"""第 6 期 C1（bge → ONNX 导出脚本）测试。
 
 纯校验逻辑（embed 维度 / 余弦一致性 / 延迟）无 ML 依赖直接测；
 真实导出端到端缺 semantic extras（torch/optimum/onnxruntime）时整段 skip，
@@ -75,7 +75,7 @@ class TestDefaults:
 
     def test_default_path_under_adaptive(self):
         # 默认产物路径应位于数据目录，文件名 router_semantics.onnx
-        from xg.adaptive.store import SEMANTIC_ONNX
+        from routivus.adaptive.store import SEMANTIC_ONNX
         p = default_onnx_path()
         assert p.name == SEMANTIC_ONNX
 

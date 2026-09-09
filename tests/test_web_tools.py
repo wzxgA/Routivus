@@ -1,7 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from xg.config.web import WebConfigManager
-from xg.tool.builtin import build_registry
+from routivus.config.web import WebConfigManager
+from routivus.tool.builtin import build_registry
 
 
 def test_web_tools_are_registered_only_when_enabled(tmp_path):

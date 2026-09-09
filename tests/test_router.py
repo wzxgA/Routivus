@@ -1,11 +1,11 @@
-"""SmartRouter 路由核心单元测试（第 1 期子步骤 A）。
+﻿"""SmartRouter 路由核心单元测试（第 1 期子步骤 A）。
 
 断言依据：XG-docs/smart-docs/ADAPTIVE_ROUTING.md §6.1 验证表与 §7 后处理规则。
 """
 
 from __future__ import annotations
 
-from xg.router import (
+from routivus.router import (
     TIER_NAMES,
     extract,
     postprocess,
@@ -14,10 +14,10 @@ from xg.router import (
     rule_route,
     rule_score,
 )
-from xg.router.features import code_blocks
-from xg.router.keywords import KEYWORDS
-from xg.router.postprocess import hit
-from xg.router.rule_router import confidence
+from routivus.router.features import code_blocks
+from routivus.router.keywords import KEYWORDS
+from routivus.router.postprocess import hit
+from routivus.router.rule_router import confidence
 
 from tests.conftest import seed_config
 
@@ -180,7 +180,7 @@ class TestModelTiers:
     def _manager(tmp_path, env=None):
         import json as _json
 
-        from xg.config.manager import ConfigManager
+        from routivus.config.manager import ConfigManager
 
         user_dir = tmp_path / "user_xg"
         project_dir = tmp_path / "proj_xg"
@@ -243,7 +243,7 @@ class TestModelTiersValidation:
     def _manager(tmp_path, env=None, user_cfg=None):
         import json as _json
 
-        from xg.config.manager import ConfigManager
+        from routivus.config.manager import ConfigManager
 
         user_dir = tmp_path / "user_xg"
         project_dir = tmp_path / "proj_xg"
