@@ -1,9 +1,9 @@
-﻿"""SmartRouter ML 精判接入与静默回落（第 5 期 B2）。
+"""SmartRouter ML 精判接入与静默回落。
 
 职责：加载离线训练的产物（tools/train_router.py 生成的 router.lgb），
 在规则路由之后、安全后处理之前参与精判——取"概率最高档"，受 置信门 +
 校准偏置 约束；任何缺依赖 / 缺产物 / 产物损坏 情形一律**静默回落**，
-行为退化为纯规则（与本模块不存在的第 4 期行为完全一致）。
+行为退化为纯规则。
 
 导入保护（主进程零硬性 ML 依赖）：
     joblib / lightgbm / sklearn / numpy 仅在 onnx 运行期 import，
@@ -40,7 +40,7 @@ class MLRouter:
         self._vectorizer = None
         self._model = None
         self._feature_keys: tuple[str, ...] = ()
-        # 第 6 期 C2：可选语义编码器（bge 512 维）。训练产物带 sem_dim>0 时，
+        # 可选语义编码器（bge 512 维）。训练产物带 sem_dim>0 时，
         # 预测需语义列；语义不可用则整个静默回落（无法提供既定列宽）。
         self._semantic = semantic
         self._sem_dim = 0
@@ -103,7 +103,7 @@ class MLRouter:
 
     @property
     def sem_dim(self) -> int:
-        """训练时并入的语义特征维度（0=无语义，纯第 5 期行为）。"""
+        """训练时并入的语义特征维度（0=无语义）。"""
         return self._sem_dim
 
     @property
@@ -113,9 +113,9 @@ class MLRouter:
 
     # -- 预测 -----------------------------------------------------------
     def _encode(self, text: str, features: dict | None):
-        """把 text + 数值特征 拼成 (TF-IDF, 数值) 稀疏输入；无需义时行为同第 5 期。
+        """把 text + 数值特征 拼成 (TF-IDF, 数值) 稀疏输入；无语义时即为纯规则列组合。
 
-        语义列（sem_dim>0，第 6 期）追加在数值列之后，顺序为
+        语义列（sem_dim>0）追加在数值列之后，顺序为
         [TF-IDF] + [数值] + [语义512]，与 train_router 训练矩阵严格一致。
         """
         import numpy as np  # noqa: PLC0415

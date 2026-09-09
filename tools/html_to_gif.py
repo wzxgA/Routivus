@@ -11,7 +11,7 @@ setTimeout 按倍率压缩），逐帧截图 .term 区域，最后用 Pillow 合
 
 用法:
     uv run --with playwright --with pillow python tools/html_to_gif.py
-        [--html XG-docs/tuidemo.html] [--out XG-docs/tuidemo.gif]
+        [--html Routivus-docs/tuidemo.html] [--out Routivus-docs/tuidemo.gif]
         [--speed 0.55] [--fps 8] [--scale 0.8] [--max-sec 240] [--idle-sec 12]
 """
 from __future__ import annotations
@@ -133,8 +133,8 @@ def build_gif(pngs, hashes, frame_ms, scale, out: Path, tail_ms=1200, colors=200
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--html", default="XG-docs/tuidemo.html")
-    ap.add_argument("--out", default="XG-docs/tuidemo.gif")
+    ap.add_argument("--html", default="Routivus-docs/tuidemo.html")
+    ap.add_argument("--out", default="Routivus-docs/tuidemo.gif")
     ap.add_argument("--speed", type=float, default=0.55,
                     help=">=120ms 延迟的压缩倍率，越小越快")
     ap.add_argument("--fps", type=int, default=8)

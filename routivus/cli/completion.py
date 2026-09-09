@@ -1,4 +1,4 @@
-﻿"""Pure command-completion parsing and token replacement for XG.
+﻿"""Pure command-completion parsing and token replacement for Routivus.
 
 This is the P0 slice of ``enhancement-v2/07``: it moves the parsing and
 text-replacement logic out of the Textual ``Composer`` widget so it can be
@@ -548,7 +548,7 @@ def _dynamic_slot_spec(
         current_index = 0
 
     # Option value being typed: an option token appears at or before the
-    # cursor and declares a dynamic value. e.g. `/team resume t4 --write-scope xg/`
+    # cursor and declares a dynamic value. e.g. `/team resume t4 --write-scope routivus/`
     for idx, token in enumerate(tokens):
         if idx >= current_index or token.text.startswith("--") is False:
             continue
@@ -590,8 +590,8 @@ DEFAULT_PATH_DENY_PATTERNS: tuple[str, ...] = (
     "**/*password*",
     ".git",
     "**/.git*",
-    ".xg/memory.db",
-    ".xg/audit.log",
+    ".routivus/memory.db",
+    ".routivus/audit.log",
 )
 DEFAULT_PATH_LIMIT = 30
 DEFAULT_PATH_MAX_DEPTH = 8
@@ -721,7 +721,7 @@ def path_completion_candidates(
     if rel is None:
         return []
     # Preserve the user's intent to list a directory's children: if they typed
-    # a trailing slash (``xg/auth/`` vs ``xg/auth``), enumeration must descend
+    # a trailing slash (``routivus/auth/`` vs ``routivus/auth``), enumeration must descend
     # into that directory instead of treating the name as a prefix filter on
     # the parent listing. normalize_path_value strips the trailing slash so we
     # re-attach it purely as a listing hint (it never affects claim matching).

@@ -1,6 +1,6 @@
 ﻿"""配置合并与持久化。
 
-优先级（从低到高）：默认值 < 用户级 ~/.xg/config.json < 项目级 .xg/config.json < 环境变量/.env。
+优先级（从低到高）：默认值 < 用户级 ~/.routivus/config.json < 项目级 .routivus/config.json < 环境变量/.env。
 API Key 只从环境变量 / .env 读取，绝不写入配置文件。
 """
 
@@ -26,7 +26,7 @@ class ProviderNotConfigured(Exception):
 
 def _api_key_env_for(name: str) -> str:
     """由 provider 名称自动推导对应的 API Key 环境变量名。"""
-    return f"XG_{name.upper()}_API_KEY"
+    return f"ROUTIVUS_{name.upper()}_API_KEY"
 
 # SmartRouter 档位固定名称（顺序即惯例展示顺序）
 _SMART_ROUTER_TIERS = ("Basic", "Enhanced", "Superior", "Ultimate")
@@ -98,8 +98,8 @@ class ConfigManager:
         env_file: str | Path | None = None,
         load_env: bool = True,
     ) -> None:
-        self.user_dir = Path(user_dir) if user_dir else Path.home() / ".xg"
-        self.project_dir = Path(project_dir) if project_dir else Path.cwd() / ".xg"
+        self.user_dir = Path(user_dir) if user_dir else Path.home() / ".routivus"
+        self.project_dir = Path(project_dir) if project_dir else Path.cwd() / ".routivus"
         self.user_config_path = self.user_dir / USER_CONFIG
         self.project_config_path = self.project_dir / USER_CONFIG
         self.env: dict[str, str] = env if env is not None else os.environ
@@ -218,8 +218,8 @@ class ConfigManager:
         return provider.api_key if not _is_placeholder(provider.api_key) else ""
 
     def resolve_window(self, provider: Provider) -> int:
-        """上下文窗口：XG_CONTEXT_WINDOW 环境变量 > provider 能力。"""
-        raw = self.env.get("XG_CONTEXT_WINDOW", "")
+        """上下文窗口：ROUTIVUS_CONTEXT_WINDOW 环境变量 > provider 能力。"""
+        raw = self.env.get("ROUTIVUS_CONTEXT_WINDOW", "")
         try:
             return int(raw) if raw else provider.context_window
         except ValueError:
@@ -229,7 +229,7 @@ class ConfigManager:
 
     def active(self) -> ActiveConfig:
         merged = self._merged_config()
-        # 激活的 base provider 只认 config.json 的 active_provider（不再读 XG_PROVIDER）。
+        # 激活的 base provider 只认 config.json 的 active_provider（不再读 ROUTIVUS_PROVIDER）。
         # 未配置可用的 provider 时 fail-fast 提示。
         provider_name = str(merged.get("active_provider", "") or "")
         provider = self.resolve_provider(provider_name) if provider_name else None
@@ -240,7 +240,7 @@ class ConfigManager:
                 "并设置 active_provider 选中 base；配置可全程用 /provider 命令或 TUI 面板完成。"
             )
 
-        # 模型：配置 active_model > provider 默认（不再读 XG_MODEL）
+        # 模型：配置 active_model > provider 默认（不再读 ROUTIVUS_MODEL）
         model = (
             str(merged.get("active_model", "") or "")
             or provider.default_model

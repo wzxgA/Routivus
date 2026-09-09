@@ -1,4 +1,4 @@
-﻿"""第 4 期集成测试：mock LLM 驱动真实工具，/plan 端到端流程。"""
+"""集成测试：mock LLM 驱动真实工具，/plan 端到端流程。"""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ async def test_plan_end_to_end(tmp_path, settings):
             ],
         },
     )
-    audit = AuditLogger(tmp_path / ".xg" / "audit.log")
+    audit = AuditLogger(tmp_path / ".routivus" / "audit.log")
     registry = build_registry(
         base_dir=tmp_path,
         guard=lambda n, a: guard_tool_call(tmp_path, n, a),
@@ -110,7 +110,7 @@ async def test_plan_end_to_end(tmp_path, settings):
     assert "out.txt 已写入 hello plan" in t2_request[0]["content"]
 
     # 审计含 subtask 事件
-    log_lines = (tmp_path / ".xg" / "audit.log").read_text(encoding="utf-8").strip().splitlines()
+    log_lines = (tmp_path / ".routivus" / "audit.log").read_text(encoding="utf-8").strip().splitlines()
     actions = [json.loads(line)["action"] for line in log_lines]
     assert "subtask_started" in actions
     assert "subtask_done" in actions
@@ -127,7 +127,7 @@ async def test_plan_review_cancel_no_side_effect(tmp_path, settings):
         },
     )
     registry = build_registry(base_dir=tmp_path)
-    audit = AuditLogger(tmp_path / ".xg" / "audit.log")
+    audit = AuditLogger(tmp_path / ".routivus" / "audit.log")
 
     async def reviewer(plan):
         return ReviewDecision(action="cancel")
@@ -141,7 +141,7 @@ async def test_plan_review_cancel_no_side_effect(tmp_path, settings):
     assert not (tmp_path / "out.txt").exists()
     # 只有规划调用，无任何子任务 / 工具调用
     assert len(client.seen_messages) == 1
-    log_path = tmp_path / ".xg" / "audit.log"
+    log_path = tmp_path / ".routivus" / "audit.log"
     if log_path.exists():  # 取消时可能未写入任何审计记录
         log_lines = log_path.read_text(encoding="utf-8").strip().splitlines()
         assert all(
@@ -208,7 +208,7 @@ async def test_plan_subtask_hitl_integration(tmp_path, settings):
         return ApprovalDecision(allow=True, reason="user_approved")
 
     policy = HITLPolicy(enabled=True, requester=requester)
-    audit = AuditLogger(tmp_path / ".xg" / "audit.log")
+    audit = AuditLogger(tmp_path / ".routivus" / "audit.log")
 
     async def reviewer(plan):
         return ReviewDecision(action="execute")

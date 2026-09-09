@@ -8,9 +8,9 @@ from routivus.tool.builtin import build_registry
 
 
 def make_registry(tmp_path, enabled=True):
-    path = tmp_path / ".xg" / "skills" / "demo"
+    path = tmp_path / ".routivus" / "skills" / "demo"
     path.mkdir(parents=True)
-    (path / "SKILL.md").write_text("<!-- xg-skill: name=demo -->\n只读规范", encoding="utf-8")
+    (path / "SKILL.md").write_text("<!-- routivus-skill: name=demo -->\n只读规范", encoding="utf-8")
     return SkillRegistry(
         project_root=tmp_path, config=SkillConfig(enabled=enabled), builtin_root=tmp_path / "none"
     )

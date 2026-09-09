@@ -1,4 +1,4 @@
-"""UI-independent orchestration for one interactive XG session."""
+"""UI-independent orchestration for one interactive Routivus session."""
 
 from __future__ import annotations
 
@@ -148,14 +148,14 @@ class SessionController:
         # SmartRouter 防降级上下文（600s 内最多降一档），与 inline 主循环一致
         self._router_prev_tier: str | None = None
         self._router_prev_ts: float | None = None
-        # SmartRouter 反馈采集（phase-03 步骤 B）
+        # SmartRouter 反馈采集
         self._feedback = FeedbackRecorder(
             session=str(getattr(manager, "project_dir", "") or "")
         )
-        # SmartRouter 校准（phase-03 步骤 C）：启动时聚合 feedback.log 并落盘
+        # SmartRouter 校准：启动时聚合 feedback.log 并落盘
         from routivus.adaptive.calibrate import recalibrate
         self._calibration = recalibrate()
-        # SmartRouter 自学习/稳定/ML（phase-04 A1/A2 + phase-05 B2）：挂到 agent 上，
+        # SmartRouter 自学习/稳定/ML：挂到 agent 上，
         # 与 inline 主循环自洽；learned_rules 供路由局部微调、hysteresis 供稳定层、
         # ml 供 status 显示与精判。产物存在可用则参与精判，否则静默回落。
         from routivus.adaptive.learned_rules import re_learn
@@ -185,8 +185,8 @@ class SessionController:
                 count = 0
             return MemoryInspectorSnapshot(
                 project_root=str(memory.project_root),
-                xg_loaded="XG.md" in sources,
-                xg_local_loaded="XG.local.md" in sources,
+                routivus_loaded="Routivus.md" in sources,
+                routivus_local_loaded="Routivus.local.md" in sources,
                 warning_count=warnings,
                 memory_count=count,
                 store_available=memory.store is not None,
@@ -233,7 +233,7 @@ class SessionController:
             self.on_state_change(self.state)
 
     def _sync_smart_router_snapshot(self, active_tier: str = "") -> None:
-        """按当前开关与档位配置重建 Header 快照（phase-02 步骤 C）。
+        """按当前开关与档位配置重建 Header 快照。
 
         off 态写入空快照（Header 回到单行渲染）；已同步为 off 时不重复写。
         """
@@ -273,7 +273,7 @@ class SessionController:
         """SmartRouter：普通轮在执行前路由并切换模型（与 inline 主循环行为一致）。
 
         只在开关开启时执行；切换失败保持上一档防降级上下文并仍按结果档展示快照。
-        同时接入反馈信号采集（phase-03 步骤 B：clarify / cmd_retry / short_high_tier）。
+        同时接入反馈信号采集。
         """
         if not self.settings.smart_router_enabled:
             return

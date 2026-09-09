@@ -22,11 +22,11 @@ class SkillRegistry:
         self.config_manager = config_manager
         self.audit = audit
         builtin = Path(builtin_root) if builtin_root else Path(__file__).resolve().parents[1] / "skills"
-        user_dir = Path(getattr(config_manager, "user_dir", Path.home() / ".xg"))
+        user_dir = Path(getattr(config_manager, "user_dir", Path.home() / ".routivus"))
         self.roots = (
             SkillRoot("builtin", builtin.resolve()),
             SkillRoot("user", (user_dir / "skills").resolve()),
-            SkillRoot("project", (self.project_root / ".xg" / "skills").resolve()),
+            SkillRoot("project", (self.project_root / ".routivus" / "skills").resolve()),
         )
         self._infos: tuple[SkillInfo, ...] = ()
         self._cache: dict[tuple[str, tuple[str, ...]], SkillDocument] = {}

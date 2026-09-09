@@ -1,4 +1,4 @@
-﻿"""第 6 期 C1（bge → ONNX 导出脚本）测试。
+"""bge → ONNX 导出脚本测试。
 
 纯校验逻辑（embed 维度 / 余弦一致性 / 延迟）无 ML 依赖直接测；
 真实导出端到端缺 semantic extras（torch/optimum/onnxruntime）时整段 skip，

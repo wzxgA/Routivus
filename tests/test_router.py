@@ -1,6 +1,6 @@
-﻿"""SmartRouter 路由核心单元测试（第 1 期子步骤 A）。
+"""SmartRouter 路由核心单元测试。
 
-断言依据：XG-docs/smart-docs/ADAPTIVE_ROUTING.md §6.1 验证表与 §7 后处理规则。
+断言依据：Routivus-docs/smart-docs/ADAPTIVE_ROUTING.md §6.1 验证表与 §7 后处理规则。
 """
 
 from __future__ import annotations
@@ -189,7 +189,7 @@ class TestModelTiers:
         cfg = seed_config({})
         env = env or {}
         for name in list(cfg.get("providers", {})):
-            ek = f"XG_{name.upper()}_API_KEY"
+            ek = f"ROUTIVUS_{name.upper()}_API_KEY"
             if env.get(ek):
                 cfg["providers"][name]["api_key"] = env[ek]
         (user_dir / "config.json").write_text(_json.dumps(cfg), encoding="utf-8")
@@ -220,7 +220,7 @@ class TestModelTiers:
     def test_provider_without_model_uses_provider_default(self, tmp_path):
         """D5：档位只配 provider 不配 model → 用该 provider 默认模型。
         需要 manager 解析 provider 的 default_model。"""
-        manager = self._manager(tmp_path, env={"XG_GLM_API_KEY": "gk"})
+        manager = self._manager(tmp_path, env={"ROUTIVUS_GLM_API_KEY": "gk"})
         cfg = {"Basic": {"provider": "glm"}}
         t = resolve(0, "deepseek", "deepseek-chat", cfg, manager)
         assert t.provider == "glm"
@@ -229,7 +229,7 @@ class TestModelTiers:
 
     def test_empty_tier_falls_back_to_base(self, tmp_path):
         """D4：档位完全未配置 → 回落 base provider 及其生效模型。"""
-        manager = self._manager(tmp_path, env={"XG_GLM_API_KEY": "gk"})
+        manager = self._manager(tmp_path, env={"ROUTIVUS_GLM_API_KEY": "gk"})
         t = resolve(3, "deepseek", "deepseek-chat", {}, manager)
         assert t.provider == "deepseek"
         assert t.model == "deepseek-chat"
@@ -251,9 +251,9 @@ class TestModelTiersValidation:
         project_dir.mkdir(exist_ok=True)
         cfg = seed_config(user_cfg or {})
         env = env or {}
-        # env 里 XG_<NAME>_API_KEY 迁到 config 的 providers.<name>.api_key
+        # env 里 ROUTIVUS_<NAME>_API_KEY 迁到 config 的 providers.<name>.api_key
         for name in list(cfg.get("providers", {})):
-            ek = f"XG_{name.upper()}_API_KEY"
+            ek = f"ROUTIVUS_{name.upper()}_API_KEY"
             if env.get(ek):
                 cfg["providers"][name]["api_key"] = env[ek]
         (user_dir / "config.json").write_text(
@@ -263,7 +263,7 @@ class TestModelTiersValidation:
                              env=dict(env), load_env=False)
 
     def test_valid_provider_with_key_passes(self, tmp_path):
-        manager = self._manager(tmp_path, env={"XG_GLM_API_KEY": "gk"})
+        manager = self._manager(tmp_path, env={"ROUTIVUS_GLM_API_KEY": "gk"})
         cfg = {"Superior": {"provider": "glm", "model": "glm-4-plus"}}
         t = resolve(2, "deepseek", "deepseek-chat", cfg, manager)
         assert t.provider == "glm"
@@ -279,14 +279,14 @@ class TestModelTiersValidation:
         assert t.configured is False
 
     def test_placeholder_api_key_falls_back(self, tmp_path):
-        manager = self._manager(tmp_path, env={"XG_GLM_API_KEY": "sk-xxx"})
+        manager = self._manager(tmp_path, env={"ROUTIVUS_GLM_API_KEY": "sk-xxx"})
         cfg = {"Superior": {"provider": "glm", "model": "glm-4-plus"}}
         t = resolve(2, "deepseek", "deepseek-chat", cfg, manager)
         assert t.provider == "deepseek"
         assert t.configured is False
 
     def test_unknown_provider_falls_back(self, tmp_path):
-        manager = self._manager(tmp_path, env={"XG_GLM_API_KEY": "gk"})
+        manager = self._manager(tmp_path, env={"ROUTIVUS_GLM_API_KEY": "gk"})
         cfg = {"Superior": {"provider": "no-such-provider", "model": "whatever"}}
         t = resolve(2, "deepseek", "deepseek-chat", cfg, manager)
         assert t.provider == "deepseek"
@@ -300,7 +300,7 @@ class TestModelTiersValidation:
         assert t.configured is True
 
     def test_route_passes_manager_through(self, tmp_path):
-        manager = self._manager(tmp_path, env={"XG_GLM_API_KEY": "gk"})
+        manager = self._manager(tmp_path, env={"ROUTIVUS_GLM_API_KEY": "gk"})
         cfg = {"Ultimate": {"provider": "glm", "model": "glm-4-plus"}}
         r = route("设计日活千万的推荐系统架构并给出部署回滚方案",
                   fallback_provider="deepseek", fallback_model="deepseek-chat",

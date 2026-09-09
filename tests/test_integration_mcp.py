@@ -74,7 +74,7 @@ class McpCallingLlm(LlmClient):
 
 
 async def test_react_discovers_and_executes_mcp_tool(tmp_path):
-    config_path = tmp_path / ".xg" / "mcp.json"
+    config_path = tmp_path / ".routivus" / "mcp.json"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(json.dumps({
         "servers": {"demo": {"transport": "stdio", "command": "fake"}}
@@ -131,7 +131,7 @@ for line in sys.stdin:
         result = {}
     print(json.dumps({"jsonrpc":"2.0", "id":msg["id"], "result":result}), flush=True)
 '''
-    config_path = tmp_path / ".xg" / "mcp.json"
+    config_path = tmp_path / ".routivus" / "mcp.json"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(json.dumps({"servers": {"stdio": {
         "transport": "stdio", "command": sys.executable, "args": ["-u", "-c", script]
@@ -168,7 +168,7 @@ async def test_real_streamable_http_tools_and_resources_end_to_end(tmp_path):
             result = {}
         return httpx.Response(200, json={"jsonrpc":"2.0", "id":msg["id"], "result":result})
 
-    config_path = tmp_path / ".xg" / "mcp.json"
+    config_path = tmp_path / ".routivus" / "mcp.json"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(json.dumps({"servers": {"remote": {
         "transport": "streamable_http", "url": "https://example.test/mcp"

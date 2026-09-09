@@ -14,11 +14,11 @@ class Agent:
 
 
 def make_agent(tmp_path):
-    path = tmp_path / ".xg" / "skills" / "demo"
+    path = tmp_path / ".routivus" / "skills" / "demo"
     path.mkdir(parents=True)
-    (path / "SKILL.md").write_text("<!-- xg-skill: name=demo -->\n规范", encoding="utf-8")
+    (path / "SKILL.md").write_text("<!-- routivus-skill: name=demo -->\n规范", encoding="utf-8")
     user = tmp_path / "user"
-    manager_module = __import__("xg.config.skills", fromlist=["SkillConfigManager"])
+    manager_module = __import__("routivus.config.skills", fromlist=["SkillConfigManager"])
     manager = manager_module.SkillConfigManager(user_dir=user, project_root=tmp_path, env={})
     agent = Agent()
     agent.skill_registry = SkillRegistry(
@@ -36,7 +36,7 @@ async def test_skill_commands_list_load_enable_disable(tmp_path):
     assert ok and "规范" in message
     message, ok = await execute_skill_command(agent, "/skill disable demo")
     assert ok and "已禁用" in message
-    saved = json.loads((tmp_path / ".xg" / "skills.json").read_text(encoding="utf-8"))
+    saved = json.loads((tmp_path / ".routivus" / "skills.json").read_text(encoding="utf-8"))
     assert saved["enabled"]["demo"] is False
     message, ok = await execute_skill_command(agent, "/skill enable demo")
     assert ok and "已启用" in message

@@ -14,12 +14,12 @@ from tests.test_mcp_manager import FakeTransport
 
 
 async def test_mcp_tools_default_to_confirm_and_audit_redacts_args_and_logs(tmp_path):
-    config_path = tmp_path / ".xg" / "mcp.json"
+    config_path = tmp_path / ".routivus" / "mcp.json"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(json.dumps({
         "servers": {"demo": {"transport": "stdio", "command": "fake"}}
     }), encoding="utf-8")
-    audit_path = tmp_path / ".xg" / "audit.log"
+    audit_path = tmp_path / ".routivus" / "audit.log"
     audit = AuditLogger(audit_path)
     policy = HITLPolicy()
     registry = ToolRegistry(audit=audit)

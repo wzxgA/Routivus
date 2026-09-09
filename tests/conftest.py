@@ -1,4 +1,4 @@
-﻿"""共享测试夹具。"""
+"""共享测试夹具。"""
 
 from __future__ import annotations
 

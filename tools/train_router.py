@@ -1,6 +1,6 @@
-﻿"""SmartRouter 离线训练脚本（第 5 期 B1）。
+"""SmartRouter 离线训练脚本。
 
-标注数据 + feedback.log → TF-IDF + LightGBM，产物写 ~/.xg/adaptive/router.lgb。
+标注数据 + feedback.log → TF-IDF + LightGBM，产物写 ~/.routivus/adaptive/router.lgb。
 
 用法：
     python tools/train_router.py labeled.jsonl            # 标注 + feedback 混合训练
@@ -184,10 +184,10 @@ def train_and_save(
 ) -> dict[str, Any]:
     """TF-IDF + LightGBM 训练并落盘产物（joblib 单文件容器）。
 
-    ``semantic``（router.semantic.SemanticEncoder）可选，第 6 期 C2：
+    ``semantic``（router.semantic.SemanticEncoder）可选：
     提供且可用时把每个有原文样本编码成 512 维语义向量并入特征矩阵
     （[TF-IDF] + [数值] + [语义512]），并在产物写入 ``sem_dim``；
-    预测端 ml_router 以相同列序拼语义列。无用例时行为与第 5 期完全一致。
+    预测端 ml_router 以相同列序拼语义列。无用例时即纯数值列。
 
     返回训练报告 dict（样本量/验证准确率/产物大小/语义列维度）。
     """
@@ -241,7 +241,7 @@ def train_and_save(
         x_text_tr = csr_matrix((len(tr), 0))
         x_text_va = csr_matrix((len(va), 0))
 
-    # 语义列（第 6 期 C2）：有原文的样本拼 512 维编码，feedback 无原文用零行。
+    # 语义列：有原文的样本拼 512 维编码，feedback 无原文用零行。
     sem_dim = 0
     if semantic is not None and semantic.available and has_text:
         sem_dim = semantic.dim
@@ -283,7 +283,7 @@ def train_and_save(
         "trained_at": time.time(),
         "n_samples": len(samples),
         "val_accuracy": acc,
-        "sem_dim": sem_dim,  # 第 6 期 C2：绑定语义列宽，0=无语义
+        "sem_dim": sem_dim,  # 绑定语义列宽，0=无语义
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(payload, out_path)
@@ -312,13 +312,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--out", default=None,
-        help="产物路径，默认 ~/.xg/adaptive/router.lgb",
+        help="产物路径，默认 ~/.routivus/adaptive/router.lgb",
     )
     parser.add_argument("--val-size", type=float, default=0.2)
     parser.add_argument("--n-estimators", type=int, default=200)
     parser.add_argument(
         "--semantic-onnx", default=None,
-        help="bge 语义编码器产物 .onnx 路径（可选，第 6 期）；提供时并入 512 维语义列",
+        help="bge 语义编码器产物 .onnx 路径（可选）；提供时并入 512 维语义列",
     )
     args = parser.parse_args(argv)
 
@@ -342,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 1
 
-    # 第 6 期 C2：可选语义编码器（--semantic-onnx），可就可用性打印提示
+    # 可选语义编码器（--semantic-onnx），可就可用性打印提示
     semantic = None
     if args.semantic_onnx:
         from routivus.router.semantic import SemanticEncoder  # noqa: PLC0415
@@ -365,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _repo_default_artifact_path() -> Path:
-    """默认产物路径：用户数据目录 ~/.xg/adaptive/router.lgb（与 feedback.log 同目录）。"""
+    """默认产物路径：用户数据目录 ~/.routivus/adaptive/router.lgb（与 feedback.log 同目录）。"""
     from routivus.adaptive.store import data_dir
     return data_dir() / "router.lgb"
 

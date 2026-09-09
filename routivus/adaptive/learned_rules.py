@@ -1,19 +1,19 @@
-﻿"""自学习局部规则（phase-04 步骤 A1）。
+"""自学习局部规则。
 
 从 feedback.log 聚合"特征谓词 → 信号方向"的高频规律，生成受限规则
 （±1 档微调、置信度上限、支持度门槛），原子写 learned_rules.json。
 
-与 calibration（第 3 期）的区别：calibration 是**全局**档位偏置，
+与 calibration 的区别：calibration 是**全局**档位偏置，
 对同一档位的所有输入一视同仁；learned_rules 是**局部**规则，只影响
 命中某个特征谓词（如"含 debug 词""文本 ≤60 字"）的输入。二者叠加生效，
 learned_rules 注入点在 postprocess 的 6 条规则之后、防降级之后。
 
-关键约（验收，见 phase-04 §7）：
+关键约束（验收）：
 - 规则 action 恒为 ±1，不跳档；
 - 永不覆盖风险/闲聊/长上下文硬规则（由 postprocess 的 forced 标志保证）；
 - 单条规则 support < MIN_SUPPORT 不生成；
 - 多数派占比 < MIN_PRECISION 不生成（避免弱规则）；
-- 删除 learned_rules.json 即回到第 3 期行为。
+- 删除 learned_rules.json 即回到空态。
 """
 
 from __future__ import annotations
@@ -228,7 +228,7 @@ def load_learned_rules(path=None) -> LearnedRules:
 def re_learn(log_path=None, rules_path=None) -> LearnedRules:
     """读 feedback.log → 聚合 → 落盘 learned_rules.json → 返回结果。
 
-    无记录时返回空规则集且不写盘（沿用第 3 期"删掉 ~/.xg/adaptive/ 即
+    无记录时返回空规则集且不写盘（沿用"删掉 ~/.routivus/adaptive/ 即
     回到纯规则行为"的验收：不重建目录）。
     """
     records = read_feedback(log_path)

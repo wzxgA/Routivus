@@ -1,4 +1,4 @@
-﻿"""自适应信号判定与采集挂点单测（phase-03 步骤 B）。
+﻿"""自适应信号判定与采集挂点单测。
 
 重点：
 - 四类信号的触发/不触发边界（含权重 panic：权重应由 SIGNAL_META 决定，不在此处写死）；
@@ -24,7 +24,7 @@ TIER_NAMES = ["Basic", "Enhanced", "Superior", "Ultimate"]
 
 @pytest.fixture()
 def rec(monkeypatch, tmp_path):
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(tmp_path))
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(tmp_path))
     return FeedbackRecorder(session="proj-x")
 
 

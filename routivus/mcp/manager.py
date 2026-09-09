@@ -206,7 +206,7 @@ class McpManager:
             {
                 "protocolVersion": DEFAULT_PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "xg-cli", "version": "0.1.0"},
+                "clientInfo": {"name": "routivus", "version": "0.1.0"},
             },
         )
         version = str(result.get("protocolVersion", ""))
@@ -611,7 +611,7 @@ class McpManager:
     def format_status(self) -> str:
         lines: list[str] = []
         if not self.enabled:
-            return "MCP 已通过 XG_MCP_ENABLED 关闭。"
+            return "MCP 已通过 ROUTIVUS_MCP_ENABLED 关闭。"
         for error in self._config_errors:
             lines.append(f"配置错误: {error}")
         for snapshot in self.snapshots():

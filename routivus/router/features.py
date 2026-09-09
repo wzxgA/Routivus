@@ -1,7 +1,7 @@
 ﻿"""SmartRouter 规则特征管线。
 
 纯 Python 字符串统计，无需训练、零第三方依赖。
-特征定义来源：XG-docs/smart-docs/ADAPTIVE_ROUTING.md §4.1。
+特征定义来源：Routivus-docs/smart-docs/ADAPTIVE_ROUTING.md §4.1。
 """
 
 from __future__ import annotations

@@ -1,10 +1,7 @@
-﻿"""SmartRouter 路由核心包。
+"""SmartRouter 路由核心包。
 
 按输入文本的规则特征判断复杂度档位（Basic / Enhanced / Superior / Ultimate），
 并解析出该档位应使用的 provider / model。
-
-第 1 期子步骤 A：仅提供纯函数路由能力，尚未接入主循环与命令开关
-（见 XG-docs/smart-docs/states/phase-01-smart-router-core.md）。
 """
 
 from __future__ import annotations
@@ -61,15 +58,15 @@ def route(text: str, *,
     """对一段用户输入做完整路由：特征 → 规则打分 → 校准/ML精判 → 后处理 → 档位解析。
 
     ``manager``（ConfigManager）可选，传入时对显式配置档做 provider/API Key 校验。
-    ``calibration``（adaptive.Calibration）可选，phase-03 步骤 C 只读注入：
-    在规则打分后、安全后处理前应用档位偏置与置信门；不传即第 1 期纯规则行为。
-    ``learned_rules``（adaptive.LearnedRules）可选，phase-04 步骤 A1 只读注入：
-    postprocess 末尾对其命中的 ±1 档微调，硬规则强制时无效；不传即第 3 期行为。
-    ``hysteresis``（router.postprocess.Hysteresis）可选，phase-04 步骤 A2 只读注入：
-    作为最后一道闸抑制会话内短时跳档，硬规则强制时解冻；不传即 A1 行为。
-    ``ml_router``（router.ml_router.MLRouter）可选，phase-05 步骤 B2 只读注入：
+    ``calibration``（adaptive.Calibration）可选，只读注入：
+    在规则打分后、安全后处理前应用档位偏置与置信门；不传即纯规则行为。
+    ``learned_rules``（adaptive.LearnedRules）可选， 只读注入：
+    postprocess 末尾对其命中的 ±1 档微调，硬规则强制时无效；不传即无局部规则行为。
+    ``hysteresis``（router.postprocess.Hysteresis）可选， 只读注入：
+    作为最后一道闸抑制会话内短时跳档，硬规则强制时解冻；不传即无迟滞行为。
+    ``ml_router``（router.ml_router.MLRouter）可选， 只读注入：
     规则打分后参与精判（概率最高档 + 置信门 + 校准偏置），不可用/信心不足时
-    静默回落规则档位；硬规则决策不参与精判；不传即 A1+A2 行为。
+    静默回落规则档位；硬规则决策不参与精判；不传即纯规则行为。
     """
     f = extract(text)
     decision: RuleDecision = rule_route(f)

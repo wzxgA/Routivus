@@ -1,6 +1,6 @@
 ﻿"""SmartRouter 规则路由器（开局纯规则判断，零训练、零依赖）。
 
-评分公式与阈值来源：XG-docs/smart-docs/ADAPTIVE_ROUTING.md §6.1。
+评分公式与阈值来源：Routivus-docs/smart-docs/ADAPTIVE_ROUTING.md §6.1。
 
 与文档的两处有意差异（均为文档内部自相矛盾处，按注释意图/验证表修正）：
 1. Basic 档阈值取 ``s < 1.0`` 而非 ``s <= 1.0``：文档验证表中

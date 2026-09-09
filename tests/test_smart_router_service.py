@@ -1,4 +1,4 @@
-﻿"""测试 :class:`xg.config.smart_router_service.SmartRouterConfigService`。"""
+﻿"""测试 :class:`routivus.config.smart_router_service.SmartRouterConfigService`。"""
 
 from __future__ import annotations
 

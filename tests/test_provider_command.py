@@ -52,7 +52,7 @@ def test_add_rejects_duplicate(tmp_path: Path):
 
 
 def test_show_masks_key(tmp_path: Path):
-    manager = make_manager(tmp_path, env={"XG_OPENAI_API_KEY": "sk-abcd12345"})
+    manager = make_manager(tmp_path, env={"ROUTIVUS_OPENAI_API_KEY": "sk-abcd12345"})
     msg, ok = cmd(manager, "/provider show openai")
     assert ok is True
     assert "sk-abcd12345" not in msg  # 不暴露明文

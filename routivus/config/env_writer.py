@@ -1,7 +1,7 @@
 ﻿"""幂等读写本地 :file:`.env` 文件（用于交互式写入 API Key）。
 
 设计口径（对齐 02 方案 F2 / J2）：
-- config.json 永不落 key；key 只经 :file:`.env` 的 ``XG_<NAME>_API_KEY`` 提供。
+- config.json 永不落 key；key 只经 :file:`.env` 的 ``ROUTIVUS_<NAME>_API_KEY`` 提供。
 - 本模块只负责「定位、增改、去重、原子写」某一行，不做其他配置管理。
 - 写入对原文幂等：已存在 -> 原位保留注释风格并替换值；不存在 -> 追加。
 - 用临时文件 + ``os.replace`` 原子落盘，失败不破坏原文件。

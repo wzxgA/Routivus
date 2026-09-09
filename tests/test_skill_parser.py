@@ -12,7 +12,7 @@ def test_metadata_preserves_utf8_and_decodes_only_contract_escapes(tmp_path: Pat
     root = tmp_path / "demo"
     root.mkdir()
     (root / "SKILL.md").write_text(
-        '# Demo\n\n<!-- xg-skill: name=demo version="1\\.0" description="中文 \\"规范\\"" -->\n\n正文',
+        '# Demo\n\n<!-- routivus-skill: name=demo version="1\\.0" description="中文 \\"规范\\"" -->\n\n正文',
         encoding="utf-8",
     )
 
@@ -36,14 +36,14 @@ def test_skill_name_is_strict(name: str):
 def test_metadata_name_must_match_directory(tmp_path: Path):
     with pytest.raises(SkillParseError, match="目录名"):
         parse_metadata(
-            "demo", '<!-- xg-skill: name=other description="x" -->\n正文',
+            "demo", '<!-- routivus-skill: name=other description="x" -->\n正文',
             source="project", root=tmp_path,
         )
 
 
 def test_malformed_metadata_is_rejected(tmp_path: Path):
     with pytest.raises(SkillParseError):
-        parse_metadata("demo", "<!-- xg-skill: name=demo broken -->\n正文", source="project", root=tmp_path)
+        parse_metadata("demo", "<!-- routivus-skill: name=demo broken -->\n正文", source="project", root=tmp_path)
 
 
 def test_invalid_utf8_is_rejected(tmp_path: Path):

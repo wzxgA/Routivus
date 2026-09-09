@@ -32,7 +32,7 @@ class WebFetchConfig:
     max_chars: int = 32_000
     max_redirects: int = 5
     allowed_ports: tuple[int, ...] = (80, 443)
-    user_agent: str = "XG-CLI/0.1 (+https://github.com/xg-cli)"
+    user_agent: str = "Routivus/0.1 (+https://github.com/routivus)"
 
 
 @dataclass(frozen=True)

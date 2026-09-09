@@ -27,10 +27,10 @@ class SkillConfigManager:
     def __init__(self, *, user_dir: str | Path | None = None,
                  project_root: str | Path | None = None,
                  env: dict[str, str] | None = None) -> None:
-        self.user_dir = Path(user_dir) if user_dir else Path.home() / ".xg"
+        self.user_dir = Path(user_dir) if user_dir else Path.home() / ".routivus"
         self.project_root = (Path(project_root) if project_root else Path.cwd()).resolve()
         self.user_config_path = self.user_dir / SKILLS_CONFIG_FILE
-        self.project_config_path = self.project_root / ".xg" / SKILLS_CONFIG_FILE
+        self.project_config_path = self.project_root / ".routivus" / SKILLS_CONFIG_FILE
         self.env = env if env is not None else os.environ
         self.errors: list[str] = []
 
@@ -69,13 +69,13 @@ class SkillConfigManager:
         raw = _merge(user, project)
         env = self.env
         return SkillConfig(
-            enabled=self._bool(env.get("XG_SKILLS_ENABLED", raw.get("enabled", True)), True),
+            enabled=self._bool(env.get("ROUTIVUS_SKILLS_ENABLED", raw.get("enabled", True)), True),
             default_enabled=self._bool(raw.get("default_enabled", True), True),
-            max_index_items=self._int(env.get("XG_SKILLS_MAX_INDEX_ITEMS", raw.get("max_index_items", 20)), 20),
-            max_index_chars=self._int(env.get("XG_SKILLS_MAX_INDEX_CHARS", raw.get("max_index_chars", 4_096)), 4_096),
-            max_skill_chars=self._int(env.get("XG_SKILLS_MAX_CHARS", raw.get("max_skill_chars", 32_000)), 32_000),
-            max_reference_chars=self._int(env.get("XG_SKILLS_MAX_REFERENCE_CHARS", raw.get("max_reference_chars", 16_000)), 16_000),
-            max_loaded_chars=self._int(env.get("XG_SKILLS_MAX_LOADED_CHARS", raw.get("max_loaded_chars", 64_000)), 64_000),
+            max_index_items=self._int(env.get("ROUTIVUS_SKILLS_MAX_INDEX_ITEMS", raw.get("max_index_items", 20)), 20),
+            max_index_chars=self._int(env.get("ROUTIVUS_SKILLS_MAX_INDEX_CHARS", raw.get("max_index_chars", 4_096)), 4_096),
+            max_skill_chars=self._int(env.get("ROUTIVUS_SKILLS_MAX_CHARS", raw.get("max_skill_chars", 32_000)), 32_000),
+            max_reference_chars=self._int(env.get("ROUTIVUS_SKILLS_MAX_REFERENCE_CHARS", raw.get("max_reference_chars", 16_000)), 16_000),
+            max_loaded_chars=self._int(env.get("ROUTIVUS_SKILLS_MAX_LOADED_CHARS", raw.get("max_loaded_chars", 64_000)), 64_000),
             max_references=self._int(raw.get("max_references", 8), 8),
         )
 

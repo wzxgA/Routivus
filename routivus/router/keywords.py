@@ -1,6 +1,6 @@
 ﻿"""SmartRouter 关键词表（中英双语）。
 
-词表来源：XG-docs/smart-docs/ADAPTIVE_ROUTING.md §4.1。
+词表来源：Routivus-docs/smart-docs/ADAPTIVE_ROUTING.md §4.1。
 命中判定用子串匹配（``kw in text``），中文词无需分词即可工作；
 英文词统一转小写后匹配。可按业务增删，但不改变类别键名
 （features/rule_router/postprocess 依赖类别名）。

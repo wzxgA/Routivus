@@ -1,6 +1,6 @@
-﻿"""adaptive 数据的持久化工具：原子写、损坏回退读取、目录懒创建。
+"""adaptive 数据的持久化工具：原子写、损坏回退读取、目录懒创建。
 
-设计依据：phase-03 步骤 A。red line 为"损坏安全"——任何读失败都回退默认
+设计依据：red line 为"损坏安全"——任何读失败都回退默认
 值，绝不抛错影响启动；写文件用 tmp + os.replace（同目录原子覆盖），
 避免写一半导致 JSON 损坏。
 """
@@ -20,8 +20,8 @@ from . import data_dir
 FEEDBACK_LOG = "feedback.log"        # JSONL 追加，只增不改
 CALIBRATION_JSON = "calibration.json"  # 校准结果，原子写
 LEARNED_RULES_JSON = "learned_rules.json"  # 自学习规则
-ML_ROUTER_BIN = "router.lgb"         # 第 5 期 ML 精判产物（joblib 容器）
-SEMANTIC_ONNX = "router_semantics.onnx"  # 第 6 期 bge 语义编码器（ONNX int8）落盘（见 learned_rules.py）
+ML_ROUTER_BIN = "router.lgb"         # ML 精判产物（joblib 容器）
+SEMANTIC_ONNX = "router_semantics.onnx"  # bge 语义编码器（ONNX int8）落盘（见 learned_rules.py）
 SEMANTIC_ONNX_TOK = "router_semantics.json"  # 与 .onnx 同名的伴生 tokenizer（semantic.py 按主文件同级取）
 
 
@@ -44,8 +44,8 @@ def semantic_onnx_path() -> Path:
 def reset_adaptive_data() -> list[str]:
     """清空校准与自学习规则（feedback.log 保留作历史）。返回被删除的文件名。
 
-    phase-04 A3 的 `/smartRouter reset`。删除后校准/规则回到空态，
-    等价于"删掉 calibration.json + learned_rules.json 即回第 1 期行为"。
+    ``/smartRouter reset``。删除后校准/规则回到空态，
+    等价于“删掉 calibration.json + learned_rules.json 回到空态”。
     """
     removed: list[str] = []
     for p in (calibration_path(), learned_rules_path()):
@@ -83,7 +83,7 @@ def _atomic_copy(src: Path, dst: Path) -> None:
         raise
 
 
-# 随包默认产物（xg/assets/，hatch wheel 打包自带）：包内名称 -> 数据目录的目标路径
+# 随包默认产物（routivus/assets/，wheel 打包自带）：包内名称 -> 数据目录的目标路径
 _BUNDLED_BASENAMES = (ML_ROUTER_BIN, SEMANTIC_ONNX, SEMANTIC_ONNX_TOK)
 
 
@@ -95,13 +95,13 @@ def _bundled_target(name: str) -> Path:
 def ensure_default_artifacts() -> None:
     """首启把随包产物复制到数据目录；目标已存在则跳过（不覆盖用户数据）。
 
-    随包资源在 ``xg/assets/``：``router.lgb``（ML 精判兜底）与
+    随包资源在 ``routivus/assets/``：``router.lgb``（ML 精判兜底）与
     ``router_semantics.onnx`` + ``.json``（语义编码器）。无随包资源、
     目标已存在或复制失败时静默跳过——对应功能维持离线回落，绝不影响启动。
     """
     try:
         from importlib.resources import as_file, files  # noqa: PLC0415
-        root = files("xg").joinpath("assets")
+        root = files("routivus").joinpath("assets")
     except Exception:
         return
     for name in _BUNDLED_BASENAMES:
@@ -160,5 +160,5 @@ def read_json_safe(path: Path, default: Any = None) -> Any:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
     except Exception:
-        traceback.print_exc() if os.environ.get("XG_DEBUG") else None
+        traceback.print_exc() if os.environ.get("ROUTIVUS_DEBUG") else None
         return default

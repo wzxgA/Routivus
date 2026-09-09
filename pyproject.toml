@@ -1,7 +1,7 @@
 [project]
 name = "routivus"
 version = "0.1.0"
-description = "Routivus: smart-routing multi-agent backend (port of XG-CLI core)"
+description = "Routivus: smart-routing multi-agent backend (port of Routivus-CLI core)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

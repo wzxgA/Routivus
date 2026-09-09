@@ -1,4 +1,4 @@
-﻿"""adaptive 存储层单测（phase-03 步骤 A）。"""
+"""adaptive 存储层单测。"""
 
 from __future__ import annotations
 
@@ -12,15 +12,15 @@ from routivus.adaptive import store
 
 @pytest.fixture()
 def adapt_dir(monkeypatch, tmp_path):
-    """把 XG_ADAPTIVE_DIR 指到临时目录，隔离磁盘读写。"""
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(tmp_path))
+    """把 ROUTIVUS_ADAPTIVE_DIR 指到临时目录，隔离磁盘读写。"""
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(tmp_path))
     return tmp_path
 
 
 def test_data_dir_defaults_to_home(monkeypatch):
-    monkeypatch.delenv("XG_ADAPTIVE_DIR", raising=False)
+    monkeypatch.delenv("ROUTIVUS_ADAPTIVE_DIR", raising=False)
     d = data_dir()
-    assert ".xg" in str(d)
+    assert ".routivus" in str(d)
     assert d.name == "adaptive"
 
 
@@ -29,9 +29,9 @@ def test_data_dir_env_override(adapt_dir):
 
 
 def test_ensure_dir_creates_lazily(monkeypatch, tmp_path):
-    # 用 XG_ADAPTIVE_DIR 指向一个尚不存在的子目录，验证 ensure_dir 懒创建
+    # 用 ROUTIVUS_ADAPTIVE_DIR 指向一个尚不存在的子目录，验证 ensure_dir 懒创建
     target = tmp_path / "data"
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(target))
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(target))
     assert not target.exists()
     store.ensure_dir()
     assert target.is_dir()

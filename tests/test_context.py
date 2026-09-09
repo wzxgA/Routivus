@@ -1,4 +1,4 @@
-﻿"""第五期短期上下文与自动压缩测试。"""
+"""短期上下文与自动压缩测试。"""
 
 from __future__ import annotations
 

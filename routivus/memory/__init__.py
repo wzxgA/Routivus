@@ -1,4 +1,4 @@
-﻿"""第五期：项目记忆、长期记忆与上下文压缩。"""
+"""项目记忆、长期记忆与上下文压缩。"""
 
 from routivus.memory.context import CompressionResult, ConversationContext
 from routivus.memory.manager import MemoryManager, SharedSection

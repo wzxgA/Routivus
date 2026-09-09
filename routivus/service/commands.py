@@ -1,6 +1,6 @@
 """Programmatic slash-command execution, independent of any terminal UI.
 
-Port of `xg.cli.app`'s command-handler chain (model / smartRouter / config /
+Port of `routivus.cli.app`'s command-handler chain (model / smartRouter / config /
 hitl / memory / provider-resync / model-attach) into a UI-free service layer.
 
 All functions here return strings / tuples intended for a frontend to render;
@@ -243,7 +243,7 @@ def _cmd_smart_router(
                 mark = "(x)" if raw_entry else "-"
             lines.append(translate(language, "ui.router.tier_line", name=name, provider=target.provider, model=target.model, mark=mark))
         lines.append(translate(language, "ui.router.legend"))
-        # 校准状态（phase-03 步骤 C）：直接聚合 feedback.log 展示实时样本
+        # 校准状态：直接聚合 feedback.log 展示实时样本
         from routivus.adaptive.calibrate import aggregate
         from routivus.adaptive.feedback import read_feedback
         from routivus.adaptive.learned_rules import load_learned_rules, rule_hit_stats
@@ -256,7 +256,7 @@ def _cmd_smart_router(
             f"{name}={cal.bias[i]:+.2f}" for i, name in enumerate(TIER_NAMES)
         ]
         lines.append(translate(language, "ui.router.bias", values=" ".join(bias_parts), threshold=cal.threshold_adjust))
-        # 自学习规则（phase-04 A1/A3）：规则数量与在 feedback.log 上的命中情况
+        # 自学习规则：规则数量与在 feedback.log 上的命中情况
         rules = getattr(agent, "_smart_learned", load_learned_rules())
         stats = rule_hit_stats(records, rules)
         lines.append(
@@ -267,7 +267,7 @@ def _cmd_smart_router(
             lines.append(
                 translate(language, "ui.router.rule", predicate=pred, action=pr['action'], confidence=pr['confidence'], support=pr['support'], hits=pr['hits'])
             )
-        # ML 精判（phase-05 B2）：产物可用性观测；缺失/缺依赖时显示离线
+        # ML 精判：产物可用性观测；缺失/缺依赖时显示离线
         ml = getattr(agent, "_smart_ml", None)
         if ml is not None:
             if ml.available:
@@ -276,7 +276,7 @@ def _cmd_smart_router(
                 lines.append(translate(language, "ui.router.ml_available", suffix=suffix, dim=ml.sem_dim))
             else:
                 lines.append(translate(language, "ui.router.ml_offline"))
-            # 语义通道（phase-06 C3）：可用性/产物/耗时/有效样本 观测
+            # 语义通道：可用性/产物/耗时/有效样本 观测
             sem = ml.semantic
             if sem is not None:
                 if sem.available:

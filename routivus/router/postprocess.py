@@ -1,6 +1,6 @@
-﻿"""SmartRouter 后处理规则引擎（可解释的安全兜底）。
+"""SmartRouter 后处理规则引擎（可解释的安全兜底）。
 
-规则与执行顺序来源：XG-docs/smart-docs/ADAPTIVE_ROUTING.md §7（1→6，先升后降、最后防降级）。
+规则与执行顺序来源：Routivus-docs/smart-docs/ADAPTIVE_ROUTING.md §7（1→6，先升后降、最后防降级）。
 
 与文档代码的一处有意差异：防降级规则按注释意图实现为
 ``t = max(t, prev_tier - 1)``（600s 内最多比上一轮低 1 档）。
@@ -25,7 +25,7 @@ HYSTERESIS_WINDOW = 60
 
 @dataclass
 class Hysteresis:
-    """会话内迟滞状态（稳定层，phase-04 A2）。
+    """会话内迟滞状态（稳定层）。
 
     防短时震荡：同一会话窗口内档位变化超过 ``max_changes`` 次即冻结当前档，
     直到窗口过期或命中硬规则（``forced``）才解冻。与 600s 防降级叠加复用，
@@ -107,7 +107,7 @@ def postprocess(tier_idx: int, text: str, f: dict,
 
     ``learned_rules``（adaptive.LearnedRules，可选）在 6 条规则之后、且仅
     在未被硬规则强制时应用：命中的 ±1 档微调永不覆盖风险/闲聊/长上下文硬规则
-    （phase-04 A1 验收约束）。
+    。
     ``hysteresis``（Hysteresis，可选，phase-04 A2）作为最后一道闸应用：
     session 内窗口变化超阈值即冻结当前档，直到窗口过期或命中硬规则才解冻；
     不传即 A1 之前行为，与其它机制完全向后兼容。
@@ -147,7 +147,7 @@ def postprocess(tier_idx: int, text: str, f: dict,
     if prev_tier is not None and prev_ts is not None and ts - prev_ts < ANTI_DOWNGRADE_WINDOW:
         t = max(t, prev_tier - 1)
 
-    # 7) learned_rules 局部规则（第 4 期 A1）：仅未被硬规则强制时 ±1 档微调
+    # 7) learned_rules 局部规则：仅未被硬规则强制时 ±1 档微调
     if not forced and learned_rules is not None:
         action = learned_rules.apply(f)
         if action > 0:
@@ -155,7 +155,7 @@ def postprocess(tier_idx: int, text: str, f: dict,
         elif action < 0:
             t = max(t - 1, 0)
 
-    # 8) 迟滞稳定层（第 4 期 A2）：最后一道闸，压制所有后续变化。
+    # 8) 迟滞稳定层：最后一道闸，压制所有后续变化。
     #    防降级在前、迟滞在后；冻结时连 learned_rules 的微调也一并压住。
     if hysteresis is not None:
         # 首轮用调用方传入的上一轮档态初始化内部 prev（迟滞自身跨轮维护）

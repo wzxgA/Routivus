@@ -9,7 +9,7 @@ from routivus.skill.errors import SkillContentError, SkillParseError
 
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-META_RE = re.compile(r"<!--\s*xg-skill:\s*(.*?)\s*-->", re.IGNORECASE | re.DOTALL)
+META_RE = re.compile(r"<!--\s*routivus-skill:\s*(.*?)\s*-->", re.IGNORECASE | re.DOTALL)
 FIELD_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=(?:\"((?:[^\"\\]|\\.)*)\"|'([^']*)'|(\S+))")
 TEXT_EXTENSIONS = {".md", ".markdown", ".txt", ".json", ".toml", ".ini", ".cfg", ".yaml", ".yml"}
 
@@ -32,7 +32,7 @@ def _fields(raw: str) -> dict[str, str]:
     # The metadata is intentionally strict: every non-whitespace character
     # must belong to a known key/value pair.
     if not fields or FIELD_RE.sub("", raw).strip():
-        raise SkillParseError("xg-skill 元信息格式错误")
+        raise SkillParseError("routivus-skill 元信息格式错误")
     return fields
 
 
@@ -49,7 +49,7 @@ def parse_metadata(name: str, text: str, *, source: str, root: Path) -> dict:
     validate_name(name)
     matches = list(META_RE.finditer(text[:16_384]))
     if len(matches) > 1:
-        raise SkillParseError("SKILL.md 只能包含一段 xg-skill 元信息")
+        raise SkillParseError("SKILL.md 只能包含一段 routivus-skill 元信息")
     values: dict[str, str] = {}
     if matches:
         values = _fields(matches[0].group(1))

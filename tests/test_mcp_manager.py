@@ -77,7 +77,7 @@ class DisconnectingTransport(FakeTransport):
 
 
 def _write_config(tmp_path, servers):
-    path = tmp_path / ".xg" / "mcp.json"
+    path = tmp_path / ".routivus" / "mcp.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"servers": servers}), encoding="utf-8")
 

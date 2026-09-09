@@ -154,9 +154,9 @@ class ConversationContext:
 
         weights = []
         for section in self.shared_sections:
-            if section.source == "XG.md":
+            if section.source == "Routivus.md":
                 weights.append(0.50)
-            elif section.source == "XG.local.md":
+            elif section.source == "Routivus.local.md":
                 weights.append(0.25)
             else:
                 weights.append(0.25)
@@ -241,7 +241,7 @@ class ConversationContext:
             messages = [
                 Message(
                     role="system",
-                    content="你是 XG-CLI 的上下文压缩器，只输出摘要正文，不调用工具。",
+                    content="你是 Routivus 的上下文压缩器，只输出摘要正文，不调用工具。",
                 ),
                 Message(role="user", content=prompt),
             ]

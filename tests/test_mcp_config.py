@@ -24,7 +24,7 @@ def test_user_project_merge_and_environment_expansion(tmp_path):
             }
         }
     })
-    _write(tmp_path / ".xg" / "mcp.json", {
+    _write(tmp_path / ".routivus" / "mcp.json", {
         "servers": {"github": {"request_timeout": 45, "hitl": "always"}}
     })
     manager = McpConfigManager(
@@ -41,7 +41,7 @@ def test_user_project_merge_and_environment_expansion(tmp_path):
 
 
 def test_missing_environment_variable_disables_only_that_server(tmp_path):
-    _write(tmp_path / ".xg" / "mcp.json", {
+    _write(tmp_path / ".routivus" / "mcp.json", {
         "servers": {
             "bad": {"transport": "stdio", "command": "x", "env": {"TOKEN": "${MISSING}"}},
             "good": {"transport": "stdio", "command": "x"},
@@ -53,7 +53,7 @@ def test_missing_environment_variable_disables_only_that_server(tmp_path):
 
 
 def test_rejects_unsafe_url_and_outside_cwd(tmp_path):
-    _write(tmp_path / ".xg" / "mcp.json", {
+    _write(tmp_path / ".routivus" / "mcp.json", {
         "servers": {
             "file_url": {"transport": "streamable_http", "url": "file:///tmp/mcp"},
             "outside": {"transport": "stdio", "command": "x", "cwd": "../outside"},
@@ -66,7 +66,7 @@ def test_rejects_unsafe_url_and_outside_cwd(tmp_path):
 
 def test_enable_override_has_priority_without_copying_server_secrets(tmp_path):
     user = tmp_path / "user"
-    _write(tmp_path / ".xg" / "mcp.json", {
+    _write(tmp_path / ".routivus" / "mcp.json", {
         "servers": {"project": {"enabled": True, "transport": "stdio", "command": "x"}}
     })
     manager = McpConfigManager(user_dir=user, project_root=tmp_path, env={})

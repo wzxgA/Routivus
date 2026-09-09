@@ -1,4 +1,4 @@
-﻿"""Multi-Agent Team 编排（第 10 期 MVP）。
+"""Multi-Agent Team 编排。
 
 Team 是建立在现有 Plan/ReAct 之上的协作控制面：
 - Planner 生成带角色、资源范围和验收标准的任务 DAG；
@@ -65,13 +65,13 @@ DEFAULT_RESOURCE_DENY_PATTERNS = (
     "**/*secret*",
     "**/*credential*",
     "**/*password*",
-    ".xg/memory.db",
-    ".xg/audit.log",
+    ".routivus/memory.db",
+    ".routivus/audit.log",
 )
 
 
 TEAM_PLANNER_PROMPT = (
-    "你是 XG 的团队任务规划器。将用户任务拆解为可执行的 DAG，"
+    "你是 Routivus 的团队任务规划器。将用户任务拆解为可执行的 DAG，"
     "为每个任务指定角色、工具范围、资源范围和可验证的验收标准。"
     "只输出一个 JSON 对象，不要输出其他文本或 markdown，格式：\n"
     "{\"tasks\": [{\"id\": \"t1\", \"title\": \"一句话标题\", "
@@ -86,7 +86,7 @@ TEAM_PLANNER_PROMPT = (
     "- id 全局唯一，形如 t1/t2；deps 只能引用其他任务 id；\n"
     "- 依赖必须是无环 DAG；\n"
     "- owner_role 使用 coder、researcher、tester、reviewer 或 repairer；\n"
-    "- allowed_tools 必须使用 XG 注册的精确工具名：read_file、write_file、list_dir、glob_files、grep_code、execute_command、web_search、web_fetch、load_skill；\n"
+    "- allowed_tools 必须使用 Routivus 注册的精确工具名：read_file、write_file、list_dir、glob_files、grep_code、execute_command、web_search、web_fetch、load_skill；\n"
     "- 不要输出 find、glob、grep、cat、shell、bash、terminal、read 或 write 作为工具名；\n"
     "- 读取文件使用 read_file，查看目录使用 list_dir，按模式查找文件使用 glob_files，搜索代码使用 grep_code，执行测试/命令使用 execute_command；\n"
     "- 只读任务不得声明 write 工具；\n"
@@ -571,7 +571,7 @@ def normalize_team_tool_names(
     raw_tools: object,
     profile: AgentProfile,
 ) -> tuple[list[str], list[str]]:
-    """Normalize Planner tool names to registered XG names.
+    """Normalize Planner tool names to registered Routivus names.
 
     Only aliases with an unambiguous, non-escalating meaning are accepted.
     Role and resource policy checks remain separate and are applied afterwards.

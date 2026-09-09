@@ -1,7 +1,7 @@
-﻿"""ToolRegistry：工具注册、schema 导出、按原始 tool_call 顺序执行。
+"""ToolRegistry：工具注册、schema 导出、按原始 tool_call 顺序执行。
 
 - execute_calls：同步顺序执行（兼容旧调用）
-- aexecute_calls：asyncio 并行执行（第 3 期），默认 4 并发，统一超时/取消兜底，结果保序
+- aexecute_calls：asyncio 并行执行，默认 4 并发，统一超时/取消兜底，结果保序
 - 可选接入策略层（guard）与审计（audit），策略层拒绝为终审
 """
 

@@ -14,9 +14,9 @@ from routivus.memory.models import SharedSection
 from routivus.safety.audit import redact_text
 
 
-PROJECT_MEMORY_FILES = ("XG.md", "XG.local.md")
+PROJECT_MEMORY_FILES = ("Routivus.md", "Routivus.local.md")
 PROJECT_MEMORY_SYSTEM = (
-    "你正在为 XG-CLI 生成项目记忆文件。只根据提供的项目快照写事实性、可执行的说明，"
+    "你正在为 Routivus 生成项目记忆文件。只根据提供的项目快照写事实性、可执行的说明，"
     "不要编造不存在的命令、依赖或目录；不要输出密钥或其他敏感值。"
 )
 
@@ -45,7 +45,7 @@ def _truncate_lines(text: str, limit: int) -> tuple[str, bool]:
     right_limit = max(1, limit - left_limit - 32)
     left = text[:left_limit].rsplit("\n", 1)[0]
     right = text[-right_limit:].split("\n", 1)[-1]
-    clipped = f"{left}\n\n... [XG memory truncated] ...\n\n{right}"
+    clipped = f"{left}\n\n... [Routivus memory truncated] ...\n\n{right}"
     return clipped[:limit], True
 
 
@@ -92,7 +92,7 @@ class ProjectMemoryLoader:
 def build_project_snapshot(project_root: str | Path, max_chars: int = 32_000) -> str:
     """构造 /init 使用的有限、只读项目快照。"""
     root = Path(project_root).resolve()
-    excluded = {".git", ".xg", ".venv", "__pycache__", "node_modules"}
+    excluded = {".git", ".routivus", ".venv", "__pycache__", "node_modules"}
     names: list[str] = []
     try:
         for child in sorted(root.iterdir(), key=lambda item: item.name.lower()):
@@ -136,9 +136,9 @@ def build_project_snapshot(project_root: str | Path, max_chars: int = 32_000) ->
 async def generate_project_memory(
     llm: LlmClient, project_root: str | Path, max_chars: int = 32_000
 ) -> str:
-    target = Path(project_root).resolve() / "XG.md"
+    target = Path(project_root).resolve() / "Routivus.md"
     if target.exists():
-        raise FileExistsError("XG.md 已存在，不覆盖已有项目记忆")
+        raise FileExistsError("Routivus.md 已存在，不覆盖已有项目记忆")
     messages = [
         Message(role="system", content=PROJECT_MEMORY_SYSTEM),
         Message(
@@ -156,20 +156,20 @@ async def generate_project_memory(
             parts.append(event.text)
     draft = redact_text("".join(parts).strip())
     if not draft:
-        raise ValueError("LLM 未生成有效的 XG.md 草稿")
+        raise ValueError("LLM 未生成有效的 Routivus.md 草稿")
     if not draft.startswith("#"):
-        draft = "# XG Project Memory\n\n" + draft
+        draft = "# Routivus Project Memory\n\n" + draft
     return draft
 
 
 def write_project_memory(project_root: str | Path, content: str) -> Path:
-    """以不覆盖已有文件为目标写入 XG.md。"""
+    """以不覆盖已有文件为目标写入 Routivus.md。"""
     root = Path(project_root).resolve()
-    target = root / "XG.md"
+    target = root / "Routivus.md"
     if target.exists():
-        raise FileExistsError("XG.md 已存在，不覆盖已有项目记忆")
+        raise FileExistsError("Routivus.md 已存在，不覆盖已有项目记忆")
     root.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix=".XG.md.", suffix=".tmp", dir=root)
+    fd, temp_name = tempfile.mkstemp(prefix=".Routivus.md.", suffix=".tmp", dir=root)
     temp_path = Path(temp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
@@ -177,7 +177,7 @@ def write_project_memory(project_root: str | Path, content: str) -> Path:
             handle.flush()
             os.fsync(handle.fileno())
         if target.exists():
-            raise FileExistsError("XG.md 在写入期间已被创建，不覆盖已有文件")
+            raise FileExistsError("Routivus.md 在写入期间已被创建，不覆盖已有文件")
         os.replace(temp_path, target)
     finally:
         try:

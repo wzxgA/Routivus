@@ -10,10 +10,10 @@ from routivus.skill.registry import SkillRegistry
 
 
 def make_registry(tmp_path, config=None):
-    skills = tmp_path / ".xg" / "skills" / "demo" / "references"
+    skills = tmp_path / ".routivus" / "skills" / "demo" / "references"
     skills.mkdir(parents=True)
     (skills.parent / "SKILL.md").write_text(
-        '<!-- xg-skill: name=demo description="演示规范" -->\n正文内容', encoding="utf-8"
+        '<!-- routivus-skill: name=demo description="演示规范" -->\n正文内容', encoding="utf-8"
     )
     (skills / "guide.md").write_text("参考内容", encoding="utf-8")
     return SkillRegistry(project_root=tmp_path, config=config or SkillConfig(), builtin_root=tmp_path / "none")
@@ -33,9 +33,9 @@ def test_index_is_metadata_only_and_load_can_include_reference(tmp_path):
 def test_cache_is_invalidated_when_body_changes_even_if_size_does_not(tmp_path):
     registry = make_registry(tmp_path)
     first = registry.load("demo")
-    path = tmp_path / ".xg" / "skills" / "demo" / "SKILL.md"
+    path = tmp_path / ".routivus" / "skills" / "demo" / "SKILL.md"
     stat = path.stat()
-    path.write_text('<!-- xg-skill: name=demo -->\n新内容', encoding="utf-8")
+    path.write_text('<!-- routivus-skill: name=demo -->\n新内容', encoding="utf-8")
     os.utime(path, ns=(stat.st_atime_ns + 1_000_000_000, stat.st_mtime_ns + 1_000_000_000))
     second = registry.load("demo")
     assert first.body != second.body

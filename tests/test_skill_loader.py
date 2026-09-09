@@ -8,7 +8,7 @@ def write_skill(root, name, body, metadata=None):
     path = root / name
     path.mkdir(parents=True)
     comment = metadata or f'name={name} description="{name} description"'
-    (path / "SKILL.md").write_text(f"<!-- xg-skill: {comment} -->\n{body}", encoding="utf-8")
+    (path / "SKILL.md").write_text(f"<!-- routivus-skill: {comment} -->\n{body}", encoding="utf-8")
     return path
 
 
@@ -20,7 +20,7 @@ def test_three_layers_use_project_precedence_and_keep_source(tmp_path):
     write_skill(user, "shared", "user")
     write_skill(user, "user-only", "user")
     write_skill(project, "shared", "project")
-    write_skill(project, "broken", "<!-- xg-skill: name=wrong -->\nbody")
+    write_skill(project, "broken", "<!-- routivus-skill: name=wrong -->\nbody")
 
     infos = SkillLoader(
         (SkillRoot("builtin", builtin), SkillRoot("user", user), SkillRoot("project", project)),

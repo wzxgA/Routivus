@@ -28,7 +28,7 @@ class TestRedact:
 
 class TestAuditLogger:
     def test_tool_call_record(self, tmp_path: Path):
-        log_path = tmp_path / ".xg" / "audit.log"
+        log_path = tmp_path / ".routivus" / "audit.log"
         logger = AuditLogger(log_path, session_id="s1")
         logger.tool_call(tool="read_file", args={"path": "a.py"}, ok=True, duration_ms=12)
 

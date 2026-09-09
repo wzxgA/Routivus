@@ -197,7 +197,7 @@ def make_ask_user_tool(max_fields: int = 5, max_options: int = 8) -> Tool:
     """返回 ask_user 交互工具。
 
     ask_user 不在注册表内盲执行，而是由 ReAct 循环在 agent 层拦截并等待用户输入
-    （见 xg/agent/react.py）。此处的 handler 仅作为 fail-closed 兜底，正常路径不会走到。
+    （见 routivus/agent/react.py）。此处的 handler 仅作为 fail-closed 兜底，正常路径不会走到。
     """
     return Tool(
         name="ask_user",

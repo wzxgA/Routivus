@@ -45,10 +45,10 @@ def make_manager(
 
 class TestBaseProvider:
     def test_missing_provider_fails_fast(self, tmp_path):
-        """未配置 XG_PROVIDER / active_provider 时不再隐式用 openai，而是抛错提示。"""
+        """未配置 ROUTIVUS_PROVIDER / active_provider 时不再隐式用 openai，而是抛错提示。"""
         manager = make_manager(
             tmp_path,
-            env={"XG_API_BASE": "https://legacy.test/v1", "XG_OPENAI_API_KEY": "k-123"},
+            env={"ROUTIVUS_API_BASE": "https://legacy.test/v1", "ROUTIVUS_OPENAI_API_KEY": "k-123"},
         )
         with pytest.raises(ProviderNotConfigured):
             manager.active()
@@ -59,18 +59,18 @@ class TestBaseProvider:
             manager.active()
 
     def test_explicit_base_provider_from_config(self, tmp_path):
-        """base provider 由 config.json 的 active_provider 决定（不再读 XG_PROVIDER env）。"""
+        """base provider 由 config.json 的 active_provider 决定（不再读 ROUTIVUS_PROVIDER env）。"""
         manager = make_manager(
             tmp_path,
-            env={"XG_PROVIDER": "openai", "XG_API_BASE": "https://legacy.test/v1",
-                 "XG_OPENAI_API_KEY": "k-123", "XG_MODEL": "old-model"},
+            env={"ROUTIVUS_PROVIDER": "openai", "ROUTIVUS_API_BASE": "https://legacy.test/v1",
+                 "ROUTIVUS_OPENAI_API_KEY": "k-123", "ROUTIVUS_MODEL": "old-model"},
             user_cfg={
                 "active_provider": "deepseek",
                 "providers": {"deepseek": {"api_key": "dk"}},
             },
         )
         active = manager.active()
-        # env XG_PROVIDER / XG_MODEL 不再参与选型，一律来自 config
+        # env ROUTIVUS_PROVIDER / ROUTIVUS_MODEL 不再参与选型，一律来自 config
         assert active.provider_name == "deepseek"
         assert active.api_base == "https://api.deepseek.com/v1"
         assert active.api_key == "dk"
@@ -138,10 +138,10 @@ class TestPlaceholderKeys:
 
 class TestActiveProviderSelection:
     def test_config_active_provider_selects(self, tmp_path):
-        """active_provider 决定激活的 provider；env XG_PROVIDER 不再覆盖。"""
+        """active_provider 决定激活的 provider；env ROUTIVUS_PROVIDER 不再覆盖。"""
         manager = make_manager(
             tmp_path,
-            env={"XG_PROVIDER": "openai"},
+            env={"ROUTIVUS_PROVIDER": "openai"},
             user_cfg={
                 "active_provider": "deepseek",
                 "providers": {"deepseek": {"api_key": "dk"}},
@@ -176,7 +176,7 @@ class TestMergePriority:
     def test_user_config_active(self, tmp_path):
         manager = make_manager(
             tmp_path,
-            env={"XG_DEEPSEEK_API_KEY": "dk"},
+            env={"ROUTIVUS_DEEPSEEK_API_KEY": "dk"},
             user_cfg={"active_provider": "deepseek", "active_model": "deepseek-reasoner"},
         )
         active = manager.active()
@@ -185,7 +185,7 @@ class TestMergePriority:
     def test_project_overrides_user(self, tmp_path):
         manager = make_manager(
             tmp_path,
-            env={"XG_DEEPSEEK_API_KEY": "dk"},
+            env={"ROUTIVUS_DEEPSEEK_API_KEY": "dk"},
             user_cfg={
                 "active_provider": "deepseek",
                 "providers": {"deepseek": {"api_base": "https://user.test/v1"}},
@@ -197,10 +197,10 @@ class TestMergePriority:
         assert manager.active().api_base == "https://project.test/v1"
 
     def test_config_api_base_wins_over_env(self, tmp_path):
-        """api_base 只读 config.json；env XG_API_BASE / XG_<NAME>_API_BASE 不再覆盖。"""
+        """api_base 只读 config.json；env ROUTIVUS_API_BASE / ROUTIVUS_<NAME>_API_BASE 不再覆盖。"""
         manager = make_manager(
             tmp_path,
-            env={"XG_PROVIDER": "openai", "XG_API_BASE": "https://env.test/v1", "XG_API_KEY": "k"},
+            env={"ROUTIVUS_PROVIDER": "openai", "ROUTIVUS_API_BASE": "https://env.test/v1", "ROUTIVUS_API_KEY": "k"},
             user_cfg={"active_provider": "openai"},
             project_cfg={"providers": {"openai": {"api_base": "https://project.test/v1"}}},
         )
@@ -209,10 +209,10 @@ class TestMergePriority:
         assert active.api_base == "https://project.test/v1"
 
     def test_legacy_base_does_not_leak_to_other_providers(self, tmp_path):
-        """XG_API_BASE 不覆盖已配置的 deepseek；其 URL 来自 config 预设。"""
+        """ROUTIVUS_API_BASE 不覆盖已配置的 deepseek；其 URL 来自 config 预设。"""
         manager = make_manager(
             tmp_path,
-            env={"XG_API_BASE": "https://env.test/v1"},
+            env={"ROUTIVUS_API_BASE": "https://env.test/v1"},
             user_cfg={"active_provider": "deepseek"},
         )
         assert manager.active().api_base == "https://api.deepseek.com/v1"
@@ -241,10 +241,10 @@ class TestProviderUrl:
         assert manager.active().api_base == "https://openai-proxy.test/v1"
 
     def test_config_url_wins(self, tmp_path):
-        """env XG_<NAME>_API_BASE 不再覆盖 config 的 api_base。"""
+        """env ROUTIVUS_<NAME>_API_BASE 不再覆盖 config 的 api_base。"""
         manager = make_manager(
             tmp_path,
-            env={"XG_GLM_API_BASE": "https://env.test/v1"},
+            env={"ROUTIVUS_GLM_API_BASE": "https://env.test/v1"},
             user_cfg={
                 "active_provider": "glm",
                 "providers": {"glm": {"api_base": "https://config.test/v1"}},
@@ -262,7 +262,7 @@ class TestProviderUrl:
     def test_window_env_override(self, tmp_path):
         manager = make_manager(
             tmp_path,
-            env={"XG_CONTEXT_WINDOW": "16000"},
+            env={"ROUTIVUS_CONTEXT_WINDOW": "16000"},
             user_cfg={"active_provider": "deepseek"},
         )
         assert manager.active().context_window == 16000
@@ -302,7 +302,7 @@ class TestCustomProvider:
 
 class TestPersistence:
     def test_set_active_persists_and_reloads(self, tmp_path):
-        manager = make_manager(tmp_path, env={"XG_GLM_API_KEY": "gk"})
+        manager = make_manager(tmp_path, env={"ROUTIVUS_GLM_API_KEY": "gk"})
         manager.set_active("glm", "glm-4-plus")
 
         user_cfg = json.loads((tmp_path / "user_xg" / "config.json").read_text(encoding="utf-8"))
@@ -310,7 +310,7 @@ class TestPersistence:
         assert user_cfg["active_model"] == "glm-4-plus"
 
         # 新的 manager 实例应读到持久化结果
-        reloaded = make_manager(tmp_path, env={"XG_GLM_API_KEY": "gk"})
+        reloaded = make_manager(tmp_path, env={"ROUTIVUS_GLM_API_KEY": "gk"})
         assert reloaded.active().model == "glm-4-plus"
 
     def test_set_config_value_dotted(self, tmp_path):
@@ -320,7 +320,7 @@ class TestPersistence:
         user_cfg = json.loads((tmp_path / "user_xg" / "config.json").read_text(encoding="utf-8"))
         assert user_cfg["providers"]["deepseek"]["default_model"] == "deepseek-reasoner"
 
-        reloaded = make_manager(tmp_path, env={"XG_DEEPSEEK_API_KEY": "dk"})
+        reloaded = make_manager(tmp_path, env={"ROUTIVUS_DEEPSEEK_API_KEY": "dk"})
         assert reloaded.resolve_provider("deepseek").default_model == "deepseek-reasoner"
 
     def test_get_config_value(self, tmp_path):
@@ -343,19 +343,19 @@ class TestMaskKey:
 
 class TestTuiSettings:
     def test_refresh_fps_defaults_to_twenty_and_reads_environment(self, tmp_path):
-        manager = make_manager(tmp_path, env={"XG_TUI_REFRESH_FPS": "30"})
+        manager = make_manager(tmp_path, env={"ROUTIVUS_TUI_REFRESH_FPS": "30"})
         assert load_settings(manager).tui_refresh_fps == 30
 
     @pytest.mark.parametrize("raw", ["0", "4", "61", "not-a-number"])
     def test_refresh_fps_is_safe_for_invalid_or_out_of_range_values(self, tmp_path, raw):
-        manager = make_manager(tmp_path, env={"XG_TUI_REFRESH_FPS": raw})
+        manager = make_manager(tmp_path, env={"ROUTIVUS_TUI_REFRESH_FPS": raw})
         settings = load_settings(manager)
         assert 5 <= settings.tui_refresh_fps <= 60
         if raw == "not-a-number":
             assert settings.tui_refresh_fps == 20
 
     def test_skill_settings_follow_skill_config_file_and_environment(self, tmp_path):
-        manager = make_manager(tmp_path, env={"XG_SKILLS_MAX_CHARS": "888"})
+        manager = make_manager(tmp_path, env={"ROUTIVUS_SKILLS_MAX_CHARS": "888"})
         (tmp_path / "user_xg" / "skills.json").write_text(
             json.dumps({"max_index_items": 7, "max_loaded_chars": 4321}), encoding="utf-8"
         )
@@ -457,16 +457,16 @@ class TestSmartRouterConfig:
 
 
 class TestSmartRouterEnvIgnored:
-    """环境变量 XG_SMART_ROUTER* 不再参与档位配置（配置只在 config.json）。"""
+    """环境变量 ROUTIVUS_SMART_ROUTER* 不再参与档位配置（配置只在 config.json）。"""
 
     def test_env_tiers_ignored(self, tmp_path):
         manager = make_manager(
             tmp_path,
             env={
-                "XG_SMART_ROUTER_BASIC_PROVIDER": "deepseek",
-                "XG_SMART_ROUTER_BASIC_MODEL": "deepseek-chat",
-                "XG_SMART_ROUTER_ULTIMATE_PROVIDER": "glm",
-                "XG_SMART_ROUTER_ULTIMATE_MODEL": "glm-4-plus",
+                "ROUTIVUS_SMART_ROUTER_BASIC_PROVIDER": "deepseek",
+                "ROUTIVUS_SMART_ROUTER_BASIC_MODEL": "deepseek-chat",
+                "ROUTIVUS_SMART_ROUTER_ULTIMATE_PROVIDER": "glm",
+                "ROUTIVUS_SMART_ROUTER_ULTIMATE_MODEL": "glm-4-plus",
             },
         )
         cfg = manager.smart_router_config()
@@ -476,7 +476,7 @@ class TestSmartRouterEnvIgnored:
     def test_env_does_not_override_config(self, tmp_path):
         manager = make_manager(
             tmp_path,
-            env={"XG_SMART_ROUTER_BASIC_PROVIDER": "deepseek"},
+            env={"ROUTIVUS_SMART_ROUTER_BASIC_PROVIDER": "deepseek"},
             user_cfg={"smart_router": {"tiers": {"Basic": {"provider": "openai", "model": "gpt-4o-mini"}}}},
         )
         cfg = manager.smart_router_config()
@@ -502,14 +502,14 @@ class TestSmartRouterSettings:
 
     def test_smart_router_from_config_enables(self, tmp_path):
         manager = make_manager(
-            tmp_path, env={"XG_SMART_ROUTER": "off"},
+            tmp_path, env={"ROUTIVUS_SMART_ROUTER": "off"},
             user_cfg={"smart_router": {"enabled": True}},
         )
         settings = load_settings(manager)
-        # 开关来自 config.json，env XG_SMART_ROUTER 不再生效
+        # 开关来自 config.json，env ROUTIVUS_SMART_ROUTER 不再生效
         assert settings.smart_router_enabled is True
 
     def test_smart_router_env_ignored(self, tmp_path):
-        manager = make_manager(tmp_path, env={"XG_SMART_ROUTER": "on"})
+        manager = make_manager(tmp_path, env={"ROUTIVUS_SMART_ROUTER": "on"})
         settings = load_settings(manager)
         assert settings.smart_router_enabled is False

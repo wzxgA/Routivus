@@ -1,4 +1,4 @@
-﻿"""校准聚合与应用（phase-03 步骤 C）。
+"""校准聚合与应用。
 
 聚合 feedback.log 的隐式信号 → 每档偏置 per_class_bias 与全局阈值调整
 threshold_adjust，硬夹紧（±0.15 / ±0.1），单档加权样本不足 20 不校准。
@@ -20,7 +20,7 @@ from typing import Any, Sequence
 from .feedback import read_feedback
 from .store import atomic_write_json, calibration_path, read_json_safe
 
-# 档位名（与 xg.router.model_tiers.TIER_NAMES 一致；本地定义避免包环）
+# 档位名（与 routivus.router.model_tiers.TIER_NAMES 一致；本地定义避免包环）
 TIER_NAMES: tuple[str, ...] = ("Basic", "Enhanced", "Superior", "Ultimate")
 
 MIN_SAMPLES_PER_TIER = 20   # 单档加权样本不足时不校准
@@ -148,8 +148,8 @@ def load_calibration(path=None) -> Calibration:
 def recalibrate(log_path=None, cal_path=None) -> Calibration:
     """读 feedback.log → 聚合 → 落盘 calibration.json → 返回结果。
 
-    无记录时返回空校准且不写盘（保证"删掉 ~/.xg/adaptive/ 即回到
-    第 1 期行为"的验收：不重建目录）。
+    无记录时返回空校准且不写盘（保证"删掉 ~/.routivus/adaptive/ 即回到
+    纯规则行为"的验收：不重建目录）。
     """
     records = read_feedback(log_path)
     if not records:

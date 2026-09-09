@@ -1,6 +1,6 @@
 ﻿"""SmartRouter 档位→模型映射。
 
-接入 ConfigManager（phase-01 子步骤 B）：
+接入 ConfigManager：
 - ``tiers_config`` 形如 ``{"Basic": {"provider": "glm", "model": "glm-4-flash"}, ...}``，
   通常来自 ``ConfigManager.smart_router_config()["tiers"]``；
 - 传入 ``manager`` 时启用完整校验链：provider 必须可解析、API Key 必须已配置，

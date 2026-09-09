@@ -1,4 +1,4 @@
-﻿"""第 3 期集成测试：并行执行 + HITL 审批 + 策略层端到端。"""
+"""集成测试：并行执行 + HITL 审批 + 策略层端到端。"""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def make_agent(tmp_path, script, requester=None, enabled=True):
         api_base="https://api.test/v1", api_key="k", model="m",
         context_window=128_000, max_parallel=3, tool_timeout=5,
     )
-    audit = AuditLogger(tmp_path / ".xg" / "audit.log")
+    audit = AuditLogger(tmp_path / ".routivus" / "audit.log")
     guard = lambda n, a: guard_tool_call(tmp_path, n, a)  # noqa: E731
     tools = build_registry(base_dir=tmp_path, guard=guard, audit=audit)
     policy = HITLPolicy(enabled=enabled, requester=requester) if requester is not None else None
@@ -193,7 +193,7 @@ class TestGuardEndToEnd:
         agent = make_agent(tmp_path, script, requester=deny)
         await run_events(agent, "任务")
 
-        lines = (tmp_path / ".xg" / "audit.log").read_text(encoding="utf-8").strip().splitlines()
+        lines = (tmp_path / ".routivus" / "audit.log").read_text(encoding="utf-8").strip().splitlines()
         actions = [j.loads(line)["action"] for line in lines]
         assert "blocked" in actions          # 黑名单 + 越界路径
         assert "approval" in actions         # HITL 决策

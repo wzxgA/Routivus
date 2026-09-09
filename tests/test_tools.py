@@ -103,10 +103,10 @@ class TestExecuteCommand:
         from routivus.safety.audit import AuditLogger
         from routivus.tool.builtin import build_registry
 
-        audit = AuditLogger(tmp_project / ".xg" / "audit.log")
+        audit = AuditLogger(tmp_project / ".routivus" / "audit.log")
         reg = build_registry(base_dir=tmp_project, audit=audit)
         reg.execute("execute_command", {"command": "echo audit_me"})
-        log = tmp_project / ".xg" / "audit.log"
+        log = tmp_project / ".routivus" / "audit.log"
         assert log.is_file()
         record = json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
         assert record["action"] == "tool_call"

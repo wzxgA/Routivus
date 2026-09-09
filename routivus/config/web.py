@@ -28,10 +28,10 @@ class WebConfigManager:
     def __init__(self, *, user_dir: str | Path | None = None,
                  project_root: str | Path | None = None,
                  env: dict[str, str] | None = None) -> None:
-        self.user_dir = Path(user_dir) if user_dir else Path.home() / ".xg"
+        self.user_dir = Path(user_dir) if user_dir else Path.home() / ".routivus"
         self.project_root = (Path(project_root) if project_root else Path.cwd()).resolve()
         self.user_config_path = self.user_dir / WEB_CONFIG_FILE
-        self.project_config_path = self.project_root / ".xg" / WEB_CONFIG_FILE
+        self.project_config_path = self.project_root / ".routivus" / WEB_CONFIG_FILE
         self.env = env if env is not None else os.environ
         self.errors: list[str] = []
 
@@ -77,33 +77,33 @@ class WebConfigManager:
         search_raw = raw.get("search") if isinstance(raw.get("search"), dict) else {}
         fetch_raw = raw.get("fetch") if isinstance(raw.get("fetch"), dict) else {}
         env = self.env
-        provider = str(env.get("XG_WEB_SEARCH_PROVIDER", search_raw.get("provider", "none")) or "none").lower()
+        provider = str(env.get("ROUTIVUS_WEB_SEARCH_PROVIDER", search_raw.get("provider", "none")) or "none").lower()
         providers = raw.get("providers") if isinstance(raw.get("providers"), dict) else {}
         providers = {str(k): dict(v) for k, v in providers.items() if isinstance(v, dict)}
         selected = providers.get(provider, {})
         api_key_env = str(selected.get("api_key_env") or {
-            "zhipu": "XG_ZHIPU_SEARCH_API_KEY",
-            "serpapi": "XG_SERPAPI_API_KEY",
+            "zhipu": "ROUTIVUS_ZHIPU_SEARCH_API_KEY",
+            "serpapi": "ROUTIVUS_SERPAPI_API_KEY",
         }.get(provider, ""))
         api_key = selected.get("api_key") or env.get(api_key_env, "")
         api_base = selected.get("api_base") or env.get({
-            "zhipu": "XG_ZHIPU_SEARCH_API_BASE",
-            "serpapi": "XG_SERPAPI_API_BASE",
+            "zhipu": "ROUTIVUS_ZHIPU_SEARCH_API_BASE",
+            "serpapi": "ROUTIVUS_SERPAPI_API_BASE",
         }.get(provider, ""), "") or None
         if not api_base and provider == "zhipu":
             api_base = "https://open.bigmodel.cn/api/paas/v4"
         if not api_base and provider == "serpapi":
             api_base = "https://serpapi.com"
         if provider == "searxng":
-            api_base = selected.get("url") or env.get("XG_SEARXNG_URL", "") or None
+            api_base = selected.get("url") or env.get("ROUTIVUS_SEARXNG_URL", "") or None
         search = WebSearchConfig(
             provider=provider,
             api_base=str(api_base) if api_base else None,
             api_key_env=api_key_env or None,
             api_key=str(api_key) if api_key else None,
-            timeout=self._float(env.get("XG_WEB_TIMEOUT", search_raw.get("timeout", 15)), 15.0),
-            max_results=min(10, self._int(env.get("XG_WEB_MAX_RESULTS", search_raw.get("max_results", 5)), 5)),
-            rate_limit_per_minute=self._int(env.get("XG_WEB_RATE_LIMIT_PER_MINUTE", search_raw.get("rate_limit_per_minute", 30)), 30),
+            timeout=self._float(env.get("ROUTIVUS_WEB_TIMEOUT", search_raw.get("timeout", 15)), 15.0),
+            max_results=min(10, self._int(env.get("ROUTIVUS_WEB_MAX_RESULTS", search_raw.get("max_results", 5)), 5)),
+            rate_limit_per_minute=self._int(env.get("ROUTIVUS_WEB_RATE_LIMIT_PER_MINUTE", search_raw.get("rate_limit_per_minute", 30)), 30),
             enabled=provider != "none" and bool(raw.get("enabled", True)),
         )
         allowed = fetch_raw.get("allowed_ports", (80, 443))
@@ -111,14 +111,14 @@ class WebConfigManager:
             allowed = (80, 443)
         ports = tuple(self._int(p, 80) for p in allowed)
         fetch = WebFetchConfig(
-            timeout=self._float(env.get("XG_WEB_TIMEOUT", fetch_raw.get("timeout", 15)), 15.0),
-            max_response_bytes=self._int(env.get("XG_WEB_MAX_RESPONSE_BYTES", fetch_raw.get("max_response_bytes", 2 * 1024 * 1024)), 2 * 1024 * 1024, 1024),
-            max_chars=self._int(env.get("XG_WEB_FETCH_MAX_CHARS", fetch_raw.get("max_chars", 32_000)), 32_000, 256),
-            max_redirects=self._int(env.get("XG_WEB_MAX_REDIRECTS", fetch_raw.get("max_redirects", 5)), 5, 0),
+            timeout=self._float(env.get("ROUTIVUS_WEB_TIMEOUT", fetch_raw.get("timeout", 15)), 15.0),
+            max_response_bytes=self._int(env.get("ROUTIVUS_WEB_MAX_RESPONSE_BYTES", fetch_raw.get("max_response_bytes", 2 * 1024 * 1024)), 2 * 1024 * 1024, 1024),
+            max_chars=self._int(env.get("ROUTIVUS_WEB_FETCH_MAX_CHARS", fetch_raw.get("max_chars", 32_000)), 32_000, 256),
+            max_redirects=self._int(env.get("ROUTIVUS_WEB_MAX_REDIRECTS", fetch_raw.get("max_redirects", 5)), 5, 0),
             allowed_ports=ports,
         )
-        enabled = env.get("XG_WEB_ENABLED", "on").lower() not in ("off", "0", "false") and bool(raw.get("enabled", True))
-        rate_limit = self._int(env.get("XG_WEB_RATE_LIMIT_PER_MINUTE", search_raw.get("rate_limit_per_minute", 30)), 30)
+        enabled = env.get("ROUTIVUS_WEB_ENABLED", "on").lower() not in ("off", "0", "false") and bool(raw.get("enabled", True))
+        rate_limit = self._int(env.get("ROUTIVUS_WEB_RATE_LIMIT_PER_MINUTE", search_raw.get("rate_limit_per_minute", 30)), 30)
         return WebConfig(enabled=enabled, search=search, fetch=fetch, providers=providers,
                          rate_limit_per_minute=rate_limit)
 

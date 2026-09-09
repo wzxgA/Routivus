@@ -1,6 +1,6 @@
 ﻿"""审计日志：统一 JSONL 记录 + 敏感字段脱敏。
 
-记录位置：<项目根>/.xg/audit.log
+记录位置：<项目根>/.routivus/audit.log
 """
 
 from __future__ import annotations

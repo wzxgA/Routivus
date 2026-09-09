@@ -1,6 +1,6 @@
 ﻿"""SmartRouter 配置服务（config.json 介质，供 /tier 命令与 TUI 面板使用）。
 
-仅读写 config.json 的 ``smart_router`` 节点；不再依赖 XG_SMART_ROUTER* 环境变量。
+仅读写 config.json 的 ``smart_router`` 节点；不再依赖 ROUTIVUS_SMART_ROUTER* 环境变量。
 """
 
 from __future__ import annotations

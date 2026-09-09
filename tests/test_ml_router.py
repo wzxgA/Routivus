@@ -1,4 +1,4 @@
-﻿"""第 5 期 B2（ML 精判接入与静默回落）测试。
+"""MLRouter 精判接入与静默回落测试。
 
 缺 ML 依赖/无产物时：MLRouter 整类 skip（与"产物缺依赖时静默回落"的
 主进程语义一致）；纯逻辑的回落/门控测试在依赖缺失时降级为构造性跳过。
@@ -60,7 +60,7 @@ class TestFallback:
 
     def test_none_path_unavailable(self, tmp_path):
         # 默认目录指向隔离空目录且显式不可写时回落；此处用显式缺失路径保证隔离，
-        # 避免随包兜底把产物写入真实目录或 C 盘根（原用例会污染 C:/__xg_never_exists__）
+        # 避免随包兜底把产物写入真实目录或 C 盘根（原用例会污染 C:/__routivus_never_exists__）
         r = MLRouter(tmp_path / "no_such" / "router.lgb")
         assert not r.available
 
@@ -140,7 +140,7 @@ class TestRouteIntegration:
         assert res.tier_idx in (0, 1, 2, 3)
 
     def test_no_ml_falls_back_to_rule(self):
-        """不传 ml_router：行为与第 4 期完全一致（回归保护）。"""
+        """不传 ml_router：行为退回纯规则（回归保护）。"""
         res = route("写个函数把两个数相加",
                     fallback_provider="p", fallback_model="m")
         assert res.hard_rule is False  # 软规则路径仍走规则
@@ -161,7 +161,7 @@ def _semantic_available() -> bool:
 class TestBundledBootstrap:
     def test_default_dir_uses_bundled_artifacts(self, tmp_path, monkeypatch):
         """空数据目录首启：随包 router.lgb + 语义编码器自动落位，ML 精判开箱可用。"""
-        monkeypatch.setenv("XG_ADAPTIVE_DIR", str(tmp_path))
+        monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(tmp_path))
         from routivus.router.semantic import load_semantic_encoder
         sem = load_semantic_encoder(None)
         r = MLRouter(None, semantic=sem)  # 默认路径 → 触发随包落位

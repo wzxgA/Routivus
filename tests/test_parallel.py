@@ -124,7 +124,7 @@ class TestAuditIntegration:
 
         from routivus.safety.audit import AuditLogger
 
-        log_path = tmp_path / ".xg" / "audit.log"
+        log_path = tmp_path / ".routivus" / "audit.log"
         audit = AuditLogger(log_path)
         from routivus.tool.builtin import build_registry
 

@@ -1,4 +1,4 @@
-﻿"""phase-04 步骤 A1：learned_rules 聚合与消费测试。
+"""learned_rules 聚合与消费测试。
 
 覆盖：
 - 候选谓词生成（_candidates）
@@ -6,7 +6,7 @@
 - 样本不足 / 弱偏向不生成
 - ±1 档限制、硬规则不可被 learned_rules 覆盖
 - 旧格式记录（无 features）跳过（向后兼容）
-- 无记录不写盘；删除 learned_rules.json 回到第 3 期行为
+- 无记录不写盘；删除 learned_rules.json 回到空态
 - save/load roundtrip 与损坏回退
 """
 
@@ -165,10 +165,10 @@ def test_postprocess_learned_rules_skipped_on_chatty():
 
 def test_relearn_no_records_does_not_write(tmp_path, monkeypatch):
     d = tmp_path / "adaptive"
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(d))
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(d))
     rules = re_learn()
     assert rules.count == 0
-    assert not d.exists()  # 不重建目录（回第 3 期行为）
+    assert not d.exists()  # 不重建目录（回到空态）
 
 
 def test_save_load_roundtrip():
@@ -189,14 +189,14 @@ def test_load_corrupt_falls_back_empty():
 def test_load_from_disk_empty_after_delete(tmp_path, monkeypatch):
     d = tmp_path / "adaptive"
     d.mkdir()
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(d))
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(d))
     # 无 learned_rules.json → 空规则集，不抛错
     assert load_learned_rules().count == 0
 
 
 def test_relearn_writes_and_loads(tmp_path, monkeypatch):
     d = tmp_path / "adaptive"
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(d))
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(d))
     log = d / "feedback.log"
     import json
 

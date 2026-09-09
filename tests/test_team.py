@@ -1,4 +1,4 @@
-"""第 10 期 Team MVP 测试。"""
+"""Team MVP 测试。"""
 
 from __future__ import annotations
 

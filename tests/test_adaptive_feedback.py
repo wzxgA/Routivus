@@ -1,4 +1,4 @@
-﻿"""adaptive 反馈骨架单测（phase-03 步骤 A）。"""
+"""adaptive 反馈骨架单测。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from routivus.adaptive.feedback import (
 
 @pytest.fixture()
 def adapt_dir(monkeypatch, tmp_path):
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(tmp_path))
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(tmp_path))
     return tmp_path
 
 

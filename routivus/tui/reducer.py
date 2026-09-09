@@ -52,7 +52,7 @@ def _copy(state: TuiState) -> TuiState:
 def set_smart_router_snapshot(state: TuiState, snapshot: SmartRouterSnapshot) -> TuiState:
     """Replace the inspector SmartRouter snapshot (routing result / toggle).
 
-    纯数据层替换（phase-02 步骤 A）：不产生 transcript 项、不影响 phase。
+    纯数据层替换：不产生 transcript 项、不影响 phase。
     """
     out = _copy(state)
     out.inspector = replace(out.inspector, smart_router=snapshot)

@@ -1,4 +1,4 @@
-﻿"""phase-03 步骤 D：集成与验收测试。
+"""集成与验收测试。
 
 覆盖文档 §D + §8 验收标准：
 - 集成链路：连续追问累积信号 → 聚合 → 同类输入档位上调一档；
@@ -23,7 +23,7 @@ from routivus.router import TIER_NAMES, route
 @pytest.fixture()
 def adapt_dir(monkeypatch, tmp_path):
     d = tmp_path / "adaptive"
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(d))
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(d))
     return d
 
 
@@ -141,7 +141,7 @@ def test_startup_loads_empty_state_cleanly(adapt_dir):
 
     assert read_feedback() == []          # 无 feedback.log → 空记录
     assert recalibrate().total == 0.0     # 无记录 → 空校准，不写盘
-    assert not adapt_dir.exists()         # 不重建目录（回第 1 期行为）
+    assert not adapt_dir.exists()         # 不重建目录（回纯规则行为）
     # 启动一次后：无记录仍未生成 calibration.json（load 回退空）
     assert load_calibration().total == 0.0
     assert not (adapt_dir / "calibration.json").exists()

@@ -1,4 +1,4 @@
-﻿"""Pure state types consumed by the Textual widgets."""
+"""Pure state types consumed by the Textual widgets."""
 
 from __future__ import annotations
 
@@ -133,8 +133,8 @@ class PlanInspectorSnapshot:
 @dataclass(frozen=True)
 class MemoryInspectorSnapshot:
     project_root: str = ""
-    xg_loaded: bool = False
-    xg_local_loaded: bool = False
+    routivus_loaded: bool = False
+    routivus_local_loaded: bool = False
     warning_count: int = 0
     memory_count: int = 0
     store_available: bool = True
@@ -168,7 +168,7 @@ class SmartRouterTierSnapshot:
 
 @dataclass(frozen=True)
 class SmartRouterSnapshot:
-    """SmartRouter routing state consumed by HeaderBar (phase-02).
+    """SmartRouter routing state consumed by HeaderBar .
 
     Off 态 Header 渲染不读取该快照，因此默认值不影响既有渲染路径。
     """
@@ -176,7 +176,7 @@ class SmartRouterSnapshot:
     enabled: bool = False
     tiers: tuple[SmartRouterTierSnapshot, ...] = ()
     active_tier: str = ""
-    # 第 3 期校准后的置信度展示位，本期恒为 None。
+    # 校准后的置信度展示位，未校准时恒为 None。
     confidence: float | None = None
 
 

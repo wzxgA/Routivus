@@ -1,4 +1,4 @@
-﻿"""测试 :class:`xg.config.provider_service.ProviderConfigService`。"""
+﻿"""测试 :class:`routivus.config.provider_service.ProviderConfigService`。"""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ class TestService:
         assert len(svc.list()) == 0
 
     def test_add_new_provider_passes_validation(self, tmp_path: Path):
-        manager = make_manager(tmp_path, {"XG_MYPROXY_API_KEY": "sk-test"})
+        manager = make_manager(tmp_path, {"ROUTIVUS_MYPROXY_API_KEY": "sk-test"})
         svc = ProviderConfigService(manager)
         res = svc.add("myproxy", "https://api.myproxy.com/v1", "mymodel", "MyProxy")
         assert res.ok

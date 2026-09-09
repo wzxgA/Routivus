@@ -1,4 +1,4 @@
-﻿"""SmartRouter 语义编码器（第 6 期 C2，ONNX Runtime 加载 bge 产物）。
+"""SmartRouter 语义编码器（ONNX Runtime 加载 bge 产物）。
 
 职责：把用户输入编码为 512 维语义向量，供 ml_router 精判时并入特征列
 （``[TF-IDF + 数值 + 语义]``）；任何缺依赖 / 缺产物 / 产物损坏 情形一律
@@ -129,7 +129,7 @@ class SemanticEncoder:
 def load_semantic_encoder(onnx_path: Path | None = None) -> SemanticEncoder:
     """便捷工厂：缺依赖/缺产物时返回一个 available=False 的编码器。
 
-    未显式指定路径时，先尝试把随包语义产物（xg/assets/）落位到数据目录，
+    未显式指定路径时，先尝试把随包语义产物（routivus/assets/）落位到数据目录，
     使 clone 后首启即可用语义通道；无随包产物或复制失败时静默跳过。
     """
     if onnx_path is None:

@@ -1,6 +1,6 @@
-﻿"""隐式反馈信号：枚举、事件结构、内存缓冲 + 定时 flush 到 feedback.log（JSONL）。
+"""隐式反馈信号：枚举、事件结构、内存缓冲 + 定时 flush 到 feedback.log（JSONL）。
 
-设计依据：phase-03 步骤 A/B。
+设计依据：/B。
 - A 步骤交付骨架：SignalType 枚举、FeedbackEvent、FeedbackRecorder 的
   内存缓冲与 flush、read_feedback 读取。
 - B 步骤才接入真实采集挂点；在此之前的 recorder 不会产生任何写入
@@ -61,7 +61,7 @@ class FeedbackEvent:
     signal: str = ""  # 冗余命中类型名，聚合时用
     weight: float = 0.0
     ts: float = field(default_factory=time.time)
-    features: dict | None = None  # 当轮特征快照（第 4 期 A1 learned_rules 聚合用）
+    features: dict | None = None  # 当轮特征快照（learned_rules 聚合用）
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {

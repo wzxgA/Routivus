@@ -2,7 +2,7 @@
 
 设计口径：
 - config.json 是 provider 定义与 API Key 的唯一存储，不再写 .env。
-- 写 config.json 复用 :class:`xg.config.manager.ConfigManager` 的分层读写。
+- 写 config.json 复用 :class:`routivus.config.manager.ConfigManager` 的分层读写。
 - 所有写入在保存前经过校验（api_base 合法、default_model 必填、name 合法、
   key 非占位值），并把错误前移到输入阶段。
 """

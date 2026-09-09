@@ -44,10 +44,10 @@ class McpConfigManager:
         env: dict[str, str] | None = None,
         defaults: dict[str, Any] | None = None,
     ) -> None:
-        self.user_dir = Path(user_dir) if user_dir else Path.home() / ".xg"
+        self.user_dir = Path(user_dir) if user_dir else Path.home() / ".routivus"
         self.project_root = (Path(project_root) if project_root else Path.cwd()).resolve()
         self.user_config_path = self.user_dir / MCP_CONFIG_FILE
-        self.project_config_path = self.project_root / ".xg" / MCP_CONFIG_FILE
+        self.project_config_path = self.project_root / ".routivus" / MCP_CONFIG_FILE
         self.env = env if env is not None else os.environ
         self.defaults = {
             "startup_timeout": 15.0,

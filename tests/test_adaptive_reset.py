@@ -38,7 +38,7 @@ def test_reset_adaptive_data_removes_both(monkeypatch, tmp_path):
     log = tmp_path / "feedback.log"
     cal_path = tmp_path / "calibration.json"
     rules_path = tmp_path / "learned_rules.json"
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(tmp_path))
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(tmp_path))
 
     # 先造出两个文件
     records = [_signal(w, {"len_chars": 10, "num_code_blocks": 0}) for w in [1.0]] * 22
@@ -61,7 +61,7 @@ def test_reset_adaptive_data_removes_both(monkeypatch, tmp_path):
 
 
 def test_reset_adaptive_data_idempotent(monkeypatch, tmp_path):
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(tmp_path))
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(tmp_path))
     assert reset_adaptive_data() == []
 
 

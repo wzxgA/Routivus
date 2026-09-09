@@ -40,7 +40,7 @@ async def run_events(agent: ReActAgent, user_input: str) -> list[AgentEvent]:
 
 class TestBasicLoop:
     async def test_plain_reply_no_tools(self, settings, registry):
-        agent = make_agent([("你好，我是 XG。", [])], settings, registry)
+        agent = make_agent([("你好，我是 Routivus。", [])], settings, registry)
         events = await run_events(agent, "hi")
 
         kinds = [e.kind for e in events]

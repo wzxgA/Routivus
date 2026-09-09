@@ -1,7 +1,7 @@
 """Commands shared by the inline CLI and the fullscreen UI.
 
 The command service deliberately returns data instead of printing it.  The
-legacy helpers in :mod:`xg.cli.app` remain the compatibility implementation
+legacy helpers in :mod:`routivus.cli.app` remain the compatibility implementation
 for now; keeping this adapter small lets the TUI use the exact same command
 semantics while the inline renderer is migrated incrementally.
 """
@@ -57,7 +57,7 @@ class SlashCommandSpec:
 
 # Keep this tuple in presentation order.  It is intentionally metadata only;
 # command execution remains in CommandService and the legacy compatibility
-# helpers in xg.cli.app.
+# helpers in routivus.cli.app.
 SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
     SlashCommandSpec(
         "/plan",
@@ -93,7 +93,7 @@ SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
         ),
         examples=(
             "/team 实现一个带测试的登录模块",
-            "/team resume t4 --write-scope xg/auth/*.py",
+            "/team resume t4 --write-scope routivus/auth/*.py",
         ),
     ),
     SlashCommandSpec(
@@ -199,12 +199,12 @@ SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
     SlashCommandSpec(
         "/path",
         usage="/path [add]",
-        description="查看或配置 xg-cli 命令目录的 PATH",
+        description="查看或配置 routivus 命令目录的 PATH",
         category="config",
         details=(
             "不带参数时显示命令目录、命令文件、当前会话 PATH 与持久化 PATH 状态。",
-            "add 把命令目录写入用户级持久 PATH（幂等），写入后重开终端即可直接运行 xg-cli。",
-            "启动时的自动自愈可用环境变量 XG_AUTO_PATH=0 关闭。",
+            "add 把命令目录写入用户级持久 PATH（幂等），写入后重开终端即可直接运行 routivus。",
+            "启动时的自动自愈可用环境变量 ROUTIVUS_AUTO_PATH=0 关闭。",
         ),
         subcommands=(
             SlashSubcommandSpec("add", "/path add", "把命令目录写入持久 PATH"),
@@ -332,7 +332,7 @@ SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
         usage="/init",
         description="初始化项目记忆",
         category="memory",
-        details=("分析当前项目并生成 XG.md 草稿；写入前会请求确认，已有文件不会直接覆盖。",),
+        details=("分析当前项目并生成 Routivus.md 草稿；写入前会请求确认，已有文件不会直接覆盖。",),
         examples=("/init",),
     ),
     SlashCommandSpec(

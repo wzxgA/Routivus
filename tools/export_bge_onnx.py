@@ -1,7 +1,7 @@
-﻿"""SmartRouter 离线语义编码器导出脚本（第 6 期 C1）。
+"""SmartRouter 离线语义编码器导出脚本（bge → ONNX int8）。
 
 ``BAAI/bge-small-zh-v1.5`` → ONNX 并 int8 量化，产物写
-``~/.xg/adaptive/router_semantics.onnx``（数据目录可由 XG_ADAPTIVE_DIR 覆盖）。
+``~/.routivus/adaptive/router_semantics.onnx``（数据目录可由 ROUTIVUS_ADAPTIVE_DIR 覆盖）。
 
 用法：
     pip install ".[semantic]"             # onnxruntime + tokenizers + 导出用 torch/optimum
@@ -11,7 +11,7 @@
 
 设计红线（对齐 phase-06 文档 §4）：
 - 本脚本为纯离线工具，torch / optimum / transformers 仅在此 import；
-  交互主进程（xg）不触碰这些重依赖；
+  交互主进程（routivus）不触碰这些重依赖；
 - 导出后自动校验：输出维度 == 512、int8 与 fp32 语义一致性（余弦≥阈值）、
   CPU 单句延迟 ≤ 阈值；任一失败则以非 0 退出（不落半成品产物）；
 - 运行时编码只用 ``onnxruntime`` + ``tokenizers``（轻量，可进主进程）。

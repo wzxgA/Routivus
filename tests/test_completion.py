@@ -1,4 +1,4 @@
-﻿"""Pure unit tests for the P0/P1 completion module (xg.cli.completion)."""
+﻿"""Pure unit tests for the P0/P1 completion module (routivus.cli.completion)."""
 
 from __future__ import annotations
 

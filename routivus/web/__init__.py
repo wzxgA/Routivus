@@ -1,4 +1,4 @@
-﻿"""Safe, read-only web capabilities for XG."""
+﻿"""Safe, read-only web capabilities for Routivus."""
 
 from routivus.web.fetch import WebFetchService
 from routivus.web.models import (

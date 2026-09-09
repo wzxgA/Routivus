@@ -32,7 +32,7 @@ class MemoryManager:
         self.project_loader = ProjectMemoryLoader(
             self.project_root, max_chars=project_memory_max_chars
         )
-        self.db_path = self.project_root / ".xg" / "memory.db"
+        self.db_path = self.project_root / ".routivus" / "memory.db"
         self.store: SQLiteMemoryStore | None = None
         self.store_error = ""
         try:

@@ -1,4 +1,4 @@
-﻿"""校准聚合与应用单测（phase-03 步骤 C）。
+"""校准聚合与应用单测。
 
 覆盖：样本不足跳过、±0.15/±0.1 夹紧边界、方向语义（upgrade 多 → bias 负）、
 置信门（硬规则不动/置信足够不动/边界输入按偏置方向移动且最多一档）、
@@ -34,7 +34,7 @@ def _rec(tier: str, signal: str, weight: float = 1.0) -> dict:
 @pytest.fixture()
 def adapt_dir(monkeypatch, tmp_path):
     d = tmp_path / "adaptive"
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(d))
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(d))
     return d
 
 
@@ -168,7 +168,7 @@ def test_load_missing_returns_empty(adapt_dir):
 def test_recalibrate_no_records_writes_nothing(adapt_dir):
     cal = recalibrate()
     assert cal.total == 0.0
-    assert not adapt_dir.exists()  # 不重建目录，删掉即回第 1 期行为
+    assert not adapt_dir.exists()  # 不重建目录，删掉即回纯规则行为
 
 
 def test_recalibrate_aggregates_and_persists(adapt_dir):
@@ -189,7 +189,7 @@ def test_recalibrate_aggregates_and_persists(adapt_dir):
 # ---------- route() 集成：校准只读注入 ----------
 
 def test_route_without_calibration_unchanged():
-    """不传 calibration（或传 None）= 第 1 期纯规则行为。"""
+    """不传 calibration（或传 None）= 纯规则行为。"""
     r1 = route("你好", fallback_provider="openai", fallback_model="m")
     assert r1.tier == "Basic"
 

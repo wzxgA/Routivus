@@ -1,4 +1,4 @@
-﻿"""第 6 期 C2（语义编码器接入 ml_router 精判）测试。
+"""语义编码器接入 ml_router 精判测试。
 
 无 onnxruntime/无产物时：SemanticEncoder 与带语义产的 MLRouter 整段回落
 （available=False），与"产物缺依赖时静默回落"的主进程语义一致。
@@ -44,7 +44,7 @@ def _semantic_available() -> bool:
 
 class TestSemanticFallback:
     def test_missing_file_unavailable(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("XG_ADAPTIVE_DIR", str(tmp_path / "nope"))
+        monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(tmp_path / "nope"))
         enc = SemanticEncoder()  # 数据目录无 router_semantics.onnx
         assert not enc.available
         assert enc.encode("随便聊聊") is None
@@ -69,7 +69,7 @@ class TestSemanticFallback:
 @pytest.mark.skipif(not _semantic_available(), reason="未安装 semantic extras")
 def test_factory_bundles_artifact_to_empty_dir(tmp_path, monkeypatch):
     """B：空数据目录首启调用 factory → 随包产物(xg/assets)自动落位并可用。"""
-    monkeypatch.setenv("XG_ADAPTIVE_DIR", str(tmp_path))
+    monkeypatch.setenv("ROUTIVUS_ADAPTIVE_DIR", str(tmp_path))
     enc = load_semantic_encoder(None)
     assert enc.available
     assert enc.artifact_exists
@@ -117,7 +117,7 @@ class TestSemanticMlTraining:
         return out
 
     def test_train_without_semantic_sets_zero_dim(self, tmp_path):
-        # 第 5 期行为回归：不传 semantic → sem_dim=0，payload 无语义标记
+        # 回归：不传 semantic → sem_dim=0，payload 无语义标记
         from train_router import train_and_save
         out = tmp_path / "router.lgb"
         report = train_and_save(self._samples(40), out)
@@ -193,7 +193,7 @@ class TestSemanticColumnContract:
         assert pred is not None and pred.tier in (0, 1, 2, 3)
 
     def test_semantic_artifact_encoder_unavailable_falls_back(self, tmp_path):
-        # 第 6 期静默回落：语义产物 + 坏编码器 → MLRouter 不可用
+        # 静默回落：语义产物 + 坏编码器 → MLRouter 不可用
         from train_router import train_and_save
         class _Bad:
             dim = 512
