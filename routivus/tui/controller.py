@@ -1,4 +1,4 @@
-﻿"""UI-independent orchestration for one interactive XG session."""
+"""UI-independent orchestration for one interactive XG session."""
 
 from __future__ import annotations
 
@@ -277,8 +277,8 @@ class SessionController:
         """
         if not self.settings.smart_router_enabled:
             return
-        # 延迟导入避免环：xg.cli.app → xg.tui.app → 本模块
-        from routivus.cli.app import _attach_model
+        # 延迟导入避免 module 级环；服务层持有模型附加逻辑。
+        from routivus.service.commands import _attach_model
 
         tiers_cfg = self.manager.smart_router_config().get("tiers") or {}
         now = time.time()

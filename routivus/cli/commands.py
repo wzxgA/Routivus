@@ -1,4 +1,4 @@
-﻿"""Commands shared by the inline CLI and the fullscreen UI.
+"""Commands shared by the inline CLI and the fullscreen UI.
 
 The command service deliberately returns data instead of printing it.  The
 legacy helpers in :mod:`xg.cli.app` remain the compatibility implementation
@@ -474,9 +474,9 @@ class CommandService:
         if parts[0].lower() == "/provider":
             message, ok = execute_provider_command(self.context.manager, self.context.settings, raw, language=language)
             if ok and self.context.agent is not None:
-                # TUI/CommandService 路径：/provider 变更后热同步运行中 client
-                #（与 inline _handle_command 保持一致，配好即用、无需重启）。
-                from routivus.cli.app import _reapply_active
+                # CommandService 路径：/provider 变更后热同步运行中 client
+                #（配好即用、无需重启）。
+                from routivus.service.commands import _reapply_active
 
                 _reapply_active(self.context.agent, self.context.settings, self.context.manager)
             return CommandResult(ok=ok, message=message)
@@ -501,9 +501,9 @@ class CommandService:
             message, ok = await execute_history_command(self.context.agent, raw, language=normalize_language(getattr(self.context.settings, "ui_language", "zh")))
             return CommandResult(ok=ok, message=message)
 
-        # Lazy import avoids a cycle: app.py still owns the legacy renderer
-        # and its command helpers are kept as the public compatibility API.
-        from routivus.cli.app import _handle_command, _handle_memory_command
+        # 未显式处理的命令（/clear /model /smartrouter /config /hitl /save /memory
+        # /exit 等）交由 service 层命令处理器分发。
+        from routivus.service.commands import handle_service_command
 
         cmd = raw.split(maxsplit=1)[0].lower()
         if cmd == "/init":
@@ -511,13 +511,7 @@ class CommandService:
             # handles this command separately so a TUI can show a modal.
             return CommandResult(ok=True, open_modal="init", message=translate(language, "ui.command.init_prepare"))
 
-        if cmd in ("/save", "/memory"):
-            message, should_exit = _handle_command(
-                self.context.agent, self.context.settings, self.context.manager, raw
-            )
-            return CommandResult(ok=not should_exit, message=message or "", should_exit=should_exit)
-
-        message, should_exit = _handle_command(
+        message, should_exit = handle_service_command(
             self.context.agent, self.context.settings, self.context.manager, raw
         )
         if message is None:
@@ -943,59 +937,12 @@ def _tier_usage(sub: str) -> str:
 
 
 def execute_path_command(raw: str, *, language: UiLanguage = "zh") -> tuple[str, bool]:
-    """执行 /path：status 查看命令目录 PATH 状态；add 立即执行自愈（PATH 或启动器）。"""
-    from routivus.cli import path_heal
-
-    parts = raw.split()
-    sub = parts[1].lower() if len(parts) > 1 else "status"
-    language = normalize_language(language)
-    status = path_heal.path_status()
-    scripts = status["scripts_dir"]
-
-    if sub in {"status", ""}:
-        if not scripts:
-            return translate(language, "ui.path.not_found"), False
-        lines = [
-            translate(language, "ui.path.status_title"),
-            translate(language, "ui.path.scripts_dir", value=scripts),
-            translate(language, "ui.path.command_file", value=status['command_file'] or ("(not generated; run pip install xg-cli first)" if language == "en" else "（未生成，请先 pip install xg-cli）")),
-            translate(language, "ui.path.shim_file", value=status['shim_file'] or ("(not generated; use /path add)" if language == "en" else "（未生成，用 /path add 配置）")),
-            translate(language, "ui.path.current", value=translate(language, "ui.path.in_path" if status['in_current_path'] else "ui.path.not_in_path")),
-            translate(language, "ui.path.persisted", value=translate(language, "ui.path.written" if status['in_persisted_path'] else "ui.path.not_written")),
-            translate(language, "ui.path.auto", value=translate(language, "ui.path.auto_off" if status['auto_path_disabled'] else "ui.path.auto_on")),
-        ]
-        if not status["command_file"] and not status["shim_file"]:
-            if status["store_python"]:
-                lines.append(
-                    translate(language, "ui.path.store_hint")
-                )
-            else:
-                lines.append(translate(language, "ui.path.shim_hint"))
-        return "\n".join(lines), True
-
-    if sub == "add":
-        if status["auto_path_disabled"]:
-            return translate(language, "ui.path.disabled"), False
-        if not scripts:
-            return translate(language, "ui.path.not_configured"), False
-        if status["in_persisted_path"] and status["command_file"]:
-            return translate(language, "ui.path.already", path=scripts), True
-        if path_heal.ensure_on_path():
-            after = path_heal.path_status()
-            if after["command_file"] and after["in_persisted_path"]:
-                return (
-                    translate(language, "ui.path.added", path=scripts)
-                ), True
-            if after["shim_file"]:
-                return (
-                    translate(language, "ui.path.shim_added", path=after['shim_file'])
-                ), True
-            return translate(language, "ui.path.completed"), True
-        return (
-            translate(language, "ui.path.failed")
-        ), False
-
-    return translate(language, "ui.path.usage"), False
+    """执行 /path：桌面后端不管理终端 PATH，仅提示不可用。"""
+    return (
+        "PATH not managed by the desktop backend."
+        if normalize_language(language) == "en"
+        else "桌面后端不管理终端 PATH（path_heal 已随 inline CLI 移除）。"
+    ), False
 
 
 async def execute_train_command(
