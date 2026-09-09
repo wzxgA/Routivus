@@ -2,11 +2,12 @@
 .env
 
 # 文档目录（不纳入版本控制）
-XG-docs/
+Routivus-docs/
+plans/
 
 # 运行时产物（审计日志等）
-.xg/
-XG.md
+.routivus/
+Routivus.md
 
 # Python
 __pycache__/
@@ -17,6 +18,7 @@ dist/
 build/
 
 # 测试
+plans/
 .pytest_cache/
 .coverage
 htmlcov/
@@ -24,4 +26,3 @@ htmlcov/
 # 编辑器
 .idea/
 .vscode/
-
