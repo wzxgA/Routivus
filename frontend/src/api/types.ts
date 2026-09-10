@@ -209,6 +209,24 @@ export interface TeamPayload {
   agent_id?: string
   role?: string
   attempt?: number
+  failure_category?: string
+}
+
+/**
+ * 计划 / 团队审阅请求（服务端 `plan.review` 事件）。
+ *
+ * 由 `PlanReviewBridge` 发出：`/plan`、`/team` 生成计划后进入阻塞式审阅，
+ * 客户端必须用 `plan_decision` 应答 execute / cancel / replan，超时按 cancel 落地。
+ */
+export interface PlanReviewTask extends PlanTask {
+  owner_role?: string
+}
+
+export interface PlanReviewRequest {
+  review_id: string
+  mode: 'plan' | 'team'
+  plan?: { goal: string; tasks: PlanReviewTask[]; batches: string[][] } | null
+  timeout?: number
 }
 
 export interface AskField {

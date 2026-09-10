@@ -213,7 +213,7 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 - **两级导航**：全局态（首页 / 笔记 / 配置）与项目态（会话 / 笔记）由 hash 路由驱动，刷新后按 URL 恢复项目、会话与视图；项目内无会话时自动创建首个会话。
 - **首页**：项目卡（会话 / 笔记 / 今日调用统计）+ 全部项目活动热力图（52 周 × 7 天，未来日期不渲染）+ 新建项目。
 - **笔记**：全局入口显示全部笔记及项目归属，项目入口只显示当前项目笔记；搜索、新建、编辑、标签、置顶、删除均走服务端；版本冲突返回 409 时提示「用当前内容覆盖」，不静默丢失。
-- **会话视图**：WebSocket 事件流渲染消息、工具卡、计划 / 团队任务卡、审批与提问卡；四页签信息侧栏（Session / Plan / Memory / Safety）；Composer 支持 `Enter` 发送、`↑↓` 历史、运行中停止。
+- **会话视图**：WebSocket 事件流渲染消息、工具卡、计划 / 团队任务卡、审批与提问卡；`/plan <任务>` 与 `/team <任务>` 在会话内直接可用（生成计划后弹出审阅卡：批准执行 / 重新规划 / 取消），`/team resume [task_id] --write-scope <路径>` 用于 `needs_input` 恢复；四页签信息侧栏（Session / Plan / Memory / Safety）；Composer 支持 `Enter` 发送、`↑↓` 历史、运行中停止。
 - **终端抽屉**：`Ctrl+\`` 或顶栏按钮展开，走 `/api/ws/projects/{id}/terminal`，服务端绑定项目 cwd。
 - **主题**：暖白 / 夜间双主题（含夜空动效），偏好存 `localStorage`。
 
@@ -221,7 +221,8 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 
 - 会话断线重连会以服务端 `session.snapshot` 重建消息流（持久化消息不丢），但**计划 / 团队任务卡属于瞬时状态，重连后不保证复原**。
 - 配置页当前只读：后端尚未提供 `/api/config`（Provider 列表、SmartRouter 四档、HITL 运行时）与 Skill 列表接口，页面已如实标注待接入项。
-- `/plan`、`/team` 不是服务端 WebSocket 可达模式（默认 Agent 工厂只在会话内构造 ReActAgent），任务卡按事件契约渲染，等待后端接入计划 / 团队执行入口。
+- `/plan`、`/team` 在会话内**可用**，但审阅是**阻塞式**的：等待决策期间不接受新指令，客户端需用 `plan_decision`（`action` = `execute` / `cancel` / `replan`）应答；超时按取消落地（`ROUTIVUS_APPROVAL_TIMEOUT`，默认 300s）。协议级测试见 `tests/test_server_plan_team.py`。
+- `/team resume` 只能恢复**本会话最近一次** `/team` 的执行器，且写入范围必须显式声明（`--write-scope`，fail closed）；服务重启后执行器不保留，无法恢复。
 - Memory 页签的条目列表恒为空：会话快照里的 `memory.items` 目前固定是 `[]`，把 `/memory list` 结构化后推送需要后端补接口。
 - 终端通道要求鉴权：Vite 开发端口是 `5183`，需把后端 `ROUTIVUS_ALLOWED_ORIGINS` 设为 `http://localhost:5183`（或配置 `VITE_ROUTIVUS_TOKEN`），否则终端会以 `terminal_auth_required` 拒绝。
 - 未实现「开发环境 mock adapter」：前端全部走真实 REST / WebSocket，没有离线可视化回归模式，视觉回归依赖真实后端。
@@ -262,7 +263,7 @@ Phase 7 期间发现并修复的前端缺陷：
 2. **主题按钮文案语义错误**：原型 `ttLabel` 显示**当前**主题，前端显示成了「切换目标」。
 3. **「新建项目」卡未跨两列**：与原型 `grid-column:1 / -1` 不一致。
 
-**未覆盖 / 未验证**：本机未配置 provider，因此**没有跑通一次真实 LLM 的 Agent 轮次**——会话流、工具卡、审批卡的渲染是按事件契约实现并由协议级测试覆盖的，但「真实模型流式回复」需要在配置 provider 后人工确认（步骤见「快速开始」第 1 步）。同理，`/plan`、`/team` 的真实执行链路未验证。
+**未覆盖 / 未验证**：本机未配置 provider，因此**没有跑通一次真实 LLM 的 Agent 轮次**——会话流、工具卡、审批卡的渲染是按事件契约实现并由协议级测试覆盖的，但「真实模型流式回复」需要在配置 provider 后人工确认（步骤见「快速开始」第 1 步）。`/plan`、`/team` 同理：**会话通道（前缀分派、卡片载荷、审阅往返、超时 fail closed、`/team resume` 路由）由 `tests/test_server_plan_team.py` 以替身执行器覆盖**，但由真实模型生成计划 / 调度 Worker 的端到端链路仍未验证。
 
 ## 程序化入口
 

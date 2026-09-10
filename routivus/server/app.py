@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import os
+import shlex
 import sqlite3
 import tempfile
 import time
@@ -33,6 +34,7 @@ from routivus.safety.hitl import ApprovalDecision
 from routivus.server.approval import ApprovalBridge
 from routivus.server.config import ServerConfig
 from routivus.server.logging_setup import install_token_redaction
+from routivus.server.plan_review import PlanReviewBridge
 from routivus.server.terminal import (
     TerminalSession,
     TerminalSpec,
@@ -265,6 +267,126 @@ def _wants_session_scope(payload: dict[str, Any]) -> bool:
     return str(payload.get("scope", "")).strip().lower() == "session"
 
 
+# ---------- 计划 / 团队事件 → 会话事件 ----------
+#
+# 前端 `PlanPayload` / `TeamPayload`（frontend/src/api/types.ts）只声明了它真正
+# 渲染的字段，所以这里显式挑字段而不是整包 `asdict`：既能与前端契约对齐，也避免
+# 把 `agent_event` 这类内部结构、以及 ReviewResult 里的证据长文塞进每一帧。
+
+
+def _task_card_view(task: Any, *, mode: str) -> dict[str, Any]:
+    """单个子任务的卡片视图（PlanTask 与 TeamTask 共用基础字段）。"""
+    view: dict[str, Any] = {
+        "id": str(getattr(task, "id", "")),
+        "title": str(getattr(task, "title", "") or getattr(task, "description", "")),
+        "description": str(getattr(task, "description", "")),
+        "deps": [str(dep) for dep in getattr(task, "deps", None) or []],
+        "status": str(getattr(task, "status", "pending")),
+    }
+    result = str(getattr(task, "result", "") or "")
+    if result:
+        view["result"] = result
+    if mode == "team":
+        view["owner_role"] = str(getattr(task, "owner_role", ""))
+        criteria = [str(item) for item in getattr(task, "acceptance_criteria", None) or []]
+        if criteria:
+            view["acceptance_criteria"] = criteria
+    return view
+
+
+def _plan_card_view(plan: Any, *, mode: str) -> dict[str, Any]:
+    """整份计划（Plan 与 TeamPlan 共用 goal / tasks / batches 三元组）。"""
+    return {
+        "goal": str(getattr(plan, "goal", "")),
+        "tasks": [_task_card_view(task, mode=mode) for task in getattr(plan, "tasks", None) or []],
+        "batches": [
+            [str(task_id) for task_id in batch] for batch in getattr(plan, "batches", None) or []
+        ],
+    }
+
+
+def _task_card_payload(item: Any, *, mode: str) -> dict[str, Any]:
+    """把一个 PlanEvent / TeamEvent 摊平成前端直接消费的卡片载荷。"""
+    data: dict[str, Any] = {"kind": str(getattr(item, "kind", ""))}
+    message = str(getattr(item, "message", "") or "")
+    if message:
+        data["message"] = message
+    plan = getattr(item, "plan", None)
+    if plan is not None:
+        data["plan"] = _plan_card_view(plan, mode=mode)
+    batch = getattr(item, "batch", None)
+    if batch:
+        data["batch"] = [str(task_id) for task_id in batch]
+    task = getattr(item, "task", None)
+    if task is not None:
+        data["task"] = _task_card_view(task, mode=mode)
+    if mode == "team":
+        data["team_id"] = str(getattr(item, "team_id", "") or "")
+        agent_id = str(getattr(item, "agent_id", "") or "")
+        if agent_id:
+            data["agent_id"] = agent_id
+        role = str(getattr(item, "role", "") or "")
+        if role:
+            data["role"] = role
+        attempt = int(getattr(item, "attempt", 0) or 0)
+        if attempt:
+            data["attempt"] = attempt
+        # needs_input / repair_scope_required 的原因分类：前端据此解释为何需要补写入范围。
+        category = str(getattr(item, "failure_category", "") or "")
+        if category:
+            data["failure_category"] = category
+    return data
+
+
+def _parse_task_command(content: str) -> tuple[str, str, dict[str, Any]]:
+    """把用户输入解析为 (turn_kind, goal, options)。
+
+    前缀约定与 TUI 保持一致（`routivus/tui/controller.py:358-367`）：
+    `/plan <任务>`、`/team <任务>`、`/team resume ...`，其余一律普通对话。
+    返回的 turn_kind ∈ {"chat", "plan", "team", "team_resume"}。
+    """
+    text = content.strip()
+    lowered = text.lower()
+    if lowered.startswith("/plan"):
+        return "plan", text[len("/plan") :].strip(), {}
+    if lowered.startswith("/team"):
+        rest = text[len("/team") :].strip()
+        if rest.lower() == "resume" or rest.lower().startswith("resume "):
+            return "team_resume", rest, _parse_resume_options(rest)
+        return "team", rest, {}
+    return "chat", text, {}
+
+
+def _parse_resume_options(rest: str) -> dict[str, Any]:
+    """解析 `/team resume [task_id] [--write-scope <路径>]...`。
+
+    用法错误一律以 `error` 字段返回（调用方回一条可读错误），不猜测用户意图：
+    写入范围必须显式声明，这是 fail closed 的前提。
+    """
+    try:
+        parts = shlex.split(rest)[1:]  # 丢掉 "resume"
+    except ValueError as exc:
+        return {"error": f"命令解析失败: {exc}"}
+    task_id = ""
+    claims: list[str] = []
+    index = 0
+    while index < len(parts):
+        token = parts[index]
+        if token == "--write-scope":
+            if index + 1 >= len(parts):
+                return {"error": "用法: /team resume [task_id] --write-scope <路径>"}
+            claims.append(parts[index + 1])
+            index += 2
+            continue
+        if token.startswith("--"):
+            return {"error": f"未知选项: {token}（用法: /team resume [task_id] --write-scope <路径>）"}
+        if task_id:
+            return {"error": "只能指定一个 task_id（用法: /team resume [task_id] --write-scope <路径>）"}
+        task_id = token
+        index += 1
+    return {"task_id": task_id, "claims": claims}
+
+
 def _event_payload(event: EventRecord) -> dict[str, Any]:
     return {
         "type": event.event_type,
@@ -394,6 +516,9 @@ def create_app(
     app.state.session_agents = {}
     app.state.running_tasks = {}
     app.state.session_approvals = {}
+    # 计划 / 团队审阅桥接，以及会话内最近一个可续跑的计划执行器（供 /team resume）。
+    app.state.session_reviews = {}
+    app.state.session_resumable = {}
     app.state.terminals = {}
     app.state.terminal_factory = terminal_factory or (
         lambda spec: select_backend(
@@ -894,6 +1019,8 @@ def create_app(
     session_agents: dict[str, Any] = app.state.session_agents
     connections: dict[str, list[WebSocket]] = app.state.ws_connections
     session_approvals: dict[str, ApprovalBridge] = app.state.session_approvals
+    session_reviews: dict[str, PlanReviewBridge] = app.state.session_reviews
+    session_resumable: dict[str, tuple[str, Any]] = app.state.session_resumable
     terminals: dict[str, TerminalSession] = app.state.terminals
 
     def approval_bridge(session_id: str) -> ApprovalBridge:
@@ -930,6 +1057,27 @@ def create_app(
             timeout=resolved_config.approval_timeout,
         )
         session_approvals[session_id] = bridge
+        return bridge
+
+    def plan_review_bridge(session_id: str) -> PlanReviewBridge:
+        """会话级计划审阅桥接。跨轮复用，队列语义由执行器保证（同时只有一个计划）。"""
+        existing = session_reviews.get(session_id)
+        if existing is not None:
+            return existing
+
+        async def emit(event_type: str, data: dict[str, Any]) -> None:
+            current = workspace_store.get_session(session_id)
+            if current is None:
+                return
+            # websocket=None → 广播给该会话的所有连接，多标签页都能看到审阅卡。
+            await send_event(None, event_type, current, data)
+
+        bridge = PlanReviewBridge(
+            emit=emit,
+            view=lambda plan, mode: _plan_card_view(plan, mode=mode),
+            timeout=resolved_config.approval_timeout,
+        )
+        session_reviews[session_id] = bridge
         return bridge
 
     def attach_connection(session_id: str, websocket: WebSocket) -> None:
@@ -970,158 +1118,385 @@ def create_app(
     def request_is_new(session_id: str, request_id: str) -> bool:
         return workspace_store.claim_request(session_id, request_id)
 
-    async def run_agent_turn(websocket: WebSocket | None, project: Any, session: SessionRecord, content: str, request_id: str = "") -> None:
-        assistant_parts: list[str] = []
-        failed = False
-        tool_started: dict[str, float] = {}
-        tool_calls = 0
-        tool_failures = 0
+    def _cancel_bridges(session_id: str) -> None:
+        """取消一轮时解开所有挂起交互：审批按拒绝、提问按跳过、审阅按取消。"""
+        approval = session_approvals.get(session_id)
+        if approval is not None:
+            approval.cancel_pending()
+        review = session_reviews.get(session_id)
+        if review is not None:
+            review.cancel_pending()
 
-        def apply_usage(current: SessionRecord, usage: Any) -> SessionRecord:
+    async def ensure_session_agent(project: Any, session: SessionRecord) -> Any | None:
+        """取回（或惰性创建）会话级 agent；agent 工厂缺失时返回 None。"""
+        factory = app.state.agent_factory
+        if factory is None:
+            return None
+        agent = session_agents.get(session.id)
+        if agent is None:
+            agent = factory(project, session)
+            if inspect.isawaitable(agent):
+                agent = await agent
+            session_agents[session.id] = agent
+        return agent
+
+    def bind_interactions(agent: Any, session_id: str) -> None:
+        """agent 在会话内跨轮复用，所以每轮都重挂一次交互回调。
+
+        getattr 是为了兼容测试/嵌入方注入的简易 agent。
+        """
+        bridge = approval_bridge(session_id)
+        policy = getattr(agent, "approval_policy", None)
+        if policy is not None:
+            policy.requester = bridge.request
+        if hasattr(agent, "ask_requester"):
+            agent.ask_requester = bridge.ask
+
+    class _TurnForwarder:
+        """一轮执行的共享转发器：把 agent / 计划 / 团队事件映射为会话事件。
+
+        内容增量、工具生命周期、用量、错误这几类映射对 ReAct 轮与计划 / 团队的
+        子任务同样适用，所以三者共用一份映射，避免三处各自漂移。
+        """
+
+        def __init__(self, websocket: WebSocket | None, session: SessionRecord, request_id: str) -> None:
+            self.websocket = websocket
+            self.session = session
+            self.request_id = request_id
+            self.assistant_parts: list[str] = []
+            self.failed = False
+            self.tool_started: dict[str, float] = {}
+            self.tool_calls = 0
+            self.tool_failures = 0
+
+        async def emit(self, event_type: str, data: dict[str, Any]) -> None:
+            await send_event(self.websocket, event_type, self.session, {**data, "request_id": self.request_id})
+
+        def apply_usage(self, usage: Any) -> None:
             updated = workspace_store.update_session(
-                current.id,
-                prompt_tokens=current.prompt_tokens + max(0, int(getattr(usage, "prompt_tokens", 0))),
-                completion_tokens=current.completion_tokens + max(0, int(getattr(usage, "completion_tokens", 0))),
-                total_tokens=current.total_tokens + max(0, int(getattr(usage, "total_tokens", 0))),
+                self.session.id,
+                prompt_tokens=self.session.prompt_tokens + max(0, int(getattr(usage, "prompt_tokens", 0))),
+                completion_tokens=self.session.completion_tokens + max(0, int(getattr(usage, "completion_tokens", 0))),
+                total_tokens=self.session.total_tokens + max(0, int(getattr(usage, "total_tokens", 0))),
             )
-            return updated or current
+            if updated is not None:
+                self.session = updated
 
+        async def forward(self, item: Any) -> None:
+            """把一个 AgentEvent 映射为会话事件。"""
+            kind = getattr(item, "kind", "")
+            text = str(getattr(item, "text", "") or "")
+            if kind in {"content", "thinking"} and text:
+                if kind == "content":
+                    self.assistant_parts.append(text)
+                await self.emit("message.delta", {"kind": kind, "text": text})
+            elif kind == "tool_call":
+                call = getattr(item, "tool_call", None)
+                call_id = str(getattr(call, "id", ""))
+                self.tool_started[call_id] = time.perf_counter()
+                self.tool_calls += 1
+                await self.emit("tool.started", {
+                    "tool_call_id": call_id,
+                    "name": getattr(call, "name", ""),
+                    "arguments": getattr(call, "arguments", ""),
+                })
+            elif kind == "tool_result":
+                result = getattr(item, "tool_result", None)
+                result_id = str(getattr(result, "tool_call_id", ""))
+                ok = bool(getattr(result, "ok", False))
+                if not ok:
+                    self.tool_failures += 1
+                output = getattr(result, "output", "")
+                error = getattr(result, "error", "")
+                await self.emit("tool.completed", {
+                    "tool_call_id": result_id,
+                    "name": getattr(result, "name", ""),
+                    "ok": ok,
+                    "output": output,
+                    "error": error,
+                    "duration_ms": round((time.perf_counter() - self.tool_started.pop(result_id, time.perf_counter())) * 1000),
+                })
+                workspace_store.add_message(
+                    self.session.id, "tool", output or error or "",
+                    tool_name=str(getattr(result, "name", "") or ""),
+                    tool_result=output or error,
+                )
+                await self.emit("audit.updated", {
+                    "tool_calls": self.tool_calls,
+                    "tool_failures": self.tool_failures,
+                })
+            elif kind == "approval":
+                decision = getattr(item, "decision", None)
+                await self.emit("approval.resolved", {
+                    "tool_call_id": getattr(getattr(item, "tool_call", None), "id", ""),
+                    "decision": "approve" if getattr(decision, "allow", False) else "reject",
+                    "reason": getattr(decision, "reason", ""),
+                })
+            elif kind == "ask_user":
+                await self.emit("approval.requested", {
+                    "ask": _record_payload(getattr(item, "ask", None)),
+                })
+            elif kind in {"usage", "context_usage"}:
+                usage = getattr(item, "usage", None)
+                if usage:
+                    self.apply_usage(usage)
+                    await self.emit("session.usage", _record_payload(usage))
+            elif kind in {"context_warning", "context_compacted", "context_overflow", "budget_exceeded"}:
+                await self.emit("memory.updated", {"kind": kind, "message": text})
+            elif getattr(item, "plan", None) is not None or kind.startswith("plan_"):
+                await self.emit("plan.updated", _task_card_payload(item, mode="plan"))
+            elif getattr(item, "team_id", "") or kind.startswith("team_") or kind.startswith("task_") or kind in {"batch_started", "subtask_started", "subtask_done", "subtask_failed"}:
+                await self.emit("team.updated", _task_card_payload(item, mode="team"))
+            elif kind == "error":
+                self.failed = True
+                await self.emit("error", {"code": "agent_error", "message": text})
+            elif kind == "done":
+                usage = getattr(item, "usage", None)
+                if usage:
+                    self.apply_usage(usage)
+                    await self.emit("session.usage", _record_payload(usage))
+
+        async def finish(self) -> None:
+            """一轮正常结束：落库 assistant 正文并收敛会话状态。"""
+            if self.assistant_parts:
+                message = workspace_store.add_message(self.session.id, "assistant", "".join(self.assistant_parts))
+                await self.emit("message.completed", {"message": _record_payload(_message_response(message))})
+            updated = workspace_store.update_session(self.session.id, status="failed" if self.failed else "completed")
+            if updated:
+                self.session = updated
+                await self.emit("session.status", {"status": updated.status})
+
+        async def close_with(self, status: str, *, error: str = "", code: str = "agent_error") -> None:
+            """一轮提前结束（参数错误、依赖缺失等）：报错并把会话状态收敛到 status。"""
+            if error:
+                await self.emit("error", {"code": code, "message": error})
+            updated = workspace_store.update_session(self.session.id, status=status)
+            if updated:
+                self.session = updated
+                await self.emit("session.status", {"status": status})
+
+    async def forward_task_event(item: Any, forwarder: _TurnForwarder, *, mode: str) -> None:
+        """计划 / 团队事件 → 卡片事件；子任务内部事件复用 AgentEvent 映射。
+
+        `subtask_event` 携带的是子任务内部的 AgentEvent（内容 / 思考 / 工具调用），
+        按会话事件转发后用户才能在计划执行期间看到实际进展，而不是只有状态跳变。
+        """
+        event_type = "plan.updated" if mode == "plan" else "team.updated"
+        await forwarder.emit(event_type, _task_card_payload(item, mode=mode))
+        inner = getattr(item, "agent_event", None)
+        if inner is not None:
+            await forwarder.forward(inner)
+        usage = getattr(item, "usage", None)
+        if usage is not None:
+            forwarder.apply_usage(usage)
+            await forwarder.emit("session.usage", _record_payload(usage))
+
+    def _executor_kwargs(agent: Any) -> dict[str, Any]:
+        """计划 / 团队执行器与 ReAct 共用的依赖（都挂在 agent 上）。"""
+        return {
+            "llm": agent.llm,
+            "tools": agent.tools,
+            "settings": agent.settings,
+            "approval_policy": getattr(agent, "approval_policy", None),
+            "audit": getattr(agent, "audit", None),
+            "memory_manager": getattr(agent, "memory_manager", None),
+            "mcp_manager": getattr(agent, "mcp_manager", None),
+            "ask_requester": getattr(agent, "ask_requester", None),
+        }
+
+    def _missing_executor_deps(agent: Any) -> list[str]:
+        """计划 / 团队执行器的必需依赖；测试或嵌入方注入的简易 agent 可能没有。"""
+        return [name for name in ("llm", "tools", "settings") if getattr(agent, name, None) is None]
+
+    def _first_needs_input_task(executor: Any) -> str:
+        plan = getattr(executor, "_last_plan", None)
+        for task in getattr(plan, "tasks", None) or []:
+            if str(getattr(task, "status", "")) == "needs_input":
+                return str(getattr(task, "id", ""))
+        return ""
+
+    async def handle_turn_cancelled(websocket: WebSocket | None, session: SessionRecord, request_id: str) -> None:
+        _cancel_bridges(session.id)
+        updated = workspace_store.update_session(session.id, status="cancelled")
+        if updated:
+            try:
+                await send_event(websocket, "session.status", updated, {"status": "cancelled", "request_id": request_id})
+            except Exception:
+                pass
+
+    async def handle_turn_failure(
+        websocket: WebSocket | None, session: SessionRecord, request_id: str, exc: Exception, *, label: str
+    ) -> None:
+        logger.exception("%s failed session_id=%s", label, session.id)
+        updated = workspace_store.update_session(session.id, status="failed")
         try:
-            factory = app.state.agent_factory
-            if factory is None:
-                await send_event(websocket, "error", session, {"code": "agent_unavailable", "message": "Agent 尚未配置", "request_id": request_id})
-                updated = workspace_store.update_session(session.id, status="failed")
-                if updated:
-                    await send_event(websocket, "session.status", updated, {"status": "failed"})
-                return
-            agent = session_agents.get(session.id)
+            await send_event(websocket, "error", session, {"code": "agent_error", "message": str(exc), "request_id": request_id})
+            if updated:
+                await send_event(websocket, "session.status", updated, {"status": "failed", "request_id": request_id})
+        except Exception:
+            pass
+
+    async def run_agent_turn(websocket: WebSocket | None, project: Any, session: SessionRecord, content: str, request_id: str = "") -> None:
+        forwarder = _TurnForwarder(websocket, session, request_id)
+        try:
+            agent = await ensure_session_agent(project, session)
             if agent is None:
-                agent = factory(project, session)
-                if inspect.isawaitable(agent):
-                    agent = await agent
-                session_agents[session.id] = agent
-            # agent 在会话内跨轮复用，所以每轮都重挂一次交互回调。
-            # getattr 是为了兼容测试/嵌入方注入的简易 agent。
-            bridge = approval_bridge(session.id)
-            policy = getattr(agent, "approval_policy", None)
-            if policy is not None:
-                policy.requester = bridge.request
-            if hasattr(agent, "ask_requester"):
-                agent.ask_requester = bridge.ask
+                await forwarder.close_with(
+                    "failed", error="Agent 尚未配置", code="agent_unavailable"
+                )
+                return
+            bind_interactions(agent, session.id)
             stream = agent.run(content)
             if inspect.isawaitable(stream):
                 stream = await stream
             async for item in stream:
-                kind = getattr(item, "kind", "")
-                text = str(getattr(item, "text", "") or "")
-                if kind in {"content", "thinking"} and text:
-                    if kind == "content":
-                        assistant_parts.append(text)
-                    await send_event(websocket, "message.delta", session, {"kind": kind, "text": text, "request_id": request_id})
-                elif kind == "tool_call":
-                    call = getattr(item, "tool_call", None)
-                    call_id = str(getattr(call, "id", ""))
-                    tool_started[call_id] = time.perf_counter()
-                    tool_calls += 1
-                    data = {
-                        "tool_call_id": call_id,
-                        "name": getattr(call, "name", ""),
-                        "arguments": getattr(call, "arguments", ""),
-                        "request_id": request_id,
-                    }
-                    await send_event(websocket, "tool.started", session, data)
-                elif kind == "tool_result":
-                    result = getattr(item, "tool_result", None)
-                    result_id = str(getattr(result, "tool_call_id", ""))
-                    ok = bool(getattr(result, "ok", False))
-                    if not ok:
-                        tool_failures += 1
-                    data = {
-                        "tool_call_id": result_id,
-                        "name": getattr(result, "name", ""),
-                        "ok": ok,
-                        "output": getattr(result, "output", ""),
-                        "error": getattr(result, "error", ""),
-                        "duration_ms": round((time.perf_counter() - tool_started.pop(result_id, time.perf_counter())) * 1000),
-                        "request_id": request_id,
-                    }
-                    workspace_store.add_message(session.id, "tool", data.get("output") or data.get("error") or "", tool_name=data["name"], tool_result=data.get("output") or data.get("error"))
-                    await send_event(websocket, "tool.completed", session, data)
-                    await send_event(websocket, "audit.updated", session, {
-                        "tool_calls": tool_calls,
-                        "tool_failures": tool_failures,
-                        "request_id": request_id,
-                    })
-                elif kind == "approval":
-                    decision = getattr(item, "decision", None)
-                    await send_event(websocket, "approval.resolved", session, {
-                        "tool_call_id": getattr(getattr(item, "tool_call", None), "id", ""),
-                        "decision": "approve" if getattr(decision, "allow", False) else "reject",
-                        "reason": getattr(decision, "reason", ""),
-                        "request_id": request_id,
-                    })
-                elif kind == "ask_user":
-                    await send_event(websocket, "approval.requested", session, {
-                        "request_id": request_id,
-                        "ask": _record_payload(getattr(item, "ask", None)),
-                    })
-                elif kind in {"usage", "context_usage"}:
-                    usage = getattr(item, "usage", None)
-                    if usage:
-                        session = apply_usage(session, usage)
-                        await send_event(websocket, "session.usage", session, {**_record_payload(usage), "request_id": request_id})
-                elif kind in {"context_warning", "context_compacted", "context_overflow", "budget_exceeded"}:
-                    await send_event(websocket, "memory.updated", session, {
-                        "kind": kind,
-                        "message": text,
-                        "request_id": request_id,
-                    })
-                elif getattr(item, "plan", None) is not None or kind.startswith("plan_"):
-                    await send_event(websocket, "plan.updated", session, {
-                        "kind": kind,
-                        "payload": _record_payload(item),
-                        "request_id": request_id,
-                    })
-                elif getattr(item, "team_id", "") or kind.startswith("team_") or kind.startswith("task_") or kind in {"batch_started", "subtask_started", "subtask_done", "subtask_failed"}:
-                    await send_event(websocket, "team.updated", session, {
-                        "kind": kind,
-                        "payload": _record_payload(item),
-                        "request_id": request_id,
-                    })
-                elif kind == "error":
-                    failed = True
-                    await send_event(websocket, "error", session, {"code": "agent_error", "message": text, "request_id": request_id})
-                elif kind == "done":
-                    usage = getattr(item, "usage", None)
-                    if usage:
-                        session = apply_usage(session, usage)
-                        await send_event(websocket, "session.usage", session, {**_record_payload(usage), "request_id": request_id})
-            if assistant_parts:
-                message = workspace_store.add_message(session.id, "assistant", "".join(assistant_parts))
-                await send_event(websocket, "message.completed", session, {"message": _record_payload(_message_response(message)), "request_id": request_id})
-            updated = workspace_store.update_session(session.id, status="failed" if failed else "completed")
-            if updated:
-                await send_event(websocket, "session.status", updated, {"status": updated.status, "request_id": request_id})
+                await forwarder.forward(item)
+            await forwarder.finish()
         except asyncio.CancelledError:
-            bridge = session_approvals.get(session.id)
-            if bridge is not None:
-                bridge.cancel_pending()
-            updated = workspace_store.update_session(session.id, status="cancelled")
-            if updated:
-                try:
-                    await send_event(websocket, "session.status", updated, {"status": "cancelled", "request_id": request_id})
-                except Exception:
-                    pass
+            await handle_turn_cancelled(websocket, session, request_id)
             raise
         except Exception as exc:
-            logger.exception("agent turn failed session_id=%s", session.id)
-            updated = workspace_store.update_session(session.id, status="failed")
-            try:
-                await send_event(websocket, "error", session, {"code": "agent_error", "message": str(exc), "request_id": request_id})
-                if updated:
-                    await send_event(websocket, "session.status", updated, {"status": "failed", "request_id": request_id})
-            except Exception:
-                pass
+            await handle_turn_failure(websocket, session, request_id, exc, label="agent turn")
+
+    async def run_plan_turn(websocket: WebSocket | None, project: Any, session: SessionRecord, goal: str, request_id: str = "") -> None:
+        """`/plan <任务>`：拆解 → 审阅 → 按依赖批次执行。"""
+        forwarder = _TurnForwarder(websocket, session, request_id)
+        try:
+            agent = await ensure_session_agent(project, session)
+            if agent is None:
+                await forwarder.close_with("failed", error="Agent 尚未配置", code="agent_unavailable")
+                return
+            missing = _missing_executor_deps(agent)
+            if missing:
+                await forwarder.close_with(
+                    "failed",
+                    error=f"当前 Agent 不支持计划模式（缺少 {', '.join(missing)}）",
+                    code="plan_unavailable",
+                )
+                return
+            bind_interactions(agent, session.id)
+            review = plan_review_bridge(session.id)
+            review.mode = "plan"
+
+            from routivus.agent.plan import PlanExecutor
+
+            executor = PlanExecutor(**_executor_kwargs(agent), reviewer=review.review)
+            session_resumable[session.id] = ("plan", executor)
+            async for event in executor.run(goal):
+                await forward_task_event(event, forwarder, mode="plan")
+            await forwarder.finish()
+        except asyncio.CancelledError:
+            await handle_turn_cancelled(websocket, session, request_id)
+            raise
+        except Exception as exc:
+            await handle_turn_failure(websocket, session, request_id, exc, label="plan turn")
+
+    async def run_team_turn(websocket: WebSocket | None, project: Any, session: SessionRecord, goal: str, request_id: str = "") -> None:
+        """`/team <任务>`：Supervisor 调度隔离 Worker，并对结果做证据化审查。"""
+        forwarder = _TurnForwarder(websocket, session, request_id)
+        try:
+            agent = await ensure_session_agent(project, session)
+            if agent is None:
+                await forwarder.close_with("failed", error="Agent 尚未配置", code="agent_unavailable")
+                return
+            missing = _missing_executor_deps(agent)
+            if missing:
+                await forwarder.close_with(
+                    "failed",
+                    error=f"当前 Agent 不支持团队模式（缺少 {', '.join(missing)}）",
+                    code="team_unavailable",
+                )
+                return
+            bind_interactions(agent, session.id)
+            review = plan_review_bridge(session.id)
+            review.mode = "team"
+
+            from routivus.agent.team import TeamExecutor
+
+            executor = TeamExecutor(**_executor_kwargs(agent), reviewer=review.review, project_root=Path(project.root_path))
+            session_resumable[session.id] = ("team", executor)
+            async for event in executor.run(goal):
+                await forward_task_event(event, forwarder, mode="team")
+            await forwarder.finish()
+        except asyncio.CancelledError:
+            await handle_turn_cancelled(websocket, session, request_id)
+            raise
+        except Exception as exc:
+            await handle_turn_failure(websocket, session, request_id, exc, label="team turn")
+
+    async def run_team_resume_turn(
+        websocket: WebSocket | None,
+        project: Any,
+        session: SessionRecord,
+        options: dict[str, Any],
+        request_id: str = "",
+    ) -> None:
+        """`/team resume [task_id] [--write-scope <路径>]...`：Team 断点续跑。
+
+        写入范围必须显式声明（由执行器再次校验），这是 fail closed 的前提。
+        """
+        forwarder = _TurnForwarder(websocket, session, request_id)
+        stored = session_resumable.get(session.id)
+        if stored is None or stored[0] != "team":
+            await forwarder.close_with(
+                "idle",
+                error="没有可恢复的 Team 计划（需要先在本会话跑过一次 /team）",
+                code="no_resumable_team",
+            )
+            return
+        parse_error = str(options.get("error", "") or "")
+        if parse_error:
+            await forwarder.close_with("idle", error=parse_error, code="invalid_resume")
+            return
+        executor = stored[1]
+        try:
+            agent = session_agents.get(session.id)
+            if agent is not None:
+                bind_interactions(agent, session.id)
+
+            from routivus.agent.team import ResourceClaim
+
+            task_id = str(options.get("task_id", "") or "")
+            claims = [ResourceClaim(pattern, "write") for pattern in options.get("claims", []) or []]
+            if claims:
+                target = task_id or _first_needs_input_task(executor)
+                if not target:
+                    await forwarder.close_with(
+                        "idle",
+                        error="没有处于 needs_input 的任务可恢复；如需续跑失败任务请直接发送 /team resume",
+                        code="no_pending_task",
+                    )
+                    return
+                stream = executor.resume_task_with_repair_scope(target, claims)
+            else:
+                stream = executor.resume(task_id)
+            async for event in stream:
+                await forward_task_event(event, forwarder, mode="team")
+            await forwarder.finish()
+        except asyncio.CancelledError:
+            await handle_turn_cancelled(websocket, session, request_id)
+            raise
+        except Exception as exc:
+            await handle_turn_failure(websocket, session, request_id, exc, label="team resume turn")
+
+    def _turn_coroutine(
+        websocket: WebSocket | None,
+        project: Any,
+        session: SessionRecord,
+        turn_kind: str,
+        goal: str,
+        options: dict[str, Any],
+        content: str,
+        request_id: str,
+    ) -> Any:
+        """按输入前缀选择回合执行器：`/plan`、`/team`、`/team resume` 或普通对话。"""
+        if turn_kind == "plan":
+            return run_plan_turn(websocket, project, session, goal, request_id)
+        if turn_kind == "team":
+            return run_team_turn(websocket, project, session, goal, request_id)
+        if turn_kind == "team_resume":
+            return run_team_resume_turn(websocket, project, session, options, request_id)
+        return run_agent_turn(websocket, project, session, content, request_id)
 
     @app.websocket("/api/ws/projects/{project_id}/sessions/{session_id}")
     async def session_socket(websocket: WebSocket, project_id: str, session_id: str) -> None:
@@ -1227,9 +1602,7 @@ def create_app(
                     if not request_is_new(session.id, request_id):
                         await send_event(websocket, "error", session, {"code": "duplicate_request", "request_id": request_id})
                         continue
-                    bridge = session_approvals.get(session.id)
-                    if bridge is not None:
-                        bridge.cancel_pending()
+                    _cancel_bridges(session.id)
                     task = running_tasks.get(session.id)
                     if task and not task.done():
                         task.cancel()
@@ -1274,12 +1647,36 @@ def create_app(
                     if not resolved:
                         await send_event(websocket, "error", session, {"code": "approval_not_accepted", "message": "该审批已不再等待应答", "request_id": request_id})
                     continue
+                if message_type == "plan_decision":
+                    if not request_is_new(session.id, request_id):
+                        await send_event(websocket, "error", session, {"code": "duplicate_request", "request_id": request_id})
+                        continue
+                    review = session_reviews.get(session.id)
+                    if review is None or not review.has_pending:
+                        await send_event(websocket, "error", session, {"code": "no_pending_review", "message": "当前没有等待中的计划审阅", "request_id": request_id})
+                        continue
+                    review_id = str(payload.get("review_id", "")).strip()
+                    if review_id and review_id != review.pending_id:
+                        await send_event(websocket, "error", session, {"code": "review_mismatch", "message": "review_id 与当前待决项不符", "request_id": request_id})
+                        continue
+                    action = str(payload.get("action", "")).strip().lower()
+                    feedback = str(payload.get("feedback", "")).strip()
+                    if not review.resolve(review_id, action, feedback):
+                        await send_event(websocket, "error", session, {"code": "review_not_accepted", "message": "该审阅已不再等待应答，或 action 非法（execute / cancel / replan）", "request_id": request_id})
+                    continue
                 if message_type != "user_message":
                     await send_event(websocket, "error", session, {"code": "invalid_message_type", "message": "不支持的消息类型", "request_id": request_id})
                     continue
                 content = str(payload.get("content", "")).strip()
                 if not content or len(content) > 1_000_000:
                     await send_event(websocket, "error", session, {"code": "invalid_content", "message": "消息内容不能为空且不能超过限制", "request_id": request_id})
+                    continue
+                turn_kind, goal, options = _parse_task_command(content)
+                if turn_kind in {"plan", "team"} and not goal:
+                    await send_event(websocket, "error", session, {"code": "missing_goal", "message": f"用法: /{turn_kind} <任务描述>", "request_id": request_id})
+                    continue
+                if turn_kind == "team_resume" and options.get("error"):
+                    await send_event(websocket, "error", session, {"code": "invalid_resume", "message": str(options["error"]), "request_id": request_id})
                     continue
                 task = running_tasks.get(session.id)
                 if task and not task.done():
@@ -1294,7 +1691,9 @@ def create_app(
                 if updated:
                     session = updated
                     await send_event(websocket, "session.status", session, {"status": "running", "request_id": request_id})
-                running_tasks[session.id] = asyncio.create_task(run_agent_turn(websocket, project, session, content, request_id))
+                running_tasks[session.id] = asyncio.create_task(
+                    _turn_coroutine(websocket, project, session, turn_kind, goal, options, content, request_id)
+                )
         finally:
             detach_connection(session_id, websocket)
             task = running_tasks.get(session_id)

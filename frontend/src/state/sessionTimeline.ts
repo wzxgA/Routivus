@@ -5,6 +5,7 @@ import type {
   AskRequest,
   Message,
   PlanPayload,
+  PlanReviewRequest,
   Session,
   SessionSnapshot,
   TeamPayload,
@@ -65,6 +66,7 @@ export interface SessionTimelineValue {
   usage: UsageTotals
   session: Session | null
   approval: ApprovalRequestedData | null
+  planReview: PlanReviewRequest | null
   memoryNotice: { kind: string; message: string } | null
   hitl: string | null
   error: string | null
@@ -75,6 +77,7 @@ export interface SessionTimelineValue {
     options?: { args?: Record<string, unknown>; scope?: 'session' },
   ) => void
   answerAsk: (answers: Record<string, string> | null) => void
+  resolvePlanReview: (action: 'execute' | 'cancel' | 'replan', feedback?: string) => void
   clearError: () => void
 }
 
@@ -130,6 +133,7 @@ export function useSessionTimeline(
   const [usage, setUsage] = useState<UsageTotals>({ prompt: 0, completion: 0, total: 0 })
   const [session, setSession] = useState<Session | null>(initialSession)
   const [approval, setApproval] = useState<ApprovalRequestedData | null>(null)
+  const [planReview, setPlanReview] = useState<PlanReviewRequest | null>(null)
   const [memoryNotice, setMemoryNotice] = useState<{ kind: string; message: string } | null>(null)
   const [hitl, setHitl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -159,6 +163,7 @@ export function useSessionTimeline(
     setItems([])
     setStream({ content: '', thinking: '' })
     setApproval(null)
+    setPlanReview(null)
     setMemoryNotice(null)
     setError(null)
 
@@ -301,6 +306,9 @@ export function useSessionTimeline(
               updateRef.current(next)
             }
             if (status && status !== 'waiting_approval') setApproval(null)
+            // 计划审阅只在运行期间有效：轮次结束（完成 / 失败 / 取消）后必须清掉，
+            // 否则取消路径不会发出 plan.review_resolved，卡片会一直挂着。
+            if (status && status !== 'running') setPlanReview(null)
             return
           }
           case 'session.usage': {
@@ -341,6 +349,24 @@ export function useSessionTimeline(
           case 'team.updated': {
             const payload = data as unknown as TeamPayload
             setItems((current) => upsertTaskCard(current, 'team', payload))
+            return
+          }
+          case 'plan.review': {
+            // `/plan`、`/team` 生成计划后阻塞等待审阅：批准前不会执行任何工具。
+            setPlanReview({
+              review_id: String(data.review_id ?? ''),
+              mode: data.mode === 'team' ? 'team' : 'plan',
+              plan: (data.plan as PlanReviewRequest['plan']) ?? null,
+              timeout: Number(data.timeout ?? 0),
+            })
+            return
+          }
+          case 'plan.review_resolved': {
+            setPlanReview((current) => {
+              const resolvedId = String(data.review_id ?? '')
+              if (current && resolvedId && current.review_id !== resolvedId) return current
+              return null
+            })
             return
           }
           case 'error': {
@@ -405,6 +431,21 @@ export function useSessionTimeline(
     [approval],
   )
 
+  const resolvePlanReview = useCallback<SessionTimelineValue['resolvePlanReview']>(
+    (action, feedback) => {
+      const reviewId = planReview?.review_id ?? ''
+      socketRef.current?.send({
+        type: 'plan_decision',
+        request_id: newRequestId('review'),
+        review_id: reviewId,
+        action,
+        ...(feedback ? { feedback } : {}),
+      })
+      setPlanReview(null)
+    },
+    [planReview],
+  )
+
   const clearError = useCallback(() => setError(null), [])
 
   const visibleItems = useMemo<TimelineItem[]>(() => {
@@ -426,6 +467,7 @@ export function useSessionTimeline(
     usage,
     session,
     approval,
+    planReview,
     memoryNotice,
     hitl,
     error,
@@ -433,6 +475,7 @@ export function useSessionTimeline(
     cancel,
     resolveApproval,
     answerAsk,
+    resolvePlanReview,
     clearError,
   }
 }

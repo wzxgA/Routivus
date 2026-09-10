@@ -2,27 +2,30 @@ import type { TimelineItem } from '../../state/sessionTimeline'
 import { Markdown } from '../../utils/markdown'
 import { ApprovalCard } from './ApprovalCard'
 import { PlanCard } from './PlanCard'
+import { PlanReviewCard } from './PlanReviewCard'
 import { TeamCard } from './TeamCard'
 import { ToolCard } from './ToolCard'
-import type { ApprovalRequestedData } from '../../api/types'
+import type { ApprovalRequestedData, PlanReviewRequest } from '../../api/types'
 
 interface MessageListProps {
   items: TimelineItem[]
   approval: ApprovalRequestedData | null
-  onInsertCommand: (command: string) => void
+  planReview: PlanReviewRequest | null
   onResolveApproval: (
     decision: 'approve' | 'reject',
     options?: { args?: Record<string, unknown>; scope?: 'session' },
   ) => void
   onAnswerAsk: (answers: Record<string, string> | null) => void
+  onDecideReview: (action: 'execute' | 'cancel' | 'replan', feedback?: string) => void
 }
 
 export function MessageList({
   items,
   approval,
-  onInsertCommand,
+  planReview,
   onResolveApproval,
   onAnswerAsk,
+  onDecideReview,
 }: MessageListProps) {
   return (
     <>
@@ -57,9 +60,9 @@ export function MessageList({
               </div>
             )
           case 'plan':
-            return <PlanCard key={item.id} payload={item.payload} onInsertCommand={onInsertCommand} />
+            return <PlanCard key={item.id} payload={item.payload} />
           case 'team':
-            return <TeamCard key={item.id} payload={item.payload} onInsertCommand={onInsertCommand} />
+            return <TeamCard key={item.id} payload={item.payload} />
           default:
             return null
         }
@@ -70,6 +73,13 @@ export function MessageList({
           key={approval.approval_id ?? 'pending-approval'}
           onResolve={onResolveApproval}
           onAnswer={onAnswerAsk}
+        />
+      ) : null}
+      {planReview ? (
+        <PlanReviewCard
+          review={planReview}
+          key={planReview.review_id || 'pending-plan-review'}
+          onDecide={onDecideReview}
         />
       ) : null}
     </>

@@ -2,11 +2,10 @@ import type { TeamPayload } from '../../api/types'
 
 interface TeamCardProps {
   payload: TeamPayload
-  onInsertCommand: (command: string) => void
 }
 
 /** 团队任务卡：展示 Worker 与角色进度（事件来自 `routivus/agent/team.py` TeamEvent）。 */
-export function TeamCard({ payload, onInsertCommand }: TeamCardProps) {
+export function TeamCard({ payload }: TeamCardProps) {
   const plan = payload.plan
   const tasks = plan?.tasks ?? []
   const activeTask = payload.task
@@ -15,21 +14,34 @@ export function TeamCard({ payload, onInsertCommand }: TeamCardProps) {
       ? '已完成'
       : payload.kind === 'team_failed'
         ? '失败'
-        : payload.kind === 'team_review'
-          ? '待审阅'
-          : '进行中'
+        : payload.kind === 'cancelled'
+          ? '已取消'
+          : payload.kind === 'team_review'
+            ? '待审阅'
+            : payload.kind === 'approved'
+              ? '已批准'
+              : '进行中'
 
   return (
     <div className="task-card">
       <div className="task-head">
         <span className="task-mode team">团队</span>
         <span className="task-name">{plan?.goal ?? payload.message ?? '团队任务'}</span>
-        <span className={payload.kind === 'team_failed' ? 'pill-warn' : 'pill-ok'}>{statusText}</span>
+        <span
+          className={
+            payload.kind === 'team_failed' || payload.kind === 'cancelled' ? 'pill-warn' : 'pill-ok'
+          }
+        >
+          {statusText}
+        </span>
       </div>
 
-      {payload.message ? (
+      {payload.message || payload.failure_category ? (
         <div className="card-desc" style={{ margin: '0 0 7px' }}>
           {payload.message}
+          {payload.failure_category ? (
+            <span className="mono"> · {payload.failure_category}</span>
+          ) : null}
         </div>
       ) : null}
 
@@ -59,19 +71,6 @@ export function TeamCard({ payload, onInsertCommand }: TeamCardProps) {
             <div className="w-desc">{payload.message ?? ''}</div>
           </div>
         ) : null}
-      </div>
-
-      <div className="task-acts" style={{ marginTop: 8 }}>
-        <button type="button" className="task-cmd" onClick={() => onInsertCommand('/team go')}>
-          /team go
-        </button>
-        <button
-          type="button"
-          className="task-cmd"
-          onClick={() => onInsertCommand('/team edit ')}
-        >
-          /team edit
-        </button>
       </div>
     </div>
   )

@@ -83,10 +83,6 @@ export function ChatView({
     pinnedToBottom.current = true
   }, [composer, timeline])
 
-  const insertCommand = useCallback((command: string) => {
-    setComposer(command)
-  }, [])
-
   const cancelSession = useCallback(() => {
     timeline.cancel()
   }, [timeline])
@@ -110,7 +106,7 @@ export function ChatView({
               title={session ? '开始新的任务' : '没有可用的会话'}
               hint={
                 session
-                  ? '输入指令后 Agent 会在项目目录内执行；危险操作会先请求审批。'
+                  ? '直接输入即普通对话；/plan <任务> 生成计划后审阅执行，/team <任务> 调度多 Agent 协作。危险操作会先请求审批。'
                   : '正在为新项目创建首个会话，请稍候…'
               }
             />
@@ -118,9 +114,10 @@ export function ChatView({
             <MessageList
               items={timeline.items}
               approval={timeline.approval}
-              onInsertCommand={insertCommand}
+              planReview={timeline.planReview}
               onResolveApproval={timeline.resolveApproval}
               onAnswerAsk={timeline.answerAsk}
+              onDecideReview={timeline.resolvePlanReview}
             />
           )}
         </div>
