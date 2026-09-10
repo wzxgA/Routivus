@@ -12,14 +12,76 @@
 
 ## 安装
 
-要求：Python 3.11+。
+要求：**Python 3.11+**；使用 Web Console 前端还需要 **Node 18+**（只用后端可以不装 Node）。
 
 ```bash
-cd routivus
-uv sync          # 或 pip install -e .
+cd Routivus                          # 仓库根目录（Routivus/），不是 routivus/ 子目录
+uv sync                              # 或 pip install -e .
+pip install "routivus[terminal]"     # 可选：Windows 终端通道需要 pywinpty
+
+cd frontend && npm install           # 可选：Web Console 前端
 ```
 
 > 依赖不含 `textual`（已随 TUI 移除）；`onnxruntime`（语义精判）按需启用。仅语义模型离线导出那套大件（torch 等）仍在可选依赖中，日常使用不需要。
+
+## 快速开始
+
+从零到可用界面共 5 步：配置 provider → 启动后端 → 启动前端 → 自检 → 停止。示例为 PowerShell；cmd 把 `$env:X='v'` 换成 `set X=v`。
+
+### 1. 配置 provider（不配就无法执行 Agent 轮次）
+
+后端**没有 REPL，也没有 CLI 脚本入口**（`[project.scripts]` 为空），所以斜杠命令要用 `routivus.cli.commands` 的确定性入口执行：
+
+```powershell
+cd Routivus
+python -c "from routivus.config.manager import ConfigManager; from routivus.cli.commands import execute_provider_command; print(execute_provider_command(ConfigManager(), None, '/provider add myproxy https://gateway.example.com/v1 --model deepseek-v4-pro-0813 --key sk-xxx --set-base')[0])"
+```
+
+配置写入 `~/.routivus/config.json`，**API Key 是明文存储**，不要提交或外传。校验（应列出 provider，Key 脱敏）：
+
+```powershell
+python -c "from routivus.config.manager import ConfigManager; from routivus.cli.commands import execute_provider_command; print(execute_provider_command(ConfigManager(), None, '/provider')[0])"
+```
+
+不配置 provider 也能启动服务、浏览项目与笔记，但会话里发消息会立刻返回 `agent_error`：`Provider 未配置，无法启动 Agent`。
+
+### 2. 启动后端
+
+```powershell
+$env:ROUTIVUS_WORKSPACE_ROOTS='D:\DevProject'          # 允许注册的项目根目录；不设则只允许启动目录
+$env:ROUTIVUS_ALLOWED_ORIGINS='http://localhost:5183'  # 终端通道要求；或改设 ROUTIVUS_SERVER_TOKEN
+python -m routivus.server
+```
+
+监听 `http://127.0.0.1:18765`，自检 `GET /healthz`。
+
+### 3. 启动前端
+
+```powershell
+cd frontend
+npm run dev
+```
+
+打开 `http://localhost:5183`；`/api` 与 `/healthz` 由 Vite 代理到后端。
+
+### 4. 自检
+
+| 检查 | 期望结果 |
+|---|---|
+| 首页出现 Routivus 品牌与项目列表 | 前后端连通正常 |
+| 新建项目 | 路径须落在 `ROUTIVUS_WORKSPACE_ROOTS` 内，否则 422 |
+| 顶栏模型选择器显示实际模型名 | provider 配置已生效 |
+| 会话里发送一句话 | 出现流式回复 / 工具卡；报 `Provider 未配置` 说明第 1 步未生效 |
+| 顶栏「终端」按钮能执行命令 | Origin 白名单生效；报 `terminal_auth_required` 说明第 2 步未生效 |
+
+### 5. 停止
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*routivus.server*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Get-CimInstance Win32_Process -Filter "Name='node.exe'"   | Where-Object { $_.CommandLine -like '*vite*' }         | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+端口冲突时：后端改 `$env:ROUTIVUS_SERVER_PORT`，前端改 `$env:ROUTIVUS_SERVER_URL` 指向新地址（`vite.config.ts` 读取该变量）。
 
 ## Web Console Server
 
@@ -40,12 +102,17 @@ ROUTIVUS_DATABASE_PATH=~/.routivus/workspace.sqlite3
 ROUTIVUS_SERVER_HOST=127.0.0.1
 ROUTIVUS_SERVER_PORT=18765
 ROUTIVUS_ALLOWED_HOSTS=localhost,127.0.0.1
-ROUTIVUS_ALLOWED_ORIGINS=http://localhost:5173
+ROUTIVUS_ALLOWED_ORIGINS=http://localhost:5183
 ROUTIVUS_SERVER_TOKEN=
 ROUTIVUS_WS_HEARTBEAT_INTERVAL=30
 ROUTIVUS_WS_MAX_MESSAGE_BYTES=1048576
 ROUTIVUS_APPROVAL_TIMEOUT=300
 ```
+
+> **注意：这些是「服务端」变量，必须作为真实环境变量传入，项目根的 `.env` 对服务端无效。**
+> `ServerConfig.from_env()` 只读 `os.environ`，`python -m routivus.server` 不会调用 `load_dotenv()`（已实测：`.env` 里写 `ROUTIVUS_SERVER_PORT=19999`，服务端仍监听 18765）。
+> PowerShell 示例：`$env:ROUTIVUS_WORKSPACE_ROOTS='D:\DevProject'`；cmd 示例：`set ROUTIVUS_WORKSPACE_ROOTS=D:\DevProject`。
+> 只有 **Agent 侧**配置（`routivus/config`）才经 `ConfigManager` 读取 `.env`，两者不要混用。
 
 项目接口：`GET/POST /api/projects`、`GET/PATCH/DELETE /api/projects/{project_id}`。会话、消息和笔记分别通过 `/api/projects/{project_id}/sessions`、`/api/sessions/{session_id}/messages`、`/api/notes` 访问；`/api/notes?scope=global` 返回工作区全部笔记，而项目笔记入口只返回当前项目笔记。实时会话地址为 `/api/ws/projects/{project_id}/sessions/{session_id}`，支持 `request_id` 幂等、事件序号、断线后的 SQLite 事件恢复和心跳；配置 `ROUTIVUS_SERVER_TOKEN` 后需要 Bearer Token。错误统一返回 `error.code`、`error.message`、`error.request_id`，每个响应也带 `X-Request-ID`。
 
@@ -139,7 +206,7 @@ npm run build      # 产出 frontend/dist
 npm run check      # lint + typecheck + build，提交前的质量门禁
 ```
 
-先启动后端（`python -m routivus.server`），再启动前端。`vite.config.ts` 通过 `ROUTIVUS_SERVER_URL`（默认 `http://127.0.0.1:18765`）指定后端地址；后端若设置了 `ROUTIVUS_SERVER_TOKEN`，前端需在 `frontend/.env` 中配置同名 `VITE_ROUTIVUS_TOKEN`。
+先启动后端，再启动前端（完整步骤与自检见「快速开始」）。`vite.config.ts` 通过 `ROUTIVUS_SERVER_URL`（默认 `http://127.0.0.1:18765`）指定后端地址；后端若设置了 `ROUTIVUS_SERVER_TOKEN`，前端需在 `frontend/.env` 中配置同名 `VITE_ROUTIVUS_TOKEN`。
 
 已接入能力：
 
@@ -195,7 +262,7 @@ Phase 7 期间发现并修复的前端缺陷：
 2. **主题按钮文案语义错误**：原型 `ttLabel` 显示**当前**主题，前端显示成了「切换目标」。
 3. **「新建项目」卡未跨两列**：与原型 `grid-column:1 / -1` 不一致。
 
-**未覆盖 / 未验证**：本机未配置 provider，因此**没有跑通一次真实 LLM 的 Agent 轮次**——会话流、工具卡、审批卡的渲染是按事件契约实现并由协议级测试覆盖的，但"真实模型流式回复"需要配置 provider 后人工确认（`/provider add` 或写 `~/.routivus/config.json`）。同理，`/plan`、`/team` 的真实执行链路未验证。
+**未覆盖 / 未验证**：本机未配置 provider，因此**没有跑通一次真实 LLM 的 Agent 轮次**——会话流、工具卡、审批卡的渲染是按事件契约实现并由协议级测试覆盖的，但「真实模型流式回复」需要在配置 provider 后人工确认（步骤见「快速开始」第 1 步）。同理，`/plan`、`/team` 的真实执行链路未验证。
 
 ## 程序化入口
 
@@ -211,6 +278,14 @@ print(message)
 ## 配置 Provider
 
 所有 provider 配置（定义、URL、API Key、模型列表）**统一写入 `config.json`**，由后端 `/provider` 命令完成，无需手改文件、无需 `.env`。
+
+**怎么执行这些命令**：本仓库没有 REPL / TUI，`[project.scripts]` 也为空，所以要用 `routivus.cli.commands` 的确定性入口；下面示例里的 `raw` 就是斜杠命令原文，把 `--yes` 视作「确认」：
+
+```powershell
+python -c "from routivus.config.manager import ConfigManager; from routivus.cli.commands import execute_provider_command; print(execute_provider_command(ConfigManager(), None, '/provider add myproxy https://gateway.example.com/v1 --model deepseek-v4 --key sk_x --set-base')[0])"
+```
+
+需要 Agent 对象才能分发的命令（`/mcp`、`/web`、`/skill`、`/model` 等）走 `routivus.service.commands.handle_service_command(agent, settings, manager, raw)`；纯配置类命令（`/provider`、`/tier`）可直接用上面这种 `ConfigManager()` 形式。
 
 ```bash
 /provider add myproxy https://gateway.my.com/v1 --model deepseek-v4 --key sk_x --set-base
