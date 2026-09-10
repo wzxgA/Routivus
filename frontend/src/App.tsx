@@ -18,6 +18,7 @@ import {
   replaceRoute,
   useRoute,
 } from './router'
+import { useConfigSnapshot } from './state/config'
 import { useProjectWorkspace } from './state/projectWorkspace'
 import { describeError } from './state/errors'
 import { useWorkspace } from './state/workspaceContext'
@@ -28,6 +29,7 @@ const CONTEXT_WINDOW = Number(import.meta.env.VITE_ROUTIVUS_CONTEXT_WINDOW ?? 12
 export function App() {
   const route = useRoute()
   const { projects, loading, error, refresh, theme, toggleTheme } = useWorkspace()
+  const configState = useConfigSnapshot()
 
   const projectId = route.kind === 'project' ? route.projectId : null
   const routeSessionId = route.kind === 'project' ? route.sessionId : null
@@ -133,6 +135,16 @@ export function App() {
   const activeProject = workspace.project
   const liveSession: Session | null = workspace.activeSession
 
+  // 顶栏切换运行模型：写全局 active provider/model。会话侧会复用已建立的 Agent，
+  // 所以对既有会话要新建会话才生效（顶栏弹层里已注明）。
+  const handleSwitchModel = useCallback(
+    async (provider: string, model: string) => {
+      await api.setActiveProvider(provider, model)
+      await configState.reload()
+    },
+    [configState],
+  )
+
   const view = useMemo(() => {
     switch (route.kind) {
       case 'home':
@@ -158,7 +170,14 @@ export function App() {
           />
         )
       case 'config':
-        return <ConfigView projects={projects} />
+        return (
+          <ConfigView
+            config={configState.config}
+            loading={configState.loading}
+            error={configState.error}
+            onReload={configState.reload}
+          />
+        )
       case 'project': {
         if (workspace.error) {
           return (
@@ -225,6 +244,7 @@ export function App() {
     handleSelectNote,
     handleSelectProject,
     handleNotesMutated,
+    configState,
   ])
 
   const inProject = route.kind === 'project'
@@ -265,6 +285,8 @@ export function App() {
           contextWindow={CONTEXT_WINDOW}
           hitl={hitl}
           terminalOpen={terminalOpen}
+          config={configState.config}
+          onSwitchModel={handleSwitchModel}
           onToggleTheme={toggleTheme}
           onToggleTerminal={() => setTerminalOpen((value) => !value)}
           onGoHome={() => navigate(HOME)}
@@ -322,6 +344,30 @@ function NewProjectModal({
   const [rootPath, setRootPath] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [picking, setPicking] = useState(false)
+
+  // 桌面端：走系统目录选择器。用户亲手选中的目录即显式授权，先加入运行时
+  // 白名单再注册，避免让用户手打路径（也避免把白名单默认放宽到 home）。
+  const pickDirectory = async () => {
+    const bridge = window.routivus
+    if (!bridge) return
+    setPicking(true)
+    setError(null)
+    try {
+      const picked = await bridge.pickDirectory()
+      if (!picked) return
+      await api.grantWorkspaceRoot(picked)
+      setRootPath(picked)
+      if (!name.trim()) {
+        const segments = picked.split(/[\\/]/).filter(Boolean)
+        setName(segments[segments.length - 1] ?? '')
+      }
+    } catch (err) {
+      setError(describeError(err))
+    } finally {
+      setPicking(false)
+    }
+  }
 
   const submit = async () => {
     if (!name.trim() || !rootPath.trim()) {
@@ -371,12 +417,30 @@ function NewProjectModal({
       </div>
       <div className="field">
         <label htmlFor="project-path">项目根目录</label>
-        <input
-          id="project-path"
-          value={rootPath}
-          onChange={(event) => setRootPath(event.target.value)}
-          placeholder="D:\\DevProject\\Nimbus"
-        />
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input
+            id="project-path"
+            value={rootPath}
+            onChange={(event) => setRootPath(event.target.value)}
+            placeholder="D:\DevProject\Nimbus"
+          />
+          {window.routivus ? (
+            <button
+              type="button"
+              className="btn"
+              style={{ flex: '0 0 auto' }}
+              disabled={picking}
+              onClick={() => void pickDirectory()}
+            >
+              {picking ? '选择中…' : '浏览…'}
+            </button>
+          ) : null}
+        </div>
+        <div className="ed-meta" style={{ marginTop: 4 }}>
+          {window.routivus
+            ? '通过系统目录选择器选中即完成授权，无需手输路径。'
+            : '路径需位于服务端允许的工作区根目录内（ROUTIVUS_WORKSPACE_ROOTS）。'}
+        </div>
       </div>
     </Modal>
   )

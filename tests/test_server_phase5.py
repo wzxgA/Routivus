@@ -544,7 +544,10 @@ def _terminal_client(tmp_path: Path, backend_factory, **config_overrides) -> tup
     client = TestClient(create_app(registry=registry, store=store, config=config, terminal_factory=backend_factory))
     root = workspace / "alpha"
     root.mkdir()
-    project = client.post("/api/projects", json={"name": "Alpha", "root_path": str(root)}).json()
+    # 配置了 ws_auth_token 后 REST 也需要令牌（不再只有 WebSocket 校验）
+    project = client.post(
+        "/api/projects", json={"name": "Alpha", "root_path": str(root)}, headers=_auth_headers()
+    ).json()
     return client, project, root
 
 

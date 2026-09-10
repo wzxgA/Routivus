@@ -192,8 +192,22 @@ def test_websocket_token_authentication(tmp_path: Path) -> None:
     client = TestClient(create_app(registry=registry, config=config))
     project_root = workspace / "alpha"
     project_root.mkdir()
-    project = client.post("/api/projects", json={"name": "Alpha", "root_path": str(project_root)}).json()
-    session = client.post(f"/api/projects/{project['id']}/sessions", json={}).json()
+
+    auth = {"Authorization": "Bearer secret-token"}
+
+    # 配置令牌后 REST 同样受保护：此前只有 WebSocket 校验，HTTP 侧完全裸奔，
+    # 本机任意进程都能注册项目、驱动 Agent 工具并自行批准高危调用。
+    assert client.get("/api/projects").status_code == 401
+    assert client.get("/api/projects", headers=auth).status_code == 200
+    # ?token= 供浏览器 / WebSocket 场景使用
+    assert client.get("/api/projects?token=secret-token").status_code == 200
+    # /healthz 必须免鉴权：桌面壳在拿到令牌之前就要轮询它就绪
+    assert client.get("/healthz").status_code == 200
+
+    project = client.post(
+        "/api/projects", json={"name": "Alpha", "root_path": str(project_root)}, headers=auth
+    ).json()
+    session = client.post(f"/api/projects/{project['id']}/sessions", json={}, headers=auth).json()
 
     with client.websocket_connect(f"/api/ws/projects/{project['id']}/sessions/{session['id']}") as socket:
         assert socket.receive_json()["code"] == "not_authenticated"

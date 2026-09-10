@@ -1,10 +1,13 @@
 import { request } from './client'
 import type {
   ActivityDay,
+  ConfigSnapshot,
+  DesktopInfo,
   Message,
   Note,
   NoteStats,
   Project,
+  ProviderView,
   Session,
 } from './types'
 
@@ -116,3 +119,62 @@ export const pinProjectNote = (projectId: string, noteId: string, pinned?: boole
     method: 'POST',
     body: pinned === undefined ? {} : { pinned },
   })
+
+// ---- 配置：Provider / SmartRouter ----
+
+const providerPath = (name: string) => `/config/providers/${encodeURIComponent(name)}`
+
+export const getConfig = (signal?: AbortSignal) =>
+  request<ConfigSnapshot>('/config', { signal })
+
+export const createProvider = (payload: {
+  name: string
+  api_base: string
+  default_model: string
+  display_name?: string | null
+  api_key?: string | null
+  set_base?: boolean
+}) => request<ProviderView>('/config/providers', { method: 'POST', body: payload })
+
+export const updateProvider = (
+  name: string,
+  payload: { api_base?: string; default_model?: string; display_name?: string | null },
+) => request<ProviderView>(providerPath(name), { method: 'PATCH', body: payload })
+
+export const deleteProvider = (name: string) =>
+  request<void>(providerPath(name), { method: 'DELETE' })
+
+export const setProviderKey = (name: string, apiKey: string) =>
+  request<ProviderView>(`${providerPath(name)}/key`, {
+    method: 'POST',
+    body: { api_key: apiKey, overwrite: true },
+  })
+
+export const addProviderModel = (name: string, model: string) =>
+  request<ProviderView>(`${providerPath(name)}/models`, { method: 'POST', body: { model } })
+
+export const removeProviderModel = (name: string, model: string) =>
+  request<ProviderView>(`${providerPath(name)}/models`, { method: 'DELETE', query: { model } })
+
+export const setActiveProvider = (provider: string, model?: string) =>
+  request<ConfigSnapshot>('/config/active', { method: 'POST', body: { provider, model } })
+
+export const setTier = (tier: string, provider: string, model?: string) =>
+  request<ConfigSnapshot>(`/config/tiers/${encodeURIComponent(tier)}`, {
+    method: 'PUT',
+    body: { provider, model },
+  })
+
+export const clearTier = (tier: string) =>
+  request<ConfigSnapshot>(`/config/tiers/${encodeURIComponent(tier)}`, { method: 'DELETE' })
+
+export const setSmartRouter = (enabled: boolean) =>
+  request<ConfigSnapshot>('/config/smart-router', { method: 'POST', body: { enabled } })
+
+// ---- 桌面端：运行时白名单授权 ----
+
+export const getDesktopInfo = (signal?: AbortSignal) =>
+  request<DesktopInfo>('/desktop/info', { signal })
+
+export const grantWorkspaceRoot = (path: string) =>
+  request<DesktopInfo>('/desktop/roots', { method: 'POST', body: { path } })

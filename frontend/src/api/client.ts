@@ -2,7 +2,23 @@ import type { WsEnvelope } from './types'
 
 const API_PREFIX = '/api'
 
-let authToken: string = import.meta.env.VITE_ROUTIVUS_TOKEN ?? ''
+/**
+ * 令牌来源优先级：URL 查询参数 → 构建期环境变量。
+ *
+ * 桌面壳每次启动生成随机令牌，并以 `?token=xxx` 打开窗口。必须在模块初始化时
+ * 同步取到（不能等异步 IPC），否则首个 API 请求会 401。
+ */
+function readInitialToken(): string {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get('token')
+    if (fromUrl) return fromUrl
+  } catch {
+    // 非浏览器环境（如测试）忽略
+  }
+  return import.meta.env.VITE_ROUTIVUS_TOKEN ?? ''
+}
+
+let authToken: string = readInitialToken()
 
 export function setAuthToken(token: string): void {
   authToken = token

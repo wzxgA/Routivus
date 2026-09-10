@@ -43,6 +43,9 @@ class ServerConfig:
 
     projects_file: Path
     workspace_roots: tuple[Path, ...]
+    # 用户级数据目录（provider 配置、注册表、数据库共同的家）。桌面端指向
+    # %APPDATA%\<产品名>；不设置时沿用 ~/.routivus。
+    user_dir: Path = Path("~/.routivus")
     database_path: Path = Path("~/.routivus/workspace.sqlite3")
     host: str = "127.0.0.1"
     port: int = 18_765
@@ -125,6 +128,7 @@ class ServerConfig:
             terminal_backend = "auto"
         return cls(
             projects_file=projects_file,
+            user_dir=user_dir,
             database_path=database_path,
             workspace_roots=roots,
             host=host,

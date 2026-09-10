@@ -205,3 +205,105 @@ class HealthResponse(BaseModel):
     service: str
     version: str
     request_id: str
+
+
+# ---- Web Console 配置接口（Provider / SmartRouter） ----
+# 没有这组接口，用户就只能靠 REPL 或 CLI 配 provider；而本仓库两者都没有，
+# 桌面版首次打开会直接不可用。API Key 只写入、不回显（仅返回脱敏值）。
+
+
+class ProviderView(BaseModel):
+    name: str
+    display_name: str | None = None
+    api_base: str
+    default_model: str
+    models: list[str] = Field(default_factory=list)
+    has_key: bool
+    api_key_masked: str = ""
+    is_base: bool
+    layer: str
+
+
+class TierView(BaseModel):
+    name: str
+    provider: str
+    model: str
+    configured: bool
+
+
+class ConfigSnapshot(BaseModel):
+    active_provider: str
+    active_model: str
+    providers: list[ProviderView]
+    tiers: list[TierView]
+    smart_router_enabled: bool
+    user_dir: str
+    legacy_user_dir: str | None = None
+    desktop: bool = False
+
+
+class ProviderCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    api_base: str = Field(min_length=1, max_length=2048)
+    default_model: str = Field(min_length=1, max_length=200)
+    display_name: str | None = Field(default=None, max_length=100)
+    api_key: str | None = Field(default=None, max_length=4096)
+    set_base: bool = False
+
+
+class ProviderUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_base: str | None = Field(default=None, min_length=1, max_length=2048)
+    default_model: str | None = Field(default=None, min_length=1, max_length=200)
+    display_name: str | None = Field(default=None, max_length=100)
+
+
+class ProviderKeyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: str = Field(min_length=1, max_length=4096)
+    # 界面已把"覆盖旧值"做成显式动作，所以默认允许覆盖。
+    overwrite: bool = True
+
+
+class ModelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(min_length=1, max_length=200)
+
+
+class ActiveProviderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1, max_length=64)
+    model: str | None = Field(default=None, max_length=200)
+
+
+class TierRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1, max_length=64)
+    model: str | None = Field(default=None, max_length=200)
+
+
+class SmartRouterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
+class RootGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class DesktopInfoResponse(BaseModel):
+    desktop: bool
+    user_dir: str
+    legacy_user_dir: str | None = None
+    static_dir: str | None = None
+    allowed_roots: list[str]

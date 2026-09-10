@@ -98,11 +98,21 @@ class ConfigManager:
         env_file: str | Path | None = None,
         load_env: bool = True,
     ) -> None:
-        self.user_dir = Path(user_dir) if user_dir else Path.home() / ".routivus"
+        resolved_env: dict[str, str] = env if env is not None else os.environ
+        env_user_dir = str(resolved_env.get("ROUTIVUS_USER_DIR", "")).strip()
+        if user_dir:
+            self.user_dir = Path(user_dir)
+        elif env_user_dir:
+            # 桌面端把数据目录指到 %APPDATA%\<产品名>。这里必须认同一个变量，
+            # 否则会出现"注册表/数据库在 APPDATA、provider 配置仍在 ~/.routivus"
+            # 的割裂（ServerConfig 与本类要落在同一处）。
+            self.user_dir = Path(env_user_dir).expanduser()
+        else:
+            self.user_dir = Path.home() / ".routivus"
         self.project_dir = Path(project_dir) if project_dir else Path.cwd() / ".routivus"
         self.user_config_path = self.user_dir / USER_CONFIG
         self.project_config_path = self.project_dir / USER_CONFIG
-        self.env: dict[str, str] = env if env is not None else os.environ
+        self.env = resolved_env
         self.registry = ProviderRegistry()
         if load_env:
             self._load_env_file(env_file)

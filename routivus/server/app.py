@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import sqlite3
 import tempfile
 import time
@@ -31,6 +32,7 @@ from routivus.safety.audit import AuditLogger
 from routivus.safety.hitl import ApprovalDecision
 from routivus.server.approval import ApprovalBridge
 from routivus.server.config import ServerConfig
+from routivus.server.logging_setup import install_token_redaction
 from routivus.server.terminal import (
     TerminalSession,
     TerminalSpec,
@@ -64,6 +66,18 @@ from routivus.server.schemas import (
     SessionCreateRequest,
     SessionResponse,
     SessionUpdateRequest,
+    ActiveProviderRequest,
+    ConfigSnapshot,
+    DesktopInfoResponse,
+    ModelRequest,
+    ProviderCreateRequest,
+    ProviderKeyRequest,
+    ProviderUpdateRequest,
+    ProviderView,
+    RootGrantRequest,
+    SmartRouterRequest,
+    TierRequest,
+    TierView,
 )
 
 logger = logging.getLogger("routivus.server")
@@ -97,6 +111,69 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             request_id,
         )
         return response
+
+
+class TokenAuthMiddleware(BaseHTTPMiddleware):
+    """HTTP 侧访问令牌校验。
+
+    此前 ``ROUTIVUS_SERVER_TOKEN`` **只**校验 WebSocket，REST 完全裸奔：
+    本机任意进程都能注册项目、驱动 Agent 工具，还能顺着同一个 session socket
+    自己批准自己的高危调用。桌面端用"每次启动的随机 token"把这条口子堵上。
+
+    ``/healthz`` 与静态资源不校验：前者供桌面壳在拿到 token 之前轮询就绪，
+    后者不含任何敏感数据。
+    """
+
+    def __init__(self, app: Any, token: str) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(app)
+        self._token = token
+
+    @staticmethod
+    def extract_token(request: Request) -> str:
+        authorization = request.headers.get("authorization", "")
+        token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+        return token or request.query_params.get("token", "")
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
+        if not self._token or not request.url.path.startswith("/api/"):
+            return await call_next(request)
+        if self.extract_token(request) == self._token:
+            return await call_next(request)
+        return _error_response(request, 401, "not_authenticated", "缺少或错误的访问令牌")
+
+
+def _desktop_mode() -> bool:
+    raw = os.environ.get("ROUTIVUS_DESKTOP", "").strip().lower()
+    return raw not in ("", "0", "off", "false", "no")
+
+
+def _legacy_user_dir(config: ServerConfig) -> str | None:
+    """旧数据目录（``~/.routivus``）仍存在且与新目录不同时返回它，供界面提示迁移。"""
+    legacy = Path.home() / ".routivus"
+    try:
+        if not legacy.is_dir():
+            return None
+        if legacy.resolve() == Path(config.user_dir).expanduser().resolve():
+            return None
+    except OSError:  # pragma: no cover - 解析失败时不做提示
+        return None
+    return str(legacy)
+
+
+def _build_config_manager(config: ServerConfig) -> Any:
+    """构造面向「用户层」的配置管理器（供 Web Console 配置接口使用）。
+
+    ``project_dir`` 指向一个不会存在的占位目录：Web Console 的 provider /
+    档位配置属于用户级设置，没有"当前项目"上下文。若沿用默认的
+    ``cwd/.routivus``，``provider_layer()`` 会把用户级配置误报成 project 层。
+    """
+    from routivus.config.manager import ConfigManager
+
+    return ConfigManager(
+        user_dir=config.user_dir,
+        project_dir=Path(config.user_dir).expanduser() / ".no-project-context",
+        load_env=False,
+    )
 
 
 def _request_id(request: Request) -> str:
@@ -282,6 +359,8 @@ def create_app(
     """Create an isolated application instance for production or tests."""
 
     resolved_config = config or ServerConfig.from_env()
+    # WebSocket 的令牌只能走查询参数，uvicorn 会把整条 URL 打进日志 → 挂脱敏。
+    install_token_redaction()
     project_registry = registry or ProjectRegistry(
         resolved_config.projects_file,
         resolved_config.workspace_roots,
@@ -323,6 +402,11 @@ def create_app(
             command_timeout=resolved_config.terminal_command_timeout,
         )
     )
+    # 先注册 auth、后注册 RequestContext：Starlette 的 add_middleware 是「前插」，
+    # 所以后注册的在外层。这样被令牌拒绝时 request_id 已经写入 request.state，
+    # 401 响应也能带上可追踪的 X-Request-ID。
+    if resolved_config.ws_auth_token:
+        app.add_middleware(TokenAuthMiddleware, token=resolved_config.ws_auth_token)
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(
         TrustedHostMiddleware,
@@ -624,6 +708,187 @@ def create_app(
         require_project(project_id)
         record = workspace_store.create_note(payload.title, payload.body_markdown, payload.tags, project_id)
         return _note_response(record, project_registry)
+
+    # ---------- Web Console 配置接口 ----------
+    # 桌面端与 Web 端共用。没有这组接口，用户就只能靠 REPL / CLI 配 provider，
+    # 而本仓库两者都没有 —— 桌面版首次打开会直接不可用。
+
+    from routivus.config.provider_service import (
+        ProviderConfigService,
+        validate_model,
+        validate_name,
+    )
+    from routivus.config.smart_router_service import SmartRouterConfigService
+
+    config_manager = _build_config_manager(resolved_config)
+    provider_service = ProviderConfigService(config_manager, None, language="zh")
+    tier_service = SmartRouterConfigService(config_manager, None, language="zh")
+
+    def _provider_views() -> list[ProviderView]:
+        views: list[ProviderView] = []
+        for row in provider_service.list():
+            name = str(row["name"])
+            detail = provider_service.get(name) or {}
+            views.append(
+                ProviderView(
+                    name=name,
+                    display_name=row.get("display_name"),
+                    api_base=str(row.get("api_base", "")),
+                    default_model=str(row.get("default_model", "")),
+                    models=list(row.get("models") or []),
+                    has_key=bool(row.get("has_key")),
+                    api_key_masked=str(detail.get("api_key_masked", "")),
+                    is_base=bool(row.get("is_base")),
+                    layer=str(row.get("layer") or "user"),
+                )
+            )
+        return views
+
+    def _provider_view(name: str) -> ProviderView:
+        for view in _provider_views():
+            if view.name == name:
+                return view
+        raise ApiError(404, "provider_not_found", "Provider 不存在")
+
+    def _snapshot() -> ConfigSnapshot:
+        active_provider = ""
+        active_model = ""
+        try:
+            active = config_manager.active()
+            active_provider = active.provider_name
+            active_model = active.model
+        except Exception:
+            # 尚未配置任何 provider 是正常的初始状态，不是错误
+            pass
+        smart = tier_service.get()
+        return ConfigSnapshot(
+            active_provider=active_provider,
+            active_model=active_model,
+            providers=_provider_views(),
+            tiers=[TierView(**row) for row in tier_service.list_tiers()],
+            smart_router_enabled=bool(smart.get("enabled")),
+            user_dir=str(resolved_config.user_dir),
+            legacy_user_dir=_legacy_user_dir(resolved_config),
+            desktop=_desktop_mode(),
+        )
+
+    def _ensure_ok(result: Any) -> None:
+        if not getattr(result, "ok", False):
+            raise ApiError(422, "config_rejected", str(getattr(result, "message", "配置被拒绝")))
+
+    @router.get("/config", response_model=ConfigSnapshot)
+    async def get_config_snapshot() -> ConfigSnapshot:
+        return _snapshot()
+
+    @router.post("/config/providers", response_model=ProviderView, status_code=status.HTTP_201_CREATED)
+    async def create_provider(payload: ProviderCreateRequest) -> ProviderView:
+        # ProviderConfigService.add() 不校验名称（它假定调用方已校验），而名称会
+        # 变成 config.json 的键与派生环境变量名，必须在接口边界拦住。
+        name_error = validate_name(payload.name)
+        if name_error:
+            raise ApiError(422, "invalid_provider_name", name_error)
+        model_error = validate_model(payload.default_model)
+        if model_error:
+            raise ApiError(422, "invalid_model_name", model_error)
+        _ensure_ok(
+            provider_service.add(
+                payload.name,
+                payload.api_base,
+                payload.default_model,
+                payload.display_name,
+                payload.api_key,
+            )
+        )
+        if payload.set_base:
+            _ensure_ok(provider_service.switch(payload.name, payload.default_model))
+        return _provider_view(payload.name)
+
+    @router.patch("/config/providers/{provider_name}", response_model=ProviderView)
+    async def update_provider(provider_name: str, payload: ProviderUpdateRequest) -> ProviderView:
+        if provider_service.get(provider_name) is None:
+            raise ApiError(404, "provider_not_found", "Provider 不存在")
+        fields: dict[str, Any] = {}
+        if "api_base" in payload.model_fields_set and payload.api_base is not None:
+            fields["api_base"] = payload.api_base
+        if "default_model" in payload.model_fields_set and payload.default_model is not None:
+            model_error = validate_model(payload.default_model)
+            if model_error:
+                raise ApiError(422, "invalid_model_name", model_error)
+            fields["default_model"] = payload.default_model
+        if "display_name" in payload.model_fields_set:
+            fields["display_name"] = payload.display_name
+        if fields:
+            _ensure_ok(provider_service.update(provider_name, fields))
+        return _provider_view(provider_name)
+
+    @router.delete("/config/providers/{provider_name}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_provider(provider_name: str) -> Response:
+        _ensure_ok(provider_service.remove(provider_name, yes=True))
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.post("/config/providers/{provider_name}/key", response_model=ProviderView)
+    async def set_provider_key(provider_name: str, payload: ProviderKeyRequest) -> ProviderView:
+        _ensure_ok(provider_service.set_api_key(provider_name, payload.api_key, overwrite=payload.overwrite))
+        return _provider_view(provider_name)
+
+    @router.post("/config/providers/{provider_name}/models", response_model=ProviderView)
+    async def add_provider_model(provider_name: str, payload: ModelRequest) -> ProviderView:
+        _ensure_ok(provider_service.add_model(provider_name, payload.model))
+        return _provider_view(provider_name)
+
+    @router.delete("/config/providers/{provider_name}/models", response_model=ProviderView)
+    async def remove_provider_model(
+        provider_name: str, model: str = Query(min_length=1, max_length=200)
+    ) -> ProviderView:
+        # 模型名用查询参数而不是路径段：像 meta-llama/Llama-3-8B 这类名字带斜杠，
+        # 放进路径会被拆成多段。
+        _ensure_ok(provider_service.remove_model(provider_name, model))
+        return _provider_view(provider_name)
+
+    @router.post("/config/active", response_model=ConfigSnapshot)
+    async def set_active_provider(payload: ActiveProviderRequest) -> ConfigSnapshot:
+        _ensure_ok(provider_service.switch(payload.provider, payload.model))
+        return _snapshot()
+
+    @router.put("/config/tiers/{tier_name}", response_model=ConfigSnapshot)
+    async def set_tier(tier_name: str, payload: TierRequest) -> ConfigSnapshot:
+        _ensure_ok(tier_service.set_tier(tier_name, payload.provider, payload.model))
+        return _snapshot()
+
+    @router.delete("/config/tiers/{tier_name}", response_model=ConfigSnapshot)
+    async def clear_tier(tier_name: str) -> ConfigSnapshot:
+        _ensure_ok(tier_service.clear_tier(tier_name))
+        return _snapshot()
+
+    @router.post("/config/smart-router", response_model=ConfigSnapshot)
+    async def set_smart_router(payload: SmartRouterRequest) -> ConfigSnapshot:
+        _ensure_ok(tier_service.set_enabled(payload.enabled))
+        return _snapshot()
+
+    # ---------- 桌面端专用：运行时白名单授权 ----------
+
+    @router.get("/desktop/info", response_model=DesktopInfoResponse)
+    async def desktop_info() -> DesktopInfoResponse:
+        return DesktopInfoResponse(
+            desktop=_desktop_mode(),
+            user_dir=str(resolved_config.user_dir),
+            legacy_user_dir=_legacy_user_dir(resolved_config),
+            static_dir=str(resolved_config.static_dir) if resolved_config.static_dir else None,
+            allowed_roots=project_registry.allowed_root_strings(),
+        )
+
+    @router.post("/desktop/roots", response_model=DesktopInfoResponse)
+    async def grant_workspace_root(payload: RootGrantRequest) -> DesktopInfoResponse:
+        """把用户在原生目录选择器里点选的目录加入允许的工作区根。
+
+        仅本次运行有效（不落盘）：每次新增项目都要重新点选，避免"授权一次、
+        永久放宽"。调用方须先持有访问令牌，外部进程无法冒充界面授权。
+        """
+        try:
+            project_registry.allow_root(payload.path)
+        except (UnsafeProjectPathError, ValueError) as exc:
+            raise ApiError(422, "invalid_workspace_root", str(exc)) from exc
+        return await desktop_info()
 
     running_tasks: dict[str, Any] = app.state.running_tasks
     session_agents: dict[str, Any] = app.state.session_agents

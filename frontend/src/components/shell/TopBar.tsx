@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Project, Session } from '../../api/types'
+import type { ConfigSnapshot, Project, Session } from '../../api/types'
 import type { Route } from '../../router'
+import { describeError } from '../../state/errors'
 import type { ThemeName } from '../../theme'
 import type { ConnState } from '../../ws/sessionSocket'
 import { ThemeToggle } from '../common/ThemeToggle'
@@ -15,6 +16,8 @@ interface TopBarProps {
   contextWindow: number
   hitl: string | null
   terminalOpen: boolean
+  config: ConfigSnapshot | null
+  onSwitchModel: (provider: string, model: string) => Promise<void>
   onToggleTheme: () => void
   onToggleTerminal: () => void
   onGoHome: () => void
@@ -54,6 +57,8 @@ export function TopBar({
   contextWindow,
   hitl,
   terminalOpen,
+  config,
+  onSwitchModel,
   onToggleTheme,
   onToggleTerminal,
   onGoHome,
@@ -63,6 +68,7 @@ export function TopBar({
   onGoProjectNotes,
 }: TopBarProps) {
   const [modelOpen, setModelOpen] = useState(false)
+  const [switchError, setSwitchError] = useState<string | null>(null)
   const modelRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -80,6 +86,21 @@ export function TopBar({
       ? Math.min(1, liveSession.total_tokens / contextWindow)
       : 0
   const status = liveSession?.status ?? 'idle'
+
+  const activeProvider = liveSession?.active_provider || config?.active_provider || ''
+  const currentModel = liveSession?.active_model || config?.active_model || ''
+  const providerEntry = config?.providers.find((item) => item.name === activeProvider)
+  const availableModels = providerEntry
+    ? Array.from(
+        new Set(
+          [currentModel, providerEntry.default_model, ...providerEntry.models].filter(
+            (value): value is string => Boolean(value),
+          ),
+        ),
+      )
+    : currentModel
+      ? [currentModel]
+      : []
 
   return (
     <header className="topbar">
@@ -134,22 +155,53 @@ export function TopBar({
           </div>
           <ConnectionBadge state={connection} />
           <div className={`model${modelOpen ? ' open' : ''}`} ref={modelRef}>
-            <button type="button" className="model-btn" onClick={() => setModelOpen((v) => !v)}>
-              <span className="model-name">{liveSession?.active_model || '未配置模型'}</span>
-              <span className="model-provider">{liveSession?.active_provider || ''}</span>
+            <button
+              type="button"
+              className="model-btn"
+              onClick={() => {
+                setSwitchError(null)
+                setModelOpen((open) => !open)
+              }}
+            >
+              <span className="model-name">{currentModel || '未配置模型'}</span>
+              <span className="model-provider">{activeProvider}</span>
               <span className="model-caret">▼</span>
             </button>
             <div className="pop">
-              <div className="pop-title">当前会话模型</div>
-              <div className="pop-item">
-                <span className="m">{liveSession?.active_model || '未配置'}</span>
-                <span className="v">
-                  {liveSession?.active_provider || '—'}
-                  {liveSession ? ' · 当前' : ''}
-                </span>
-              </div>
+              <div className="pop-title">运行模型</div>
+              {availableModels.length === 0 ? (
+                <div className="hint" style={{ margin: '6px 4px 2px' }}>
+                  尚未配置 provider，请先到「配置」页添加。
+                </div>
+              ) : (
+                availableModels.map((model) => (
+                  <button
+                    type="button"
+                    key={model}
+                    className="pop-item"
+                    disabled={model === currentModel}
+                    onClick={async () => {
+                      setSwitchError(null)
+                      try {
+                        await onSwitchModel(activeProvider, model)
+                        setModelOpen(false)
+                      } catch (err) {
+                        setSwitchError(describeError(err))
+                      }
+                    }}
+                  >
+                    <span className="m">{model}</span>
+                    <span className="v">{model === currentModel ? '当前' : activeProvider}</span>
+                  </button>
+                ))
+              )}
+              {switchError ? (
+                <div className="hint" style={{ margin: '6px 4px 2px', color: 'var(--accent)' }}>
+                  {switchError}
+                </div>
+              ) : null}
               <div className="hint" style={{ margin: '6px 4px 2px' }}>
-                模型切换需由配置接口提供 provider / 四档数据，当前后端尚未暴露该接口。
+                切换的是全局默认模型；会话会复用已建立的 Agent，需新建会话后才生效。
               </div>
             </div>
           </div>

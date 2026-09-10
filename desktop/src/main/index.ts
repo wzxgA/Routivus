@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { randomBytes } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { createLogger, type Logger } from './log'
@@ -16,13 +17,17 @@ interface Layout {
   workingDir: string
   /** 前端构建产物目录（交给 FastAPI 同源托管） */
   staticDir: string
+  /** 数据目录：config.json / projects.json / sqlite 与日志都落这里 */
+  userDir: string
 }
 
 function resolveLayout(): Layout {
+  const userDir = app.getPath('userData')
   if (app.isPackaged) {
     return {
       workingDir: process.resourcesPath,
       staticDir: path.join(process.resourcesPath, 'app-ui'),
+      userDir,
     }
   }
   // 源码运行：electron . 的 appPath 是 desktop/，其父目录就是仓库根
@@ -30,6 +35,7 @@ function resolveLayout(): Layout {
   return {
     workingDir: repoRoot,
     staticDir: path.join(repoRoot, 'frontend', 'dist'),
+    userDir,
   }
 }
 
@@ -140,10 +146,14 @@ function registerIpc(layout: Layout): void {
 
 async function bootstrap(): Promise<void> {
   const layout = resolveLayout()
-  logger = createLogger(app.getPath('userData'))
+  logger = createLogger(layout.userDir)
   logger.info(`Routivus desktop 启动：version=${app.getVersion()} packaged=${app.isPackaged}`)
   logger.info(`workingDir=${layout.workingDir}`)
   logger.info(`staticDir=${layout.staticDir}`)
+
+  // 每次启动生成随机令牌：REST 与 WebSocket 共用，本机其他进程无法冒用。
+  // 刻意不写进日志。
+  const token = randomBytes(32).toString('hex')
 
   const pythonPath = resolvePython(layout.workingDir, app.isPackaged)
   logger.info(`python=${pythonPath}`)
@@ -153,6 +163,8 @@ async function bootstrap(): Promise<void> {
       pythonPath,
       workingDir: layout.workingDir,
       staticDir: layout.staticDir,
+      userDir: layout.userDir,
+      token,
       logger,
     })
   } catch (err) {
@@ -178,7 +190,8 @@ async function bootstrap(): Promise<void> {
     mainWindow = null
   })
 
-  await win.loadURL(baseUrl)
+  // 令牌随 URL 传入：前端在模块初始化时同步读取（?token= 优先于构建期环境变量）。
+  await win.loadURL(`${baseUrl}/?token=${encodeURIComponent(token)}`)
   logger.info(`窗口已加载 ${baseUrl}`)
 }
 

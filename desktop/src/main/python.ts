@@ -23,6 +23,10 @@ export interface LaunchOptions {
   workingDir: string
   /** 前端构建产物目录，交给 FastAPI 同源托管 */
   staticDir: string
+  /** 数据目录（%APPDATA%\<产品名>）：config.json / projects.json / sqlite 都落这里 */
+  userDir: string
+  /** 本次启动的随机访问令牌，REST 与 WebSocket 共用 */
+  token: string
   logger: Logger
 }
 
@@ -158,8 +162,9 @@ async function waitForHealthy(baseUrl: string, logger: Logger): Promise<void> {
 }
 
 export async function startServer(options: LaunchOptions): Promise<ServerHandle> {
-  const { pythonPath, workingDir, staticDir, logger } = options
+  const { pythonPath, workingDir, staticDir, userDir, token, logger } = options
   logger.info(`启动后端：${pythonPath} -m routivus.server --desktop (cwd=${workingDir})`)
+  logger.info(`数据目录：${userDir}`)
 
   const child = spawn(pythonPath, ['-m', 'routivus.server', '--desktop'], {
     cwd: workingDir,
@@ -169,6 +174,9 @@ export async function startServer(options: LaunchOptions): Promise<ServerHandle>
       // 0 = 由操作系统分配空闲端口，避免与用户机器上别的东西撞端口
       ROUTIVUS_SERVER_PORT: '0',
       ROUTIVUS_STATIC_DIR: staticDir,
+      // 令牌与数据目录由壳决定；令牌刻意不写日志
+      ROUTIVUS_SERVER_TOKEN: token,
+      ROUTIVUS_USER_DIR: userDir,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,

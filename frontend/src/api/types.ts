@@ -82,6 +82,46 @@ export interface NoteStats {
   by_project: Record<string, number>
 }
 
+// ---- Web Console 配置接口 ----
+
+export interface ProviderView {
+  name: string
+  display_name: string | null
+  api_base: string
+  default_model: string
+  models: string[]
+  has_key: boolean
+  api_key_masked: string
+  is_base: boolean
+  layer: string
+}
+
+export interface TierView {
+  name: string
+  provider: string
+  model: string
+  configured: boolean
+}
+
+export interface ConfigSnapshot {
+  active_provider: string
+  active_model: string
+  providers: ProviderView[]
+  tiers: TierView[]
+  smart_router_enabled: boolean
+  user_dir: string
+  legacy_user_dir: string | null
+  desktop: boolean
+}
+
+export interface DesktopInfo {
+  desktop: boolean
+  user_dir: string
+  legacy_user_dir: string | null
+  static_dir: string | null
+  allowed_roots: string[]
+}
+
 // ---- WebSocket 事件 ----
 
 export interface WsEnvelope<T = unknown> {

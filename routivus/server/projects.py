@@ -104,6 +104,22 @@ class ProjectRegistry:
             return resolved
         raise UnsafeProjectPathError("项目目录不在允许的工作区范围内")
 
+    def allow_root(self, raw: str | Path) -> Path:
+        """把一个目录追加为允许的工作区根（**仅本次运行有效**）。
+
+        桌面端用它接原生目录选择器：用户在系统对话框里亲手选中的目录即等于
+        显式授权。刻意不持久化——每次新增项目都要重新点选，避免"授权一次、
+        永久放宽"这种静默扩大权限的行为。
+        """
+        root = self._resolve_allowed_root(raw)
+        with self._lock:
+            if not any(_same_path(root, existing) for existing in self.allowed_roots):
+                self.allowed_roots = (*self.allowed_roots, root)
+        return root
+
+    def allowed_root_strings(self) -> list[str]:
+        return [str(root) for root in self.allowed_roots]
+
     def _read(self) -> list[ProjectRecord]:
         if not self.storage_path.is_file():
             return []
