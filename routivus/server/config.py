@@ -67,6 +67,9 @@ class ServerConfig:
     terminal_kill_grace: float = 3.0
     terminal_cols: int = 120
     terminal_rows: int = 30
+    # 桌面模式：由 FastAPI 直接托管前端构建产物（frontend/dist），
+    # 使窗口与 API 同源，省掉 CORS / 反向代理 / Origin 白名单。
+    static_dir: Path | None = None
 
     @property
     def db_path(self) -> Path:
@@ -112,8 +115,11 @@ class ServerConfig:
             port = int(values.get("ROUTIVUS_SERVER_PORT", "18765"))
         except ValueError:
             port = 18_765
-        if not 1 <= port <= 65_535:
+        # 0 = 由操作系统分配空闲端口（桌面模式用，避免与别的东西撞端口）。
+        if not 0 <= port <= 65_535:
             port = 18_765
+        static_raw = values.get("ROUTIVUS_STATIC_DIR", "").strip()
+        static_dir = Path(static_raw).expanduser() if static_raw else None
         terminal_backend = values.get("ROUTIVUS_TERMINAL_BACKEND", "auto").strip().lower()
         if terminal_backend not in ("auto", "conpty", "oneshot"):
             terminal_backend = "auto"
@@ -145,4 +151,5 @@ class ServerConfig:
             terminal_kill_grace=_float_env(values, "ROUTIVUS_TERMINAL_KILL_GRACE", 3.0, 0.5),
             terminal_cols=_int_env(values, "ROUTIVUS_TERMINAL_COLS", 120, 20, 400),
             terminal_rows=_int_env(values, "ROUTIVUS_TERMINAL_ROWS", 30, 5, 200),
+            static_dir=static_dir,
         )

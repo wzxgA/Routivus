@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -1271,4 +1272,23 @@ def create_app(
                 await session.close("client_closed")
 
     app.include_router(router)
+
+    # 桌面模式：同源托管前端构建产物，窗口与 API 因此同源，
+    # 不再需要 CORS / 反向代理 / Origin 白名单。
+    # 前端用的是 hash 路由（#/notes 这类），路径不会发到服务端，
+    # 所以 StaticFiles(html=True) 就够，不需要 SPA history fallback。
+    # 挂载点放在最后：/healthz 与 /api/* 先注册，优先匹配。
+    if resolved_config.static_dir is not None:
+        static_dir = resolved_config.static_dir
+        if static_dir.is_dir() and (static_dir / "index.html").is_file():
+            assets = static_dir / "assets"
+            if assets.is_dir():
+                app.mount("/assets", StaticFiles(directory=assets), name="assets")
+            app.mount("/", StaticFiles(directory=static_dir, html=True), name="ui")
+            logger.info("已启用同源托管前端产物：%s", static_dir)
+        else:
+            logger.warning(
+                "ROUTIVUS_STATIC_DIR 下没有可用的前端产物（需要 index.html）：%s", static_dir
+            )
+
     return app
