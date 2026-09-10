@@ -9,6 +9,7 @@ from routivus.server.projects import (
     ProjectRegistryError,
     UnsafeProjectPathError,
 )
+from routivus.server.storage import EventRecord, MessageRecord, NoteRecord, SessionRecord, WorkspaceStore
 
 __all__ = [
     "create_app",
@@ -18,4 +19,9 @@ __all__ = [
     "ProjectAlreadyExistsError",
     "ProjectNotFoundError",
     "UnsafeProjectPathError",
+    "WorkspaceStore",
+    "SessionRecord",
+    "MessageRecord",
+    "NoteRecord",
+    "EventRecord",
 ]

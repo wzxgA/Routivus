@@ -1,0 +1,118 @@
+"""Phase 2 server integration tests."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from routivus.agent.react import AgentEvent
+from routivus.server import ProjectRegistry, create_app
+from routivus.server.storage import WorkspaceStore
+
+
+def _app(tmp_path: Path) -> tuple[TestClient, Path, Path]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    registry = ProjectRegistry(tmp_path / "projects.json", [workspace])
+    store = WorkspaceStore(tmp_path / "workspace.sqlite3")
+    return TestClient(create_app(registry=registry, store=store)), workspace, tmp_path
+
+
+def _project(client: TestClient, workspace: Path, name: str) -> dict:
+    root = workspace / name.lower()
+    root.mkdir()
+    response = client.post("/api/projects", json={"name": name, "root_path": str(root)})
+    assert response.status_code == 201
+    return response.json()
+
+
+def test_global_notes_include_project_notes_but_project_notes_are_isolated(tmp_path: Path) -> None:
+    client, workspace, _ = _app(tmp_path)
+    project_a = _project(client, workspace, "Alpha")
+    project_b = _project(client, workspace, "Beta")
+
+    global_note = client.post("/api/notes", json={"title": "全局", "body_markdown": "所有项目可见"})
+    note_a = client.post(f"/api/projects/{project_a['id']}/notes", json={"title": "Alpha 笔记", "body_markdown": "A"})
+    note_b = client.post(f"/api/projects/{project_b['id']}/notes", json={"title": "Beta 笔记", "body_markdown": "B"})
+    assert (global_note.status_code, note_a.status_code, note_b.status_code) == (201, 201, 201)
+
+    all_notes = client.get("/api/notes?scope=global").json()
+    assert {item["title"] for item in all_notes} == {"全局", "Alpha 笔记", "Beta 笔记"}
+    assert [item["project_name"] for item in all_notes if item["title"] == "全局"] == [None]
+
+    alpha_notes = client.get(f"/api/projects/{project_a['id']}/notes").json()
+    assert [item["title"] for item in alpha_notes] == ["Alpha 笔记"]
+
+    projects = {item["name"]: item for item in client.get("/api/projects").json()}
+    assert projects["Alpha"]["stats"]["notes"] == 1
+    assert projects["Beta"]["stats"]["notes"] == 1
+
+
+def test_sessions_messages_and_project_ownership(tmp_path: Path) -> None:
+    client, workspace, _ = _app(tmp_path)
+    project_a = _project(client, workspace, "Alpha")
+    project_b = _project(client, workspace, "Beta")
+
+    created = client.post(f"/api/projects/{project_a['id']}/sessions", json={"title": "Build"})
+    assert created.status_code == 201
+    session = created.json()
+    assert client.get(f"/api/sessions/{session['id']}").json()["project_id"] == project_a["id"]
+    assert client.get(f"/api/projects/{project_b['id']}/sessions").json() == []
+
+    mismatch = client.get(f"/api/projects/{project_b['id']}/sessions/{session['id']}")
+    assert mismatch.status_code == 404
+
+    store = client.app.state.workspace_store
+    message = store.add_message(session["id"], "user", "hello")
+    history = client.get(f"/api/sessions/{session['id']}/messages").json()
+    assert history[0]["id"] == message.id
+    assert history[0]["content"] == "hello"
+
+
+def test_websocket_snapshot_message_and_error_events(tmp_path: Path) -> None:
+    client, workspace, _ = _app(tmp_path)
+    project = _project(client, workspace, "Alpha")
+    session = client.post(f"/api/projects/{project['id']}/sessions", json={}).json()
+
+    with client.websocket_connect(f"/api/ws/projects/{project['id']}/sessions/{session['id']}") as socket:
+        snapshot = socket.receive_json()
+        assert snapshot["type"] == "session.snapshot"
+        assert {"event_id", "sequence", "session_id", "project_id", "occurred_at", "data"} <= snapshot.keys()
+        assert snapshot["data"]["session"]["id"] == session["id"]
+
+        socket.send_json({"type": "user_message", "request_id": "r1", "content": "hello"})
+        event_types = []
+        for _ in range(5):
+            event = socket.receive_json()
+            event_types.append(event["type"])
+            if event["type"] == "session.status" and event["data"].get("status") == "failed":
+                break
+        assert "message.created" in event_types
+        assert "error" in event_types
+        assert event_types[-1] == "session.status"
+
+
+def test_websocket_agent_events_are_persisted(tmp_path: Path) -> None:
+    client, workspace, _ = _app(tmp_path)
+    project = _project(client, workspace, "Alpha")
+    session = client.post(f"/api/projects/{project['id']}/sessions", json={}).json()
+
+    class FakeAgent:
+        async def run(self, content: str):
+            yield AgentEvent(kind="content", text=f"reply: {content}")
+            yield AgentEvent(kind="done")
+
+    app = client.app
+    app.state.agent_factory = lambda _project, _session: FakeAgent()
+    with client.websocket_connect(f"/api/ws/projects/{project['id']}/sessions/{session['id']}") as socket:
+        socket.receive_json()
+        socket.send_json({"type": "user_message", "content": "hello"})
+        events = []
+        for _ in range(6):
+            event = socket.receive_json()
+            events.append(event)
+            if event["type"] == "session.status" and event["data"].get("status") == "completed":
+                break
+    assert any(event["type"] == "message.delta" and event["data"]["text"] == "reply: hello" for event in events)
+    assert client.get(f"/api/sessions/{session['id']}/messages").json()[-1]["content"] == "reply: hello"

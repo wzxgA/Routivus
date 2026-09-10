@@ -22,10 +22,16 @@ class ServerConfig:
 
     projects_file: Path
     workspace_roots: tuple[Path, ...]
+    database_path: Path = Path("~/.routivus/workspace.sqlite3")
     host: str = "127.0.0.1"
     port: int = 18_765
     allowed_hosts: tuple[str, ...] = ("localhost", "127.0.0.1", "testserver")
     allowed_origins: tuple[str, ...] = ()
+
+    @property
+    def db_path(self) -> Path:
+        """Compatibility alias for integrations that call it ``db_path``."""
+        return self.database_path
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "ServerConfig":
@@ -33,6 +39,9 @@ class ServerConfig:
         user_dir = Path(values.get("ROUTIVUS_USER_DIR", "~/.routivus")).expanduser()
         projects_file = Path(
             values.get("ROUTIVUS_PROJECTS_FILE", str(user_dir / "projects.json"))
+        ).expanduser()
+        database_path = Path(
+            values.get("ROUTIVUS_DATABASE_PATH", values.get("ROUTIVUS_WORKSPACE_DB", values.get("ROUTIVUS_DB_PATH", str(user_dir / "workspace.sqlite3"))))
         ).expanduser()
 
         roots = _split_paths(values.get("ROUTIVUS_WORKSPACE_ROOTS", ""))
@@ -58,6 +67,7 @@ class ServerConfig:
             port = 18_765
         return cls(
             projects_file=projects_file,
+            database_path=database_path,
             workspace_roots=roots,
             host=host,
             port=port,
