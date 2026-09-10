@@ -4,9 +4,21 @@ import { useSessionTimeline } from '../../state/sessionTimeline'
 import type { ConnState } from '../../ws/sessionSocket'
 import { Empty } from '../common/Empty'
 import { TerminalDrawer } from '../terminal/TerminalDrawer'
-import { Composer } from './Composer'
+import { Composer, type ComposerMode } from './Composer'
 import { MessageList } from './MessageList'
 import { SidePanel } from './SidePanel'
+
+/**
+ * 模式 → 服务端能识别的指令前缀。
+ *
+ * 用户输入里已经带 `/` 的命令原样放行（尊重显式命令，避免 `/plan /team x` 这种叠加）。
+ */
+function composeCommand(mode: ComposerMode, text: string): string {
+  if (text.startsWith('/')) return text
+  if (mode === 'plan') return `/plan ${text}`
+  if (mode === 'team') return `/team ${text}`
+  return text
+}
 
 interface ChatViewProps {
   projectId: string
@@ -74,14 +86,18 @@ export function ChatView({
     onConnectionChange(timeline.connection)
   }, [timeline.connection, onConnectionChange])
 
-  const handleSubmit = useCallback(() => {
-    const text = composer.trim()
-    if (!text) return
-    timeline.sendMessage(text)
-    setHistory((current) => [...current, text])
-    setComposer('')
-    pinnedToBottom.current = true
-  }, [composer, timeline])
+  const handleSubmit = useCallback(
+    (mode: ComposerMode) => {
+      const text = composer.trim()
+      if (!text) return
+      timeline.sendMessage(composeCommand(mode, text))
+      // 历史里留用户实际输入的文本，不带模式前缀，便于直接复现
+      setHistory((current) => [...current, text])
+      setComposer('')
+      pinnedToBottom.current = true
+    },
+    [composer, timeline],
+  )
 
   const cancelSession = useCallback(() => {
     timeline.cancel()

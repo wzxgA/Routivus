@@ -1505,6 +1505,102 @@ button {
   opacity: 0.6;
 }
 
+/* Composer 模式选择器（对话 / 计划 / 团队） */
+.pmode {
+  position: relative;
+  flex: 0 0 auto;
+}
+.pmode-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    background-color var(--dur) var(--ease);
+}
+.pmode-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.pmode-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.pmode-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--beige);
+}
+.pmode-caret {
+  font-size: 8px;
+  color: var(--faint);
+  transition: transform var(--dur) var(--ease);
+}
+.pmode.open .pmode-caret {
+  transform: rotate(180deg);
+}
+/* Composer 贴底，菜单必须向上展开 */
+.pmode-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  min-width: 258px;
+  padding: 6px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 8px 26px rgba(60, 54, 40, 0.14);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease),
+    visibility var(--dur);
+}
+.pmode.open .pmode-pop {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+.pmode-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur) var(--ease);
+}
+.pmode-item:hover {
+  background: var(--beige);
+}
+.pmode-name {
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.pmode-desc {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+}
+.pmode-tick {
+  font-size: 10px;
+  color: var(--accent);
+}
+
 /* 终端抽屉 */
 .term {
   flex: 0 0 auto;
