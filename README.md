@@ -41,9 +41,12 @@ ROUTIVUS_SERVER_HOST=127.0.0.1
 ROUTIVUS_SERVER_PORT=18765
 ROUTIVUS_ALLOWED_HOSTS=localhost,127.0.0.1
 ROUTIVUS_ALLOWED_ORIGINS=http://localhost:5173
+ROUTIVUS_SERVER_TOKEN=
+ROUTIVUS_WS_HEARTBEAT_INTERVAL=30
+ROUTIVUS_WS_MAX_MESSAGE_BYTES=1048576
 ```
 
-项目接口：`GET/POST /api/projects`、`GET/PATCH/DELETE /api/projects/{project_id}`。会话、消息和笔记分别通过 `/api/projects/{project_id}/sessions`、`/api/sessions/{session_id}/messages`、`/api/notes` 访问；`/api/notes?scope=global` 返回工作区全部笔记，而项目笔记入口只返回当前项目笔记。实时会话地址为 `/api/ws/projects/{project_id}/sessions/{session_id}`。错误统一返回 `error.code`、`error.message`、`error.request_id`，每个响应也带 `X-Request-ID`。
+项目接口：`GET/POST /api/projects`、`GET/PATCH/DELETE /api/projects/{project_id}`。会话、消息和笔记分别通过 `/api/projects/{project_id}/sessions`、`/api/sessions/{session_id}/messages`、`/api/notes` 访问；`/api/notes?scope=global` 返回工作区全部笔记，而项目笔记入口只返回当前项目笔记。实时会话地址为 `/api/ws/projects/{project_id}/sessions/{session_id}`，支持 `request_id` 幂等、事件序号、断线后的 SQLite 事件恢复和心跳；配置 `ROUTIVUS_SERVER_TOKEN` 后需要 Bearer Token。错误统一返回 `error.code`、`error.message`、`error.request_id`，每个响应也带 `X-Request-ID`。
 
 ## 程序化入口
 

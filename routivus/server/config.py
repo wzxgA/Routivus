@@ -27,6 +27,9 @@ class ServerConfig:
     port: int = 18_765
     allowed_hosts: tuple[str, ...] = ("localhost", "127.0.0.1", "testserver")
     allowed_origins: tuple[str, ...] = ()
+    ws_auth_token: str = ""
+    ws_heartbeat_interval: float = 30.0
+    ws_max_message_bytes: int = 1_048_576
 
     @property
     def db_path(self) -> Path:
@@ -58,6 +61,15 @@ class ServerConfig:
             for item in values.get("ROUTIVUS_ALLOWED_ORIGINS", "").split(",")
             if item.strip()
         )
+        ws_auth_token = values.get("ROUTIVUS_SERVER_TOKEN", values.get("ROUTIVUS_WS_AUTH_TOKEN", "")).strip()
+        try:
+            ws_heartbeat_interval = max(1.0, float(values.get("ROUTIVUS_WS_HEARTBEAT_INTERVAL", "30")))
+        except ValueError:
+            ws_heartbeat_interval = 30.0
+        try:
+            ws_max_message_bytes = max(1024, int(values.get("ROUTIVUS_WS_MAX_MESSAGE_BYTES", "1048576")))
+        except ValueError:
+            ws_max_message_bytes = 1_048_576
         host = values.get("ROUTIVUS_SERVER_HOST", "127.0.0.1").strip() or "127.0.0.1"
         try:
             port = int(values.get("ROUTIVUS_SERVER_PORT", "18765"))
@@ -73,4 +85,7 @@ class ServerConfig:
             port=port,
             allowed_hosts=hosts,
             allowed_origins=origins,
+            ws_auth_token=ws_auth_token,
+            ws_heartbeat_interval=ws_heartbeat_interval,
+            ws_max_message_bytes=ws_max_message_bytes,
         )

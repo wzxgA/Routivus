@@ -83,7 +83,7 @@ def _timestamp(value: str) -> datetime:
 class WorkspaceStore:
     """Thread-safe SQLite store for server-owned workspace data."""
 
-    VERSION = 2
+    VERSION = 3
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path).expanduser()
@@ -173,6 +173,19 @@ class WorkspaceStore:
                     CREATE INDEX IF NOT EXISTS idx_events_project_time
                         ON events(project_id, occurred_at ASC);
                     PRAGMA user_version = 2;
+                    """
+                )
+                version = 2
+            if version < 3:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS processed_requests (
+                        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                        request_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY (session_id, request_id)
+                    );
+                    PRAGMA user_version = 3;
                     """
                 )
 
@@ -392,6 +405,25 @@ class WorkspaceStore:
                 (session_id, max(0, int(after_sequence)), limit),
             ).fetchall()
         return [self._event(row) for row in rows]
+
+    def latest_event_sequence(self, session_id: str) -> int:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT COALESCE(MAX(sequence), 0) FROM events WHERE session_id = ?", (session_id,)).fetchone()
+        return int(row[0])
+
+    def claim_request(self, session_id: str, request_id: str) -> bool:
+        """Atomically claim a client request id for a session."""
+        request_id = request_id.strip()
+        if not request_id:
+            return True
+        with self._lock, self._connect() as conn:
+            if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone() is None:
+                raise KeyError("会话不存在")
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO processed_requests (session_id, request_id, created_at) VALUES (?, ?, ?)",
+                (session_id, request_id, _now()),
+            )
+            return cursor.rowcount == 1
 
     def activity(self, start: str | None = None, end: str | None = None) -> list[dict[str, object]]:
         clauses = ["1 = 1"]

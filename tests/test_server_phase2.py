@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from routivus.agent.react import AgentEvent
 from routivus.server import ProjectRegistry, create_app
+from routivus.server.config import ServerConfig
 from routivus.server.storage import WorkspaceStore
 
 
@@ -149,3 +150,56 @@ def test_websocket_agent_events_are_persisted(tmp_path: Path) -> None:
                 break
     assert any(event["type"] == "message.delta" and event["data"]["text"] == "reply: hello" for event in events)
     assert client.get(f"/api/sessions/{session['id']}/messages").json()[-1]["content"] == "reply: hello"
+
+
+def test_websocket_request_id_is_idempotent(tmp_path: Path) -> None:
+    client, workspace, _ = _app(tmp_path)
+    project = _project(client, workspace, "Alpha")
+    session = client.post(f"/api/projects/{project['id']}/sessions", json={}).json()
+
+    class FakeAgent:
+        async def run(self, content: str):
+            yield AgentEvent(kind="content", text="ok")
+            yield AgentEvent(kind="done")
+
+    client.app.state.agent_factory = lambda _project, _session: FakeAgent()
+    with client.websocket_connect(f"/api/ws/projects/{project['id']}/sessions/{session['id']}") as socket:
+        socket.receive_json()
+        socket.send_json({"type": "user_message", "request_id": "same", "content": "first"})
+        for _ in range(6):
+            event = socket.receive_json()
+            if event["type"] == "session.status" and event["data"].get("status") == "completed":
+                break
+        socket.send_json({"type": "user_message", "request_id": "same", "content": "second"})
+        duplicate = socket.receive_json()
+        assert duplicate["type"] == "error"
+        assert duplicate["data"]["code"] == "duplicate_request"
+
+    messages = client.get(f"/api/sessions/{session['id']}/messages").json()
+    assert [item["role"] for item in messages] == ["user", "assistant"]
+
+
+def test_websocket_token_authentication(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    registry = ProjectRegistry(tmp_path / "projects.json", [workspace])
+    config = ServerConfig(
+        projects_file=tmp_path / "projects.json",
+        workspace_roots=(workspace,),
+        database_path=tmp_path / "workspace.sqlite3",
+        ws_auth_token="secret-token",
+    )
+    client = TestClient(create_app(registry=registry, config=config))
+    project_root = workspace / "alpha"
+    project_root.mkdir()
+    project = client.post("/api/projects", json={"name": "Alpha", "root_path": str(project_root)}).json()
+    session = client.post(f"/api/projects/{project['id']}/sessions", json={}).json()
+
+    with client.websocket_connect(f"/api/ws/projects/{project['id']}/sessions/{session['id']}") as socket:
+        assert socket.receive_json()["code"] == "not_authenticated"
+
+    with client.websocket_connect(
+        f"/api/ws/projects/{project['id']}/sessions/{session['id']}",
+        headers={"Authorization": "Bearer secret-token"},
+    ) as socket:
+        assert socket.receive_json()["type"] == "session.snapshot"
