@@ -17,6 +17,10 @@ MessageRole = Literal["user", "assistant", "tool", "system"]
 _MISSING = object()
 
 
+class NoteConflictError(ValueError):
+    """The note changed after the client loaded it."""
+
+
 @dataclass(frozen=True)
 class SessionRecord:
     id: str
@@ -534,7 +538,7 @@ class WorkspaceStore:
             cursor = conn.execute(sql, params)
             if cursor.rowcount == 0:
                 if expected_version is not None:
-                    raise ValueError("笔记已被其他位置更新")
+                    raise NoteConflictError("笔记已被其他位置更新")
                 return None
         return self.get_note(note_id)
 
@@ -559,3 +563,18 @@ class WorkspaceStore:
         args = () if project_id is None else (project_id,)
         with self._lock, self._connect() as conn:
             return int(conn.execute(f"SELECT count(*) FROM notes WHERE {clause}", args).fetchone()[0])
+
+    def note_stats(self) -> dict[str, object]:
+        with self._lock, self._connect() as conn:
+            total = int(conn.execute("SELECT count(*) FROM notes").fetchone()[0])
+            global_notes = int(conn.execute("SELECT count(*) FROM notes WHERE project_id IS NULL").fetchone()[0])
+            rows = conn.execute(
+                "SELECT project_id, count(*) AS count FROM notes WHERE project_id IS NOT NULL GROUP BY project_id"
+            ).fetchall()
+        by_project = {str(row["project_id"]): int(row["count"]) for row in rows}
+        return {
+            "total": total,
+            "global_notes": global_notes,
+            "project_notes": sum(by_project.values()),
+            "by_project": by_project,
+        }

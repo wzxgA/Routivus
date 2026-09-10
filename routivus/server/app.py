@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import sqlite3
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -23,7 +24,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from routivus import __version__
 from routivus.server.config import ServerConfig
-from routivus.server.storage import EventRecord, MessageRecord, NoteRecord, SessionRecord, WorkspaceStore
+from routivus.server.storage import EventRecord, MessageRecord, NoteConflictError, NoteRecord, SessionRecord, WorkspaceStore
 from routivus.server.projects import (
     ProjectAlreadyExistsError,
     ProjectNotFoundError,
@@ -42,6 +43,7 @@ from routivus.server.schemas import (
     NoteCreateRequest,
     NoteResponse,
     NoteUpdateRequest,
+    NoteStatsResponse,
     PinRequest,
     SessionCreateRequest,
     SessionResponse,
@@ -183,7 +185,9 @@ def create_app(
             database_path = registry.storage_path.with_name("workspace.sqlite3")
         try:
             workspace_store = WorkspaceStore(database_path)
-        except PermissionError:
+        except (PermissionError, sqlite3.OperationalError):
+            if config is not None:
+                raise
             # A read-only user profile should not prevent an embedded server
             # from starting. This is only a fallback; configured paths are
             # used whenever they are writable.
@@ -220,6 +224,10 @@ def create_app(
     @app.exception_handler(KeyError)
     async def handle_key_error(request: Request, exc: KeyError):
         return _error_response(request, 404, "resource_not_found", str(exc).strip("'"))
+
+    @app.exception_handler(NoteConflictError)
+    async def handle_note_conflict(request: Request, exc: NoteConflictError):
+        return _error_response(request, 409, "note_conflict", str(exc))
 
     @app.exception_handler(ProjectRegistryError)
     async def handle_registry_error(request: Request, exc: ProjectRegistryError):
@@ -389,6 +397,10 @@ def create_app(
             raise ApiError(422, "invalid_note_scope", "全局入口的 scope 必须为 global")
         return [_note_response(item, project_registry, detail=True) for item in workspace_store.list_notes(scope="global", query=query, limit=limit, offset=page_offset(offset, cursor))]
 
+    @router.get("/notes/stats", response_model=NoteStatsResponse)
+    async def note_stats() -> NoteStatsResponse:
+        return NoteStatsResponse(**workspace_store.note_stats())
+
     @router.post("/notes", response_model=NoteResponse, status_code=status.HTTP_201_CREATED)
     async def create_note(payload: NoteCreateRequest) -> NoteResponse:
         if payload.project_id is not None:
@@ -441,11 +453,43 @@ def create_app(
 
     @router.get("/projects/{project_id}/notes/{note_id}", response_model=NoteResponse)
     async def get_project_note(project_id: str, note_id: str) -> NoteResponse:
+        record = require_project_note(project_id, note_id)
+        return _note_response(record, project_registry)
+
+    def require_project_note(project_id: str, note_id: str) -> NoteRecord:
         require_project(project_id)
         record = workspace_store.get_note(note_id)
         if record is None or record.project_id != project_id:
             raise ApiError(404, "note_not_found", "笔记不存在")
-        return _note_response(record, project_registry)
+        return record
+
+    @router.patch("/projects/{project_id}/notes/{note_id}", response_model=NoteResponse)
+    async def update_project_note(project_id: str, note_id: str, payload: NoteUpdateRequest) -> NoteResponse:
+        record = require_project_note(project_id, note_id)
+        if "project_id" in payload.model_fields_set and payload.project_id != project_id:
+            raise ApiError(422, "invalid_note_scope", "项目范围接口不能改变笔记归属")
+        kwargs = payload.model_dump(exclude_unset=True)
+        kwargs.pop("project_id", None)
+        version = kwargs.pop("version", None)
+        updated = workspace_store.update_note(note_id, **kwargs, expected_version=version)
+        if updated is None:
+            raise ApiError(404, "note_not_found", "笔记不存在")
+        return _note_response(updated, project_registry)
+
+    @router.delete("/projects/{project_id}/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_project_note(project_id: str, note_id: str) -> Response:
+        require_project_note(project_id, note_id)
+        if not workspace_store.delete_note(note_id):
+            raise ApiError(404, "note_not_found", "笔记不存在")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.post("/projects/{project_id}/notes/{note_id}/pin", response_model=NoteResponse)
+    async def pin_project_note(project_id: str, note_id: str, payload: PinRequest | None = None) -> NoteResponse:
+        require_project_note(project_id, note_id)
+        updated = workspace_store.set_note_pinned(note_id, payload.pinned if payload else None)
+        if updated is None:
+            raise ApiError(404, "note_not_found", "笔记不存在")
+        return _note_response(updated, project_registry)
 
     @router.post("/projects/{project_id}/notes", response_model=NoteResponse, status_code=status.HTTP_201_CREATED)
     async def create_project_note(project_id: str, payload: NoteCreateRequest) -> NoteResponse:

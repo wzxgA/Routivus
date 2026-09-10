@@ -49,6 +49,39 @@ def test_global_notes_include_project_notes_but_project_notes_are_isolated(tmp_p
     assert projects["Beta"]["stats"]["notes"] == 1
 
 
+def test_note_search_paging_pin_stats_and_optimistic_lock(tmp_path: Path) -> None:
+    client, workspace, _ = _app(tmp_path)
+    project = _project(client, workspace, "Alpha")
+    other_project = _project(client, workspace, "Beta")
+    first = client.post(f"/api/projects/{project['id']}/notes", json={"title": "First", "body_markdown": "searchable text", "tags": ["one", "one"]}).json()
+    second = client.post(f"/api/projects/{project['id']}/notes", json={"title": "Second", "body_markdown": "other", "tags": ["two"]}).json()
+    foreign = client.post(f"/api/projects/{other_project['id']}/notes", json={"title": "Foreign", "body_markdown": "private"}).json()
+    client.post("/api/notes", json={"title": "Global", "body_markdown": "workspace"})
+
+    assert [item["title"] for item in client.get(f"/api/projects/{project['id']}/notes?query=searchable").json()] == ["First"]
+    page = client.get(f"/api/projects/{project['id']}/notes?limit=1&cursor=1").json()
+    assert len(page) == 1
+    assert page[0]["title"] in {"First", "Second"}
+
+    pinned = client.post(f"/api/projects/{project['id']}/notes/{first['id']}/pin", json={"pinned": True})
+    assert pinned.status_code == 200
+    assert pinned.json()["pinned"] is True
+
+    stats = client.get("/api/notes/stats").json()
+    assert stats == {"total": 4, "global_notes": 1, "project_notes": 3, "by_project": {project["id"]: 2, other_project["id"]: 1}}
+
+    updated = client.patch(f"/api/notes/{first['id']}", json={"body_markdown": "changed", "version": first["version"] + 1}).json()
+    assert updated["body_markdown"] == "changed"
+    conflict = client.patch(f"/api/notes/{first['id']}", json={"body_markdown": "stale", "version": first["version"]})
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "note_conflict"
+
+    foreign_read = client.get(f"/api/projects/{project['id']}/notes/{foreign['id']}")
+    foreign_edit = client.patch(f"/api/projects/{project['id']}/notes/{foreign['id']}", json={"title": "edited"})
+    foreign_delete = client.delete(f"/api/projects/{project['id']}/notes/{foreign['id']}")
+    assert (foreign_read.status_code, foreign_edit.status_code, foreign_delete.status_code) == (404, 404, 404)
+
+
 def test_sessions_messages_and_project_ownership(tmp_path: Path) -> None:
     client, workspace, _ = _app(tmp_path)
     project_a = _project(client, workspace, "Alpha")

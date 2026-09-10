@@ -193,6 +193,13 @@ class ActivityResponse(BaseModel):
     projects: dict[str, int]
 
 
+class NoteStatsResponse(BaseModel):
+    total: int
+    global_notes: int
+    project_notes: int
+    by_project: dict[str, int]
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     service: str
