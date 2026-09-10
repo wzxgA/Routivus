@@ -9,6 +9,8 @@ dependencies = [
     "rich>=13.7.0",
     "httpx>=0.27.0",
     "python-dotenv>=1.0.1",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
     # SmartRouter ML 精判（原 ml extras 并入核心）：TF-IDF + LightGBM 离线训练与精判
     "numpy>=1.26",
     "scikit-learn>=1.4",

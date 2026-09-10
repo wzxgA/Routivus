@@ -8,7 +8,7 @@
 
 - **纯后端**：可 `import routivus`，通过 `routivus.service` 程序化入口驱动执行
 - **无界面**：不含 Textual/TUI、inline REPL、终端安装脚本
-- **前端待接入**：后续通过 `routivus/server/`（WebSocket + REST 服务层）暴露给任意桌面/Web 前端客户端
+- **Web Console 服务层**：Phase 1 已提供 `routivus/server/`（REST 基础层 + 项目注册表），Agent WebSocket 会话流在后续阶段接入
 
 ## 安装
 
@@ -20,6 +20,29 @@ uv sync          # 或 pip install -e .
 ```
 
 > 依赖不含 `textual`（已随 TUI 移除）；`onnxruntime`（语义精判）按需启用。仅语义模型离线导出那套大件（torch 等）仍在可选依赖中，日常使用不需要。
+
+## Web Console Server（Phase 1）
+
+启动本地 Server：
+
+```bash
+python -m routivus.server
+```
+
+默认监听 `127.0.0.1:18765`，健康检查地址为 `GET /healthz`。当前阶段提供项目注册表和项目 CRUD；注册、更新、删除只修改项目元数据，不会删除或改写项目目录。
+
+默认只允许注册 Server 启动目录下的项目。需要管理其他工作区时配置：
+
+```bash
+ROUTIVUS_WORKSPACE_ROOTS=D:\\DevProject;D:\\Work
+ROUTIVUS_PROJECTS_FILE=~/.routivus/projects.json
+ROUTIVUS_SERVER_HOST=127.0.0.1
+ROUTIVUS_SERVER_PORT=18765
+ROUTIVUS_ALLOWED_HOSTS=localhost,127.0.0.1
+ROUTIVUS_ALLOWED_ORIGINS=http://localhost:5173
+```
+
+项目接口：`GET/POST /api/projects`、`GET/PATCH/DELETE /api/projects/{project_id}`。错误统一返回 `error.code`、`error.message`、`error.request_id`，每个响应也带 `X-Request-ID`。
 
 ## 程序化入口
 
