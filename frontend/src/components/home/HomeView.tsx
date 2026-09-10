@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import * as api from '../../api'
 import type { ActivityDay, Project } from '../../api/types'
 import { formatRelative, formatNumber } from '../../utils/format'
-import { describeError } from '../../state/workspace'
+import { describeError } from '../../state/errors'
 import { Empty } from '../common/Empty'
 import { Heatmap } from './Heatmap'
 

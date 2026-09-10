@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import * as api from '../../api'
 import type { Project, Session } from '../../api/types'
-import { describeError } from '../../state/workspace'
+import { describeError } from '../../state/errors'
 
 interface ConfigViewProps {
   projects: Project[]

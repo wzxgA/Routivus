@@ -17,6 +17,7 @@ export function otherTheme(theme: ThemeName): ThemeName {
   return theme === 'light' ? 'night' : 'light'
 }
 
+/** 按钮文案显示**当前**主题（与原型 `ttLabel.textContent = THEME_NAMES[theme]` 一致）。 */
 export function themeLabel(theme: ThemeName): string {
-  return theme === 'light' ? '夜间' : '日间'
+  return theme === 'light' ? '日间' : '夜间'
 }

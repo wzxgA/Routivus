@@ -186,6 +186,36 @@ export interface AskRequest {
   [key: string]: unknown
 }
 
+/**
+ * 终端通道事件。
+ *
+ * 注意：终端事件是**扁平结构**（字段全部在顶层），不走会话事件的 `data` 信封 ——
+ * 见 `routivus/server/terminal.py` 的 `_send_output` 与 `app.py` 的 `terminal.*` 分支。
+ */
+export interface TerminalEnvelope {
+  type: string
+  terminal_id?: string
+  request_id?: string
+  code?: string
+  message?: string
+  occurred_at?: string
+  // terminal.opened
+  cwd?: string
+  shell?: string | string[]
+  backend?: string
+  cols?: number
+  rows?: number
+  // terminal.output
+  seq?: number
+  data?: string
+  encoding?: 'utf8' | 'base64'
+  // terminal.output.dropped
+  count?: number
+  // terminal.closed
+  reason?: string
+  exit_code?: number | null
+}
+
 export interface ApprovalRequestedData {
   kind?: 'approval' | 'ask'
   approval_id?: string

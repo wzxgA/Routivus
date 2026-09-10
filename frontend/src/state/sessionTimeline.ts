@@ -137,7 +137,12 @@ export function useSessionTimeline(
   const socketRef = useRef<SessionSocket | null>(null)
   const sessionRef = useRef<Session | null>(initialSession)
   const updateRef = useRef(onSessionUpdate)
-  updateRef.current = onSessionUpdate
+
+  // 在 effect 内同步最新的回调，避免渲染期间写入 ref。
+  // 该 effect 声明在 socket effect 之前，因此连接建立前 updateRef 已是最新值。
+  useEffect(() => {
+    updateRef.current = onSessionUpdate
+  }, [onSessionUpdate])
 
   useEffect(() => {
     setSession(initialSession)

@@ -1,10 +1,10 @@
 import { isWsEnvelope, newRequestId, wsUrl } from '../api/client'
-import type { WsEnvelope } from '../api/types'
+import type { TerminalEnvelope } from '../api/types'
 
 export type TerminalState = 'idle' | 'connecting' | 'open' | 'closed' | 'error'
 
 export interface TerminalHandlers {
-  onEvent: (event: WsEnvelope) => void
+  onEvent: (event: TerminalEnvelope) => void
   onState: (state: TerminalState, detail?: string) => void
 }
 
@@ -59,7 +59,7 @@ export class TerminalSocket {
         return
       }
       if (!isWsEnvelope(parsed)) return
-      const envelope = parsed as WsEnvelope
+      const envelope = parsed as TerminalEnvelope
       if (envelope.type === 'ping') {
         this.send({ type: 'pong' })
         return

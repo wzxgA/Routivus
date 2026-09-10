@@ -1,36 +1,9 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as api from '../api'
-import { ApiError } from '../api/client'
 import type { Project } from '../api/types'
 import { applyTheme, otherTheme, readStoredTheme, type ThemeName } from '../theme'
-
-interface WorkspaceValue {
-  projects: Project[]
-  loading: boolean
-  error: string | null
-  refresh: () => Promise<void>
-  theme: ThemeName
-  toggleTheme: () => void
-}
-
-const WorkspaceContext = createContext<WorkspaceValue | null>(null)
-
-export function describeError(error: unknown): string {
-  if (error instanceof ApiError) {
-    if (error.isNetworkError) return error.message
-    return `${error.message}（${error.code}）`
-  }
-  if (error instanceof Error) return error.message
-  return '未知错误'
-}
+import { describeError } from './errors'
+import { WorkspaceContext, type WorkspaceValue } from './workspaceContext'
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<Project[]>([])
@@ -69,10 +42,4 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   )
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>
-}
-
-export function useWorkspace(): WorkspaceValue {
-  const value = useContext(WorkspaceContext)
-  if (!value) throw new Error('useWorkspace 必须在 WorkspaceProvider 内使用')
-  return value
 }

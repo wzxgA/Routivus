@@ -133,8 +133,10 @@ Windows 上没有非特权 chroot 类原语，所以这里保证的是「**客�
 cd frontend
 npm install
 npm run dev        # 开发服务器 http://localhost:5183，/api 与 /healthz 代理到后端
+npm run lint       # ESLint（eslint.config.js，仅覆盖 src/）
 npm run typecheck  # tsc --noEmit
 npm run build      # 产出 frontend/dist
+npm run check      # lint + typecheck + build，提交前的质量门禁
 ```
 
 先启动后端（`python -m routivus.server`），再启动前端。`vite.config.ts` 通过 `ROUTIVUS_SERVER_URL`（默认 `http://127.0.0.1:18765`）指定后端地址；后端若设置了 `ROUTIVUS_SERVER_TOKEN`，前端需在 `frontend/.env` 中配置同名 `VITE_ROUTIVUS_TOKEN`。
@@ -153,7 +155,47 @@ npm run build      # 产出 frontend/dist
 - 会话断线重连会以服务端 `session.snapshot` 重建消息流（持久化消息不丢），但**计划 / 团队任务卡属于瞬时状态，重连后不保证复原**。
 - 配置页当前只读：后端尚未提供 `/api/config`（Provider 列表、SmartRouter 四档、HITL 运行时）与 Skill 列表接口，页面已如实标注待接入项。
 - `/plan`、`/team` 不是服务端 WebSocket 可达模式（默认 Agent 工厂只在会话内构造 ReActAgent），任务卡按事件契约渲染，等待后端接入计划 / 团队执行入口。
+- Memory 页签的条目列表恒为空：会话快照里的 `memory.items` 目前固定是 `[]`，把 `/memory list` 结构化后推送需要后端补接口。
 - 终端通道要求鉴权：Vite 开发端口是 `5183`，需把后端 `ROUTIVUS_ALLOWED_ORIGINS` 设为 `http://localhost:5183`（或配置 `VITE_ROUTIVUS_TOKEN`），否则终端会以 `terminal_auth_required` 拒绝。
+- 未实现「开发环境 mock adapter」：前端全部走真实 REST / WebSocket，没有离线可视化回归模式，视觉回归依赖真实后端。
+
+## 数据目录与迁移
+
+| 路径 | 内容 | 由谁创建 |
+|---|---|---|
+| `~/.routivus/projects.json` | 项目注册表（原子写入） | `ROUTIVUS_PROJECTS_FILE` |
+| `~/.routivus/workspace.sqlite3` | 会话、消息、笔记、事件、幂等 request 表 | `ROUTIVUS_DATABASE_PATH` |
+| `~/.routivus/config.json` | Provider / 模型 / SmartRouter / 主题无关的后端配置 | `/provider`、`/tier` 等命令 |
+| `~/.routivus/adaptive/router.lgb` | SmartRouter ML 精判模型（可选） | `/train` |
+| `~/.routivus/input-history/` | 按项目隔离的输入历史 | 自动 |
+| `<项目>/.routivus/memory.db` | 项目长期记忆 | `/save`、`/memory` |
+| `<项目>/.routivus/audit.log` | 审计 JSONL（工具、审批、终端命令） | 自动 |
+| `<项目>/.routivus/tmp` | 终端子进程的 `TEMP`/`TMP`（让终端临时文件留在项目内） | 终端通道 |
+| `<项目>/Routivus.md`、`Routivus.local.md` | 项目记忆文件，每次任务自动注入 | `/init` 或手动 |
+
+迁移行为：`workspace.sqlite3` 用 `PRAGMA user_version` 版本化，`WorkspaceStore._initialize()` 在打开时按版本增量建表（当前 `VERSION = 3`）。**只支持向上迁移**：若文件版本高于当前代码版本会直接抛错，不做降级。项目注册表带 `version` 字段，版本不匹配同样拒绝读取。删除数据请直接删文件；**删除项目注册关系不会删除项目目录**（`DELETE /api/projects/{id}` 只改元数据）。
+
+## MVP 冻结与验证记录
+
+MVP 版本冻结为 **0.1.0**（`pyproject.toml` 与 `frontend/package.json` 一致，`/healthz` 返回 `version: 0.1.0`）。Phase 7 验证结果：
+
+| 项 | 命令 / 方式 | 结果 |
+|---|---|---|
+| 后端全量测试 | `python -m pytest` | 728 passed, 7 skipped（47s） |
+| 前端质量门禁 | `npm run check` | lint 0 问题、tsc 0 错误、build 成功（63 模块，≈211 kB JS / ≈39 kB CSS） |
+| 路径与归属安全 | 真实 HTTP 调用 | 越界路径 422、不存在路径 422、重复注册 409、跨项目读会话/笔记 404、跨项目改归属 422、未知项目 404 |
+| 笔记范围隔离 | 真实 HTTP 调用 | 全局列表含各项目笔记；项目列表只含本项目笔记；陈旧 `version` 写入 409 |
+| 会话事件契约 | 真实 WebSocket | 快照 `sequence` 单调递增；断线重连后同一条用户消息**不重复**；重复 `request_id` 返回 `duplicate_request` |
+| 终端通道 | 真实 WebSocket（ConPTY） | `terminal.opened.cwd` 绑定项目根、`echo` 正常、`format c: /y` 被 `command_blocked` 拦截 |
+| 前端验收用例 | 无头 Chrome 驱动（§8.3 十条） | 23/25 + 夜间 6/6 全通过（含两级导航、笔记范围、项目切换隔离、搜索清空、快照恢复） |
+
+Phase 7 期间发现并修复的前端缺陷：
+
+1. **终端事件协议不匹配**：终端事件的字段是扁平的（`{type, terminal_id, cwd, data, ...}`），前端却按会话事件的 `data` 信封读取，导致终端输出、错误提示、`terminal.closed` 全部静默丢失。已改为独立的 `TerminalEnvelope` 类型。
+2. **主题按钮文案语义错误**：原型 `ttLabel` 显示**当前**主题，前端显示成了「切换目标」。
+3. **「新建项目」卡未跨两列**：与原型 `grid-column:1 / -1` 不一致。
+
+**未覆盖 / 未验证**：本机未配置 provider，因此**没有跑通一次真实 LLM 的 Agent 轮次**——会话流、工具卡、审批卡的渲染是按事件契约实现并由协议级测试覆盖的，但"真实模型流式回复"需要配置 provider 后人工确认（`/provider add` 或写 `~/.routivus/config.json`）。同理，`/plan`、`/team` 的真实执行链路未验证。
 
 ## 程序化入口
 

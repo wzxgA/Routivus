@@ -19,7 +19,8 @@ import {
   useRoute,
 } from './router'
 import { useProjectWorkspace } from './state/projectWorkspace'
-import { describeError, useWorkspace } from './state/workspace'
+import { describeError } from './state/errors'
+import { useWorkspace } from './state/workspaceContext'
 import type { ConnState } from './ws/sessionSocket'
 
 const CONTEXT_WINDOW = Number(import.meta.env.VITE_ROUTIVUS_CONTEXT_WINDOW ?? 128000) || 128000

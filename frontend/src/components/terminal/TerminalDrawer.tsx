@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { WsEnvelope } from '../../api/types'
+import type { TerminalEnvelope } from '../../api/types'
 import { TerminalSocket, type TerminalState } from '../../ws/terminalSocket'
 
+/* eslint-disable no-control-regex -- 剥离 ANSI 转义序列必须匹配控制字符（ESC \x1b、BEL \x07） */
 const ANSI_PATTERN = [
   // CSI 序列
   /\u001b\[[0-9;?]*[ -/]*[@-~]/g,
@@ -9,7 +10,8 @@ const ANSI_PATTERN = [
   /\u001b\][^\u0007]*(\u0007|\u001b\\)/g,
   // 其他双字符转义
   /\u001b[@-Z\\-_]/g,
-].map((pattern) => pattern)
+]
+/* eslint-enable no-control-regex */
 
 const MAX_BUFFER = 200_000
 
@@ -71,20 +73,18 @@ export function TerminalDrawer({ projectId, open, cwd, onRequestClose }: Termina
         if (detail) setMessage(detail)
         if (next === 'error') setMessage(detail ?? '终端连接失败')
       },
-      onEvent: (event: WsEnvelope) => {
-        const data = (event.data ?? {}) as Record<string, unknown>
+      onEvent: (event: TerminalEnvelope) => {
         switch (event.type) {
           case 'terminal.opened': {
             setMessage(null)
             setState('open')
-            const backend = String(data.backend ?? '')
-            appendOutput(`[terminal] backend=${backend} cwd=${String(data.cwd ?? cwd ?? '')}\n`)
+            appendOutput(`[terminal] backend=${event.backend ?? ''} cwd=${event.cwd ?? cwd ?? ''}\n`)
             return
           }
           case 'terminal.output': {
-            const raw = String(data.data ?? '')
+            const raw = event.data ?? ''
             let decoded = raw
-            if (String(data.encoding ?? 'utf8') === 'base64') {
+            if (event.encoding === 'base64') {
               try {
                 decoded = atob(raw)
               } catch {
@@ -95,20 +95,24 @@ export function TerminalDrawer({ projectId, open, cwd, onRequestClose }: Termina
             return
           }
           case 'terminal.output.dropped': {
-            appendOutput(`\n[terminal] 输出背压丢弃 ${String(data.count ?? '?')} 块\n`)
+            appendOutput(`\n[terminal] 输出背压丢弃 ${event.count ?? '?'} 块\n`)
             return
           }
           case 'terminal.exit': {
-            appendOutput(`\n[terminal] 进程退出 code=${String(data.exit_code ?? '?')}\n`)
+            appendOutput('\n[terminal] 进程已退出\n')
             return
           }
           case 'terminal.closed': {
-            appendOutput(`\n[terminal] 已关闭 (${String(data.reason ?? '')})\n`)
+            const code =
+              event.exit_code === undefined || event.exit_code === null
+                ? ''
+                : ` code=${event.exit_code}`
+            appendOutput(`\n[terminal] 已关闭 (${event.reason ?? ''}${code})\n`)
             setState('closed')
             return
           }
           case 'error': {
-            setMessage(String(event.message ?? event.code ?? '终端错误'))
+            setMessage(event.message ?? event.code ?? '终端错误')
             return
           }
           default:
