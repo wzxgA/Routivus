@@ -1,6 +1,6 @@
 # Routivus
 
-**纯后端** Python Agent 服务：只保留 Agent 核心逻辑与编排能力，**不含任何终端界面**，前端客户端由使用方自行接入。
+**纯后端** Python Agent 服务：只保留 Agent 核心逻辑与编排能力，**Python 包本身不含终端界面**；仓库内另附可选的 Web Console 前端（`frontend/`，Vite + React + TypeScript），也可由使用方自行接入其他客户端。
 
 保留能力：ReAct 直接执行、`/plan` 计划模式、`/team` Multi-Agent 协作，内置文件读写、代码搜索、命令执行与只读联网工具，附带 SmartRouter 智能路由与训练能力（针对不同复杂度任务自动切换四档模型）。
 
@@ -29,7 +29,7 @@ uv sync          # 或 pip install -e .
 python -m routivus.server
 ```
 
-默认监听 `127.0.0.1:18765`，健康检查地址为 `GET /healthz`。已实现项目注册与 CRUD（只修改元数据，不会删除或改写项目目录）、会话与消息持久化、全局/项目笔记的范围隔离与搜索、Agent WebSocket 实时事件流、HITL 审批闭环、项目 cwd 绑定的终端通道。前端 UI 尚未接入，当前以 REST + WebSocket 契约对接。
+默认监听 `127.0.0.1:18765`，健康检查地址为 `GET /healthz`。已实现项目注册与 CRUD（只修改元数据，不会删除或改写项目目录）、会话与消息持久化、全局/项目笔记的范围隔离与搜索、Agent WebSocket 实时事件流、HITL 审批闭环、项目 cwd 绑定的终端通道。前端见下节「Web Console 前端」。
 
 默认只允许注册 Server 启动目录下的项目。需要管理其他工作区时配置：
 
@@ -124,6 +124,36 @@ Windows 上没有非特权 chroot 类原语，所以这里保证的是「**客�
 ### 行为变更：`execute_command` 的 cwd 校验
 
 `guard_tool_call` 此前对 `execute_command` **只**跑 `command_guard`，`path_guard` 里针对 `cwd` 的检查因分派提前返回而不可达。现已修正为两者都执行：Agent 的 `execute_command` 工具若把 `cwd` 指向项目根之外将被拒绝（`path_outside_root`）。这是有意的收紧。
+
+## Web Console 前端
+
+前端位于 `frontend/`（Vite + React 18 + TypeScript，无 UI 框架依赖），实现计划见 `plans/routivus-implementation-plan.md`。
+
+```bash
+cd frontend
+npm install
+npm run dev        # 开发服务器 http://localhost:5183，/api 与 /healthz 代理到后端
+npm run typecheck  # tsc --noEmit
+npm run build      # 产出 frontend/dist
+```
+
+先启动后端（`python -m routivus.server`），再启动前端。`vite.config.ts` 通过 `ROUTIVUS_SERVER_URL`（默认 `http://127.0.0.1:18765`）指定后端地址；后端若设置了 `ROUTIVUS_SERVER_TOKEN`，前端需在 `frontend/.env` 中配置同名 `VITE_ROUTIVUS_TOKEN`。
+
+已接入能力：
+
+- **两级导航**：全局态（首页 / 笔记 / 配置）与项目态（会话 / 笔记）由 hash 路由驱动，刷新后按 URL 恢复项目、会话与视图；项目内无会话时自动创建首个会话。
+- **首页**：项目卡（会话 / 笔记 / 今日调用统计）+ 全部项目活动热力图（52 周 × 7 天，未来日期不渲染）+ 新建项目。
+- **笔记**：全局入口显示全部笔记及项目归属，项目入口只显示当前项目笔记；搜索、新建、编辑、标签、置顶、删除均走服务端；版本冲突返回 409 时提示「用当前内容覆盖」，不静默丢失。
+- **会话视图**：WebSocket 事件流渲染消息、工具卡、计划 / 团队任务卡、审批与提问卡；四页签信息侧栏（Session / Plan / Memory / Safety）；Composer 支持 `Enter` 发送、`↑↓` 历史、运行中停止。
+- **终端抽屉**：`Ctrl+\`` 或顶栏按钮展开，走 `/api/ws/projects/{id}/terminal`，服务端绑定项目 cwd。
+- **主题**：暖白 / 夜间双主题（含夜空动效），偏好存 `localStorage`。
+
+已知限制：
+
+- 会话断线重连会以服务端 `session.snapshot` 重建消息流（持久化消息不丢），但**计划 / 团队任务卡属于瞬时状态，重连后不保证复原**。
+- 配置页当前只读：后端尚未提供 `/api/config`（Provider 列表、SmartRouter 四档、HITL 运行时）与 Skill 列表接口，页面已如实标注待接入项。
+- `/plan`、`/team` 不是服务端 WebSocket 可达模式（默认 Agent 工厂只在会话内构造 ReActAgent），任务卡按事件契约渲染，等待后端接入计划 / 团队执行入口。
+- 终端通道要求鉴权：Vite 开发端口是 `5183`，需把后端 `ROUTIVUS_ALLOWED_ORIGINS` 设为 `http://localhost:5183`（或配置 `VITE_ROUTIVUS_TOKEN`），否则终端会以 `terminal_auth_required` 拒绝。
 
 ## 程序化入口
 

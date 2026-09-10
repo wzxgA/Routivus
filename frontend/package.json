@@ -1,0 +1,24 @@
+{
+  "name": "routivus-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Routivus Web Console — 多项目 / 多会话 / 笔记 Agent 工作台前端",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
