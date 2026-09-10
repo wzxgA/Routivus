@@ -65,8 +65,12 @@ def _resolve_absolute(base: Path, raw: str) -> Path:
 
 
 def path_guard(base: Path, tool_name: str, args: dict) -> GuardResult:
-    """校验路径工具的参数是否位于项目根内。"""
-    if tool_name not in PATH_TOOLS:
+    """校验路径工具的参数是否位于项目根内。
+
+    `execute_command` 没有 `path` 参数，但它的 `cwd` 同样必须落在项目根内 ——
+    这正是 path_guard 参与命令类工具校验的原因。
+    """
+    if tool_name not in PATH_TOOLS and tool_name != "execute_command":
         return GuardResult(ok=True)
 
     targets: list[tuple[str, str]] = []
@@ -98,9 +102,17 @@ def _is_within(base: Path, target: Path) -> bool:
 
 
 def guard_tool_call(base: Path, tool_name: str, args: dict) -> GuardResult:
-    """策略层统一入口。"""
+    """策略层统一入口。
+
+    终端通道复用本函数而非另起一套，保证终端命令与 Agent 的 execute_command
+    走完全相同的校验。注意黑名单只看命令字符串、看不到 shell 的当前目录，
+    因此这里拦不住持久化 shell 里的 `cd ..` —— 见 README 的安全边界说明。
+    """
     if tool_name == "execute_command":
-        return command_guard(str(args.get("command", "")))
+        result = command_guard(str(args.get("command", "")))
+        if not result.ok:
+            return result
+        return path_guard(base, tool_name, args)
     if tool_name in PATH_TOOLS:
         return path_guard(base, tool_name, args)
     return GuardResult(ok=True)

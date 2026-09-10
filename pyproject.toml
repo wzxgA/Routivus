@@ -29,6 +29,11 @@ semantic = [
     "torch>=2.2",
     "safetensors>=0.4",
 ]
+# Web Console 终端的 ConPTY 后端（仅 Windows 有意义）。缺失时终端通道会明确
+# 报错，除非显式把 ROUTIVUS_TERMINAL_BACKEND 设为 oneshot 走受限命令执行器。
+terminal = [
+    "pywinpty>=2.0; sys_platform == 'win32'",
+]
 
 # 桌面客户端前端由 Routivus 客户端另行接入，暂不提供 CLI 脚本入口
 [project.scripts]

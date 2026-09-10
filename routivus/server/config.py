@@ -11,6 +11,27 @@ def _split_paths(raw: str) -> tuple[Path, ...]:
     return tuple(Path(item).expanduser() for item in raw.split(os.pathsep) if item.strip())
 
 
+def _float_env(values: dict[str, str], key: str, default: float, minimum: float) -> float:
+    try:
+        return max(minimum, float(values.get(key, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _int_env(values: dict[str, str], key: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return min(maximum, max(minimum, int(values.get(key, str(default)))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _bool_env(values: dict[str, str], key: str, default: bool) -> bool:
+    raw = values.get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("off", "0", "false")
+
+
 @dataclass(frozen=True)
 class ServerConfig:
     """Resolved server settings.
@@ -30,6 +51,22 @@ class ServerConfig:
     ws_auth_token: str = ""
     ws_heartbeat_interval: float = 30.0
     ws_max_message_bytes: int = 1_048_576
+    approval_timeout: float = 300.0
+    terminal_enabled: bool = True
+    terminal_backend: str = "auto"
+    terminal_shell: str = ""
+    terminal_max_sessions: int = 4
+    terminal_max_per_project: int = 2
+    terminal_idle_timeout: float = 900.0
+    terminal_command_timeout: float = 120.0
+    terminal_max_output_bytes: int = 262_144
+    terminal_max_input_bytes: int = 65_536
+    terminal_chunk_bytes: int = 8_192
+    terminal_flush_interval: float = 0.033
+    terminal_queue_max: int = 256
+    terminal_kill_grace: float = 3.0
+    terminal_cols: int = 120
+    terminal_rows: int = 30
 
     @property
     def db_path(self) -> Path:
@@ -77,6 +114,9 @@ class ServerConfig:
             port = 18_765
         if not 1 <= port <= 65_535:
             port = 18_765
+        terminal_backend = values.get("ROUTIVUS_TERMINAL_BACKEND", "auto").strip().lower()
+        if terminal_backend not in ("auto", "conpty", "oneshot"):
+            terminal_backend = "auto"
         return cls(
             projects_file=projects_file,
             database_path=database_path,
@@ -88,4 +128,21 @@ class ServerConfig:
             ws_auth_token=ws_auth_token,
             ws_heartbeat_interval=ws_heartbeat_interval,
             ws_max_message_bytes=ws_max_message_bytes,
+            approval_timeout=_float_env(values, "ROUTIVUS_APPROVAL_TIMEOUT", 300.0, 5.0),
+            terminal_enabled=_bool_env(values, "ROUTIVUS_TERMINAL_ENABLED", True),
+            terminal_backend=terminal_backend,
+            terminal_shell=values.get("ROUTIVUS_TERMINAL_SHELL", "").strip(),
+            terminal_max_sessions=_int_env(values, "ROUTIVUS_TERMINAL_MAX_SESSIONS", 4, 1, 64),
+            terminal_max_per_project=_int_env(values, "ROUTIVUS_TERMINAL_MAX_PER_PROJECT", 2, 1, 16),
+            terminal_idle_timeout=_float_env(values, "ROUTIVUS_TERMINAL_IDLE_TIMEOUT", 900.0, 30.0),
+            # 600s 上限对齐 tool/builtin.py 里 execute_command 的超时上限
+            terminal_command_timeout=min(600.0, _float_env(values, "ROUTIVUS_TERMINAL_COMMAND_TIMEOUT", 120.0, 1.0)),
+            terminal_max_output_bytes=_int_env(values, "ROUTIVUS_TERMINAL_MAX_OUTPUT_BYTES", 262_144, 4_096, 67_108_864),
+            terminal_max_input_bytes=_int_env(values, "ROUTIVUS_TERMINAL_MAX_INPUT_BYTES", 65_536, 1_024, ws_max_message_bytes),
+            terminal_chunk_bytes=_int_env(values, "ROUTIVUS_TERMINAL_CHUNK_BYTES", 8_192, 512, 65_536),
+            terminal_flush_interval=_float_env(values, "ROUTIVUS_TERMINAL_FLUSH_INTERVAL", 0.033, 0.01),
+            terminal_queue_max=_int_env(values, "ROUTIVUS_TERMINAL_QUEUE_MAX", 256, 4, 4_096),
+            terminal_kill_grace=_float_env(values, "ROUTIVUS_TERMINAL_KILL_GRACE", 3.0, 0.5),
+            terminal_cols=_int_env(values, "ROUTIVUS_TERMINAL_COLS", 120, 20, 400),
+            terminal_rows=_int_env(values, "ROUTIVUS_TERMINAL_ROWS", 30, 5, 200),
         )

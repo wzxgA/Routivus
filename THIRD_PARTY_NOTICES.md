@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-本项目通过核心依赖与 optional extras（`pip install ".[semantic]"`）引入以下第三方依赖。
+本项目通过核心依赖与 optional extras（`pip install ".[semantic]"`、`pip install ".[terminal]"`）引入以下第三方依赖。
 ML 精判与语义推理所依赖的 numpy / scikit-learn / LightGBM / joblib / onnxruntime /
 tokenizers 已并入项目核心依赖，`pip install -e .` 即随装；torch/transformers/optimum 等
 重依赖仅在离线导出脚本（`tools/export_bge_onnx.py`）中按需安装，不进入交互主进程。
@@ -20,6 +20,7 @@ torch/transformers/optimum 这类重依赖只在离线导出脚本使用。
 | transformers          | >=4.40 | Apache-2.0   | bge 模型加载（离线）                |
 | torch                 | >=2.2  | BSD-3-Clause | 导出底座（离线）                    |
 | safetensors           | >=0.4  | Apache-2.0   | 权重安全读取（离线）                  |
+| pywinpty              | >=2.0  | MIT          | Windows ConPTY 伪终端后端（Web 终端） |
 
 模型说明：`BAAI/bge-small-zh-v1.5`（bge-zh，Apache-2.0，BAAI 出品）共 33M 参数，
 int8 量化产物约 30–40MB。许可证与论文见：
@@ -46,4 +47,6 @@ int8 量化产物约 30–40MB。许可证与论文见：
 - torch: <https://github.com/pytorch/pytorch/blob/main/LICENSE>
 
 - safetensors: <https://github.com/huggingface/safetensors/blob/main/LICENSE>
+
+- pywinpty: <https://github.com/andfoy/pywinpty/blob/main/LICENSE.txt>
 

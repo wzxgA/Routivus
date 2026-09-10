@@ -9,6 +9,7 @@ import logging
 import sqlite3
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -25,7 +26,19 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from routivus import __version__
+from routivus.safety.audit import AuditLogger
+from routivus.safety.hitl import ApprovalDecision
+from routivus.server.approval import ApprovalBridge
 from routivus.server.config import ServerConfig
+from routivus.server.terminal import (
+    TerminalSession,
+    TerminalSpec,
+    TerminalUnavailableError,
+    build_env,
+    default_shell,
+    new_terminal_id,
+    select_backend,
+)
 from routivus.server.storage import EventRecord, MessageRecord, NoteConflictError, NoteRecord, SessionRecord, WorkspaceStore
 from routivus.server.projects import (
     ProjectAlreadyExistsError,
@@ -124,6 +137,13 @@ def _message_response(record: MessageRecord) -> MessageResponse:
     return MessageResponse.model_validate(record.__dict__)
 
 
+def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return min(maximum, max(minimum, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 def _preview(text: str, limit: int = 240) -> str:
     value = " ".join(text.split())
     return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
@@ -144,6 +164,27 @@ def _note_response(record: NoteRecord, registry: ProjectRegistry, *, detail: boo
         preview=_preview(record.body_markdown), tags=list(record.tags), pinned=record.pinned,
         created_at=record.created_at, updated_at=record.updated_at, version=record.version,
     )
+
+
+def _approval_decision(message_type: str, payload: dict[str, Any]) -> ApprovalDecision:
+    """把客户端的审批回执映射成 ApprovalDecision。
+
+    reason 字符串沿用 TUI 已有的约定（`routivus/tui/controller.py:1014-1031`）。
+    注意「本会话放行」(scope=session) 不在这里处理：它与「改参执行」可以同时
+    出现，所以放行是 app 层的独立副作用（`policy.allow_all()`），不是决策本身。
+    """
+    if message_type == "reject":
+        return ApprovalDecision(allow=False, reason="user_rejected")
+    args = payload.get("args")
+    if isinstance(args, dict) and args:
+        return ApprovalDecision(allow=True, args=args, reason="user_modified")
+    if _wants_session_scope(payload):
+        return ApprovalDecision(allow=True, reason="user_approved_allow_all")
+    return ApprovalDecision(allow=True, reason="user_approved")
+
+
+def _wants_session_scope(payload: dict[str, Any]) -> bool:
+    return str(payload.get("scope", "")).strip().lower() == "session"
 
 
 def _event_payload(event: EventRecord) -> dict[str, Any]:
@@ -214,12 +255,28 @@ def _record_payload(record: Any) -> dict[str, Any]:
     return jsonable_encoder(record.model_dump(mode="json") if hasattr(record, "model_dump") else record)
 
 
+@asynccontextmanager
+async def _terminal_lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
+    """服务退出时收割所有终端。
+
+    没有这一步，Ctrl-C 停服务会留下孤儿的 cmd.exe 及其子进程 —— 正是 Phase 5
+    完成标准后半句要求覆盖的场景。
+    """
+    yield
+    for terminal in list(getattr(app.state, "terminals", {}).values()):
+        try:
+            await terminal.close("server_shutdown")
+        except Exception:  # pragma: no cover - 退出路径尽力而为
+            logger.debug("terminal shutdown failed terminal_id=%s", terminal.spec.terminal_id, exc_info=True)
+
+
 def create_app(
     *,
     registry: ProjectRegistry | None = None,
     config: ServerConfig | None = None,
     store: WorkspaceStore | None = None,
     agent_factory: Callable[..., Any] | None = None,
+    terminal_factory: Callable[[TerminalSpec], Any] | None = None,
 ) -> FastAPI:
     """Create an isolated application instance for production or tests."""
 
@@ -248,7 +305,7 @@ def create_app(
             fallback = Path(tempfile.gettempdir()) / "routivus-workspace.sqlite3"
             logger.warning("database path is not writable; using %s", fallback)
             workspace_store = WorkspaceStore(fallback)
-    app = FastAPI(title="Routivus Web Console", version=__version__)
+    app = FastAPI(title="Routivus Web Console", version=__version__, lifespan=_terminal_lifespan)
     app.state.project_registry = project_registry
     app.state.server_config = resolved_config
     app.state.workspace_store = workspace_store
@@ -256,6 +313,15 @@ def create_app(
     app.state.ws_connections = {}
     app.state.session_agents = {}
     app.state.running_tasks = {}
+    app.state.session_approvals = {}
+    app.state.terminals = {}
+    app.state.terminal_factory = terminal_factory or (
+        lambda spec: select_backend(
+            spec,
+            resolved_config.terminal_backend,
+            command_timeout=resolved_config.terminal_command_timeout,
+        )
+    )
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(
         TrustedHostMiddleware,
@@ -440,6 +506,10 @@ def create_app(
     @router.post("/sessions/{session_id}/cancel")
     async def cancel_session(session_id: str) -> dict[str, Any]:
         session = require_session(session_id)
+        bridge = session_approvals.get(session_id)
+        if bridge is not None:
+            # 先把挂起的审批按拒绝落地，否则那个 Future 永远悬着。
+            bridge.cancel_pending()
         task = running_tasks.get(session_id)
         if task is not None and not task.done():
             task.cancel()
@@ -557,6 +627,44 @@ def create_app(
     running_tasks: dict[str, Any] = app.state.running_tasks
     session_agents: dict[str, Any] = app.state.session_agents
     connections: dict[str, list[WebSocket]] = app.state.ws_connections
+    session_approvals: dict[str, ApprovalBridge] = app.state.session_approvals
+    terminals: dict[str, TerminalSession] = app.state.terminals
+
+    def approval_bridge(session_id: str) -> ApprovalBridge:
+        """会话级审批桥接。跨轮复用，使「本会话放行」不会在一轮结束后失效。"""
+        existing = session_approvals.get(session_id)
+        if existing is not None:
+            return existing
+
+        async def emit(event_type: str, data: dict[str, Any]) -> None:
+            current = workspace_store.get_session(session_id)
+            if current is None:
+                return
+            # websocket=None → 广播给该会话的所有连接，多标签页都能看到审批卡。
+            await send_event(None, event_type, current, data)
+
+        async def set_waiting(waiting: bool) -> None:
+            current = workspace_store.get_session(session_id)
+            if current is None:
+                return
+            if waiting:
+                status = "waiting_approval"
+            elif current.status == "waiting_approval":
+                # 只在仍处于等待态时恢复 running；会话已被取消/结束就不动它。
+                status = "running"
+            else:
+                return
+            updated = workspace_store.update_session(session_id, status=status)
+            if updated is not None:
+                await send_event(None, "session.status", updated, {"status": status})
+
+        bridge = ApprovalBridge(
+            emit=emit,
+            set_waiting=set_waiting,
+            timeout=resolved_config.approval_timeout,
+        )
+        session_approvals[session_id] = bridge
+        return bridge
 
     def attach_connection(session_id: str, websocket: WebSocket) -> None:
         connections.setdefault(session_id, []).append(websocket)
@@ -626,6 +734,14 @@ def create_app(
                 if inspect.isawaitable(agent):
                     agent = await agent
                 session_agents[session.id] = agent
+            # agent 在会话内跨轮复用，所以每轮都重挂一次交互回调。
+            # getattr 是为了兼容测试/嵌入方注入的简易 agent。
+            bridge = approval_bridge(session.id)
+            policy = getattr(agent, "approval_policy", None)
+            if policy is not None:
+                policy.requester = bridge.request
+            if hasattr(agent, "ask_requester"):
+                agent.ask_requester = bridge.ask
             stream = agent.run(content)
             if inspect.isawaitable(stream):
                 stream = await stream
@@ -721,6 +837,9 @@ def create_app(
             if updated:
                 await send_event(websocket, "session.status", updated, {"status": updated.status, "request_id": request_id})
         except asyncio.CancelledError:
+            bridge = session_approvals.get(session.id)
+            if bridge is not None:
+                bridge.cancel_pending()
             updated = workspace_store.update_session(session.id, status="cancelled")
             if updated:
                 try:
@@ -842,6 +961,9 @@ def create_app(
                     if not request_is_new(session.id, request_id):
                         await send_event(websocket, "error", session, {"code": "duplicate_request", "request_id": request_id})
                         continue
+                    bridge = session_approvals.get(session.id)
+                    if bridge is not None:
+                        bridge.cancel_pending()
                     task = running_tasks.get(session.id)
                     if task and not task.done():
                         task.cancel()
@@ -851,14 +973,40 @@ def create_app(
                             session = updated
                             await send_event(websocket, "session.status", session, {"status": "cancelled", "request_id": request_id})
                     continue
-                if message_type in {"approve", "reject"}:
+                if message_type in {"approve", "reject", "ask_answer", "ask_cancel"}:
                     if not request_is_new(session.id, request_id):
                         await send_event(websocket, "error", session, {"code": "duplicate_request", "request_id": request_id})
                         continue
-                    await send_event(websocket, "approval.resolved", session, {
-                        "request_id": request_id,
-                        "decision": payload.get("decision", "approve" if message_type == "approve" else "reject"),
-                    })
+                    bridge = session_approvals.get(session.id)
+                    if bridge is None or not bridge.has_pending:
+                        await send_event(websocket, "error", session, {"code": "no_pending_approval", "message": "当前没有等待中的审批或提问", "request_id": request_id})
+                        continue
+                    approval_id = str(payload.get("approval_id", "")).strip()
+                    if approval_id and approval_id != bridge.pending_id:
+                        await send_event(websocket, "error", session, {"code": "approval_mismatch", "message": "approval_id 与当前待决项不符", "request_id": request_id})
+                        continue
+                    if message_type in {"ask_answer", "ask_cancel"}:
+                        if message_type == "ask_cancel":
+                            resolved = bridge.resolve_ask(approval_id, None)
+                        else:
+                            answers = payload.get("answers")
+                            if not isinstance(answers, dict):
+                                await send_event(websocket, "error", session, {"code": "invalid_answers", "message": "answers 必须是对象", "request_id": request_id})
+                                continue
+                            resolved = bridge.resolve_ask(
+                                approval_id, {str(key): str(value) for key, value in answers.items()}
+                            )
+                    else:
+                        decision = _approval_decision(message_type, payload)
+                        # 「本会话放行」独立于决策本身：客户端可以同时改参并放行。
+                        if message_type == "approve" and _wants_session_scope(payload):
+                            agent = session_agents.get(session.id)
+                            policy = getattr(agent, "approval_policy", None)
+                            if policy is not None:
+                                policy.allow_all()
+                        resolved = bridge.resolve_approval(approval_id, decision)
+                    if not resolved:
+                        await send_event(websocket, "error", session, {"code": "approval_not_accepted", "message": "该审批已不再等待应答", "request_id": request_id})
                     continue
                 if message_type != "user_message":
                     await send_event(websocket, "error", session, {"code": "invalid_message_type", "message": "不支持的消息类型", "request_id": request_id})
@@ -886,6 +1034,241 @@ def create_app(
             task = running_tasks.get(session_id)
             if task is not None and task.done():
                 running_tasks.pop(session_id, None)
+
+    async def reject_socket(websocket: WebSocket, code: str, message: str, close_code: int) -> None:
+        """接受连接后立刻用一条 error 说明原因并关闭。
+
+        先 accept 再 send 是为了让客户端拿得到可读的错误码，而不是一个裸的
+        握手失败。
+        """
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "code": code, "message": message})
+        await websocket.close(code=close_code)
+
+    @app.websocket("/api/ws/projects/{project_id}/terminal")
+    async def project_terminal(websocket: WebSocket, project_id: str) -> None:
+        """项目 cwd 绑定的终端通道。
+
+        独立于会话 socket：终端生命周期与 Agent 轮次正交（cancel 不该杀掉
+        终端），且终端输出**不落库** —— 走会话 socket 的 append_event 会以每秒
+        几十条的频率灌爆 SQLite 并污染 session.snapshot 的序号与重放。
+        """
+        if not websocket_authorized(websocket):
+            await reject_socket(websocket, "not_authenticated", "WebSocket 鉴权失败", 4401)
+            return
+        if not websocket_origin_allowed(websocket):
+            await reject_socket(websocket, "origin_not_allowed", "WebSocket 来源不被允许", 4403)
+            return
+        if not resolved_config.terminal_enabled:
+            await reject_socket(websocket, "terminal_disabled", "终端通道已关闭", 4403)
+            return
+        if not resolved_config.ws_auth_token and not resolved_config.allowed_origins:
+            # 默认情况下 Origin 校验是关的（allowed_origins 为空即一律放行），
+            # 而浏览器发 WebSocket 不受 CORS 约束 —— 加了终端就等于给任意网页
+            # 一个 shell。所以这里要求至少配上 token 或 Origin 白名单之一。
+            logger.warning(
+                "终端通道拒绝了未鉴权的连接：请配置 ROUTIVUS_SERVER_TOKEN "
+                "或 ROUTIVUS_ALLOWED_ORIGINS 后再启用终端"
+            )
+            await reject_socket(
+                websocket,
+                "terminal_auth_required",
+                "终端通道要求配置 ROUTIVUS_SERVER_TOKEN 或 ROUTIVUS_ALLOWED_ORIGINS",
+                4403,
+            )
+            return
+        try:
+            project = require_project(project_id)
+        except (ApiError, ProjectRegistryError):
+            await reject_socket(websocket, "project_not_found", "项目不存在", 4404)
+            return
+
+        root = Path(project.root_path).resolve()
+        await websocket.accept()
+        session: TerminalSession | None = None
+        seen_requests: set[str] = set()
+        heartbeat_misses = 0
+
+        def is_new_request(request_id: str) -> bool:
+            if not request_id:
+                return True
+            if request_id in seen_requests:
+                return False
+            if len(seen_requests) > 1000:
+                seen_requests.clear()
+            seen_requests.add(request_id)
+            return True
+
+        try:
+            while True:
+                if (
+                    session is not None
+                    and time.monotonic() - session.last_activity > resolved_config.terminal_idle_timeout
+                ):
+                    await session.close("idle_timeout")
+                    break
+                try:
+                    raw = await asyncio.wait_for(
+                        websocket.receive_text(), timeout=resolved_config.ws_heartbeat_interval
+                    )
+                except asyncio.TimeoutError:
+                    heartbeat_misses += 1
+                    if heartbeat_misses >= 2:
+                        if session is not None:
+                            await session.close("idle_timeout")
+                        else:
+                            await websocket.close(code=4408)
+                        break
+                    await websocket.send_json({"type": "ping", "occurred_at": datetime.now().isoformat()})
+                    continue
+                except WebSocketDisconnect:
+                    break
+                heartbeat_misses = 0
+                if len(raw.encode("utf-8")) > resolved_config.ws_max_message_bytes:
+                    await websocket.send_json({"type": "error", "code": "message_too_large", "message": "消息超过大小限制"})
+                    continue
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    await websocket.send_json({"type": "error", "code": "invalid_message", "message": "消息必须是有效 JSON"})
+                    continue
+                if not isinstance(payload, dict):
+                    await websocket.send_json({"type": "error", "code": "invalid_message", "message": "消息必须是 JSON 对象"})
+                    continue
+                message_type = payload.get("type")
+                request_id = str(payload.get("request_id", "")).strip()
+                if message_type == "ping":
+                    await websocket.send_json({"type": "pong", "request_id": request_id})
+                    continue
+                if message_type == "pong":
+                    continue
+
+                if message_type == "terminal.open":
+                    if session is not None:
+                        await websocket.send_json({"type": "error", "code": "terminal_already_open", "message": "该连接已有终端", "request_id": request_id})
+                        continue
+                    if not is_new_request(request_id):
+                        await websocket.send_json({"type": "error", "code": "duplicate_request", "request_id": request_id})
+                        continue
+                    total = len(terminals)
+                    per_project = sum(1 for item in terminals.values() if item.spec.project_id == project_id)
+                    if (
+                        total >= resolved_config.terminal_max_sessions
+                        or per_project >= resolved_config.terminal_max_per_project
+                    ):
+                        await websocket.send_json({"type": "error", "code": "terminal_limit_reached", "message": "终端连接数已达上限"})
+                        await websocket.close(code=4429)
+                        break
+                    terminal_id = new_terminal_id()
+                    cols = _clamp_int(payload.get("cols"), resolved_config.terminal_cols, 20, 400)
+                    rows = _clamp_int(payload.get("rows"), resolved_config.terminal_rows, 5, 200)
+                    # cwd 只来自服务端解析过的项目根；请求体里的任何路径字段
+                    # 都不参与构造 spec（见 TerminalSpec）。
+                    spec = TerminalSpec(
+                        terminal_id=terminal_id,
+                        project_id=project.id,
+                        cwd=root,
+                        shell=default_shell(resolved_config.terminal_shell),
+                        cols=cols,
+                        rows=rows,
+                        env=build_env(root),
+                    )
+                    try:
+                        backend = app.state.terminal_factory(spec)
+                    except TerminalUnavailableError as exc:
+                        await websocket.send_json({"type": "error", "code": "terminal_unavailable", "message": str(exc)})
+                        await websocket.close(code=4500)
+                        break
+
+                    async def send_terminal(payload: dict[str, Any]) -> None:
+                        await websocket.send_json(payload)
+
+                    terminal = TerminalSession(
+                        spec=spec,
+                        backend=backend,
+                        send=send_terminal,
+                        audit=AuditLogger(root / ".routivus" / "audit.log", session_id=terminal_id),
+                        chunk_bytes=resolved_config.terminal_chunk_bytes,
+                        flush_interval=resolved_config.terminal_flush_interval,
+                        queue_max=resolved_config.terminal_queue_max,
+                        max_output_bytes=resolved_config.terminal_max_output_bytes,
+                        kill_grace=resolved_config.terminal_kill_grace,
+                        on_closed=lambda tid: terminals.pop(tid, None),
+                    )
+                    # 先登记再 await start()，中间没有挂起点 → 并发 open 不会双双越过上限。
+                    terminals[terminal_id] = terminal
+                    try:
+                        await terminal.start()
+                    except Exception:
+                        terminals.pop(terminal_id, None)
+                        logger.exception("terminal start failed project_id=%s", project_id)
+                        await websocket.send_json({"type": "error", "code": "terminal_start_failed", "message": "终端启动失败"})
+                        await websocket.close(code=4500)
+                        break
+                    session = terminal
+                    await websocket.send_json(
+                        {
+                            "type": "terminal.opened",
+                            "terminal_id": terminal_id,
+                            "cwd": str(root),
+                            "shell": spec.shell,
+                            "backend": backend.name,
+                            "cols": cols,
+                            "rows": rows,
+                            "request_id": request_id,
+                        }
+                    )
+                    continue
+
+                if session is None:
+                    await websocket.send_json({"type": "error", "code": "terminal_not_opened", "message": "请先发送 terminal.open", "request_id": request_id})
+                    continue
+
+                if message_type == "terminal.input":
+                    if not is_new_request(request_id):
+                        await websocket.send_json({"type": "error", "code": "duplicate_request", "terminal_id": session.spec.terminal_id, "request_id": request_id})
+                        continue
+                    data = payload.get("data")
+                    if not isinstance(data, str):
+                        await websocket.send_json({"type": "error", "code": "invalid_message", "message": "data 必须是字符串", "terminal_id": session.spec.terminal_id, "request_id": request_id})
+                        continue
+                    if len(data.encode("utf-8")) > resolved_config.terminal_max_input_bytes:
+                        await websocket.send_json({"type": "error", "code": "input_too_large", "message": "输入超过大小限制", "terminal_id": session.spec.terminal_id, "request_id": request_id})
+                        continue
+                    forwarded, reason = await session.write(data)
+                    if not forwarded:
+                        if reason != "terminal_closed":
+                            await websocket.send_json({"type": "error", "code": reason, "message": "命令被策略层拒绝", "terminal_id": session.spec.terminal_id, "request_id": request_id})
+                        continue
+                    await websocket.send_json({"type": "terminal.input.ack", "terminal_id": session.spec.terminal_id, "request_id": request_id})
+                    continue
+
+                if message_type == "terminal.resize":
+                    cols, rows = await session.resize(
+                        _clamp_int(payload.get("cols"), resolved_config.terminal_cols, 20, 400),
+                        _clamp_int(payload.get("rows"), resolved_config.terminal_rows, 5, 200),
+                    )
+                    await websocket.send_json({"type": "terminal.resized", "terminal_id": session.spec.terminal_id, "cols": cols, "rows": rows})
+                    continue
+
+                if message_type == "terminal.clear":
+                    # ConPTY 下清不掉远端屏幕缓冲；这是纯客户端操作，服务端只回
+                    # ack 做协议对称 —— 绝不注入 cls 命令（那是通过协议字段做命令注入）。
+                    await websocket.send_json({"type": "terminal.cleared", "terminal_id": session.spec.terminal_id})
+                    continue
+
+                if message_type == "terminal.close":
+                    if not is_new_request(request_id):
+                        await websocket.send_json({"type": "error", "code": "duplicate_request", "terminal_id": session.spec.terminal_id, "request_id": request_id})
+                        continue
+                    await session.close("client_closed")
+                    session = None
+                    continue
+
+                await websocket.send_json({"type": "error", "code": "invalid_message_type", "message": "不支持的终端消息类型", "request_id": request_id})
+        finally:
+            if session is not None:
+                await session.close("client_closed")
 
     app.include_router(router)
     return app

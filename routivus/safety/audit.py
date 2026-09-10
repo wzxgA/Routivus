@@ -15,8 +15,10 @@ from uuid import uuid4
 
 _SENSITIVE_KEY_RE = re.compile(r"^(api_key|apikey|token|authorization|password|secret|private_key)$", re.I)
 _BEARER_RE = re.compile(r"\b(Bearer\s+)[A-Za-z0-9._~+/=-]+", re.I)
+# 注意 `token` 是裸词分支：终端通道会把整条命令行写入审计，`--token=xxx` 这类
+# 常见写法必须被覆盖（`access_token` 分支匹配不到它）。
 _SECRET_ASSIGN_RE = re.compile(
-    r"\b(api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret)"
+    r"\b(api[_-]?key|access[_-]?token|token|auth(?:orization)?|password|secret)"
     r"(\s*[:=]\s*)(?!Bearer\b)([^\s,;]+)",
     re.I,
 )
@@ -94,3 +96,34 @@ class AuditLogger:
 
     def blocked(self, reason: str, **detail: Any) -> None:
         self.record("blocked", reason=reason, **detail)
+
+    def terminal_command(
+        self,
+        command: str,
+        *,
+        cwd: str,
+        ok: bool,
+        duration_ms: int = 0,
+        exit_code: int | None = None,
+        output_chars: int = 0,
+        terminal_id: str = "",
+        reason: str = "",
+    ) -> None:
+        """记录一次终端通道输入。
+
+        `action` 取 `terminal_command` 而非 `tool_call`，与 Agent 的
+        `execute_command` 工具明确区分来源。命令串过 redact_text 脱敏；
+        命令输出不入审计（体积大且易含密钥），只记长度与退出码。
+        """
+        self.record(
+            "terminal_command",
+            origin="terminal",
+            command=redact_text(command),
+            cwd=cwd,
+            ok=ok,
+            duration_ms=duration_ms,
+            exit_code=exit_code,
+            output_chars=output_chars,
+            terminal_id=terminal_id,
+            reason=reason,
+        )

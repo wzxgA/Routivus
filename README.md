@@ -8,7 +8,7 @@
 
 - **纯后端**：可 `import routivus`，通过 `routivus.service` 程序化入口驱动执行
 - **无界面**：不含 Textual/TUI、inline REPL、终端安装脚本
-- **Web Console 服务层**：提供项目、会话、消息、笔记 REST API 和 Agent WebSocket 会话流
+- **Web Console 服务层**：提供项目、会话、消息、笔记 REST API、Agent WebSocket 会话流、HITL 审批闭环和项目 cwd 绑定的终端通道
 
 ## 安装
 
@@ -29,7 +29,7 @@ uv sync          # 或 pip install -e .
 python -m routivus.server
 ```
 
-默认监听 `127.0.0.1:18765`，健康检查地址为 `GET /healthz`。当前阶段提供项目注册表和项目 CRUD；注册、更新、删除只修改项目元数据，不会删除或改写项目目录。
+默认监听 `127.0.0.1:18765`，健康检查地址为 `GET /healthz`。已实现项目注册与 CRUD（只修改元数据，不会删除或改写项目目录）、会话与消息持久化、全局/项目笔记的范围隔离与搜索、Agent WebSocket 实时事件流、HITL 审批闭环、项目 cwd 绑定的终端通道。前端 UI 尚未接入，当前以 REST + WebSocket 契约对接。
 
 默认只允许注册 Server 启动目录下的项目。需要管理其他工作区时配置：
 
@@ -44,9 +44,86 @@ ROUTIVUS_ALLOWED_ORIGINS=http://localhost:5173
 ROUTIVUS_SERVER_TOKEN=
 ROUTIVUS_WS_HEARTBEAT_INTERVAL=30
 ROUTIVUS_WS_MAX_MESSAGE_BYTES=1048576
+ROUTIVUS_APPROVAL_TIMEOUT=300
 ```
 
 项目接口：`GET/POST /api/projects`、`GET/PATCH/DELETE /api/projects/{project_id}`。会话、消息和笔记分别通过 `/api/projects/{project_id}/sessions`、`/api/sessions/{session_id}/messages`、`/api/notes` 访问；`/api/notes?scope=global` 返回工作区全部笔记，而项目笔记入口只返回当前项目笔记。实时会话地址为 `/api/ws/projects/{project_id}/sessions/{session_id}`，支持 `request_id` 幂等、事件序号、断线后的 SQLite 事件恢复和心跳；配置 `ROUTIVUS_SERVER_TOKEN` 后需要 Bearer Token。错误统一返回 `error.code`、`error.message`、`error.request_id`，每个响应也带 `X-Request-ID`。
+
+### HITL 审批闭环
+
+需要审批的工具（默认 `write_file` 为 `confirm`、`execute_command` 为 `always`）在服务端不再自动拒绝，而是挂起等待客户端决策。会话状态在此期间变为 `waiting_approval`，结束后恢复 `running`。
+
+服务端事件：
+
+```json
+{"type":"approval.requested","data":{"kind":"approval","approval_id":"ap-1a2b3c4d","tool_name":"write_file","level":"confirm","arguments":{"path":"a.txt"},"timeout":300}}
+{"type":"approval.resolved","data":{"kind":"approval","approval_id":"ap-1a2b3c4d","tool_name":"write_file","decision":"approve","reason":"user_approved","modified":false}}
+```
+
+客户端回执（`request_id` 用于幂等，`approval_id` 必须与当前待决项一致）：
+
+```json
+{"type":"approve","request_id":"req-2","approval_id":"ap-1a2b3c4d"}
+{"type":"reject","request_id":"req-3","approval_id":"ap-1a2b3c4d"}
+{"type":"approve","request_id":"req-4","approval_id":"ap-1a2b3c4d","args":{"path":"b.txt"}}
+{"type":"approve","request_id":"req-5","approval_id":"ap-1a2b3c4d","scope":"session"}
+```
+
+语义分别是：批准一次、拒绝、**改参后执行**（`args` 整体覆盖原参数）、**本会话放行**（`scope="session"`，等价于 `HITLPolicy.allow_all()`，此后同类工具不再请求审批）。两者可以同时给出。`ask_user` 走同一通道，事件里 `kind` 为 `ask`、载荷在 `ask` 字段，客户端用 `{"type":"ask_answer","approval_id":...,"answers":{"字段":"值"}}` 应答，`{"type":"ask_cancel"}` 表示跳过。
+
+fail-closed 规则：`ROUTIVUS_APPROVAL_TIMEOUT`（默认 300 秒）内无人应答 → 按拒绝处理（`reason=approval_timeout`）；同一会话存在待决项时新的审批请求直接拒绝（`auto_deny_busy`）；取消会话会解开挂起的审批。
+
+**注意**：`allow_all()` 只让策略层放行，**不能**绕过 `CommandGuard` / `PathGuard` —— 黑名单命令与越界路径始终拒绝。
+
+### 终端通道
+
+地址为 `/api/ws/projects/{project_id}/terminal`，与会话 socket 相互独立（终端生命周期与 Agent 轮次无关，且终端输出不会写库）。需要 Windows 上的 ConPTY 后端，装可选依赖：
+
+```bash
+pip install "routivus[terminal]"     # 或 uv sync --extra terminal
+```
+
+```bash
+ROUTIVUS_TERMINAL_ENABLED=on
+ROUTIVUS_TERMINAL_BACKEND=auto      # auto | conpty | oneshot
+ROUTIVUS_TERMINAL_SHELL=            # 空则用 %COMSPEC%，再退回 cmd.exe
+ROUTIVUS_TERMINAL_MAX_SESSIONS=4
+ROUTIVUS_TERMINAL_MAX_PER_PROJECT=2
+ROUTIVUS_TERMINAL_IDLE_TIMEOUT=900
+ROUTIVUS_TERMINAL_COMMAND_TIMEOUT=120
+ROUTIVUS_TERMINAL_MAX_INPUT_BYTES=65536
+ROUTIVUS_TERMINAL_MAX_OUTPUT_BYTES=262144
+ROUTIVUS_TERMINAL_CHUNK_BYTES=8192
+ROUTIVUS_TERMINAL_FLUSH_INTERVAL=0.033
+ROUTIVUS_TERMINAL_QUEUE_MAX=256
+ROUTIVUS_TERMINAL_KILL_GRACE=3
+ROUTIVUS_TERMINAL_COLS=120
+ROUTIVUS_TERMINAL_ROWS=30
+```
+
+客户端消息：`terminal.open`（须为第一条，可带 `cols`/`rows`）、`terminal.input`（`data`）、`terminal.resize`、`terminal.clear`（纯客户端操作，服务端只回 ack）、`terminal.close`，以及 `ping`/`pong`。
+
+服务端事件：`terminal.opened`（含 `cwd`/`shell`/`backend`）、`terminal.output`（`seq` 递增供丢块检测，`encoding` 为 `utf8` 或 `base64`）、`terminal.input.ack`、`terminal.resized`、`terminal.cleared`、`terminal.output.dropped`（背压丢块计数）、`terminal.exit`、`terminal.closed`（`reason` 为 `client_closed` / `idle_timeout` / `limit` / `server_shutdown`）。
+
+`ROUTIVUS_TERMINAL_BACKEND=auto` 在缺 pywinpty 时会**明确报错**（`terminal_unavailable`）而不是静默降级 —— 静默把终端换成命令框会让 `cd`、环境变量、venv 激活悄悄失效。确实想要无状态的受限命令执行器时显式设 `oneshot`。
+
+#### 安全边界（务必阅读）
+
+**终端通道强制要求鉴权**：必须配置 `ROUTIVUS_SERVER_TOKEN` 或 `ROUTIVUS_ALLOWED_ORIGINS` 之一，否则端点直接以 `terminal_auth_required` 拒绝。原因是 Origin 校验在 `allowed_origins` 为空时一律放行，而浏览器发起 WebSocket 不受 CORS 约束 —— 不加这道限制就等于给任意网页一个 shell。
+
+**终端不是沙箱。** 进程由服务端绑定项目根目录启动，客户端无法指定路径，每条命令经过 `CommandGuard` 黑名单、`PathGuard`（含 `cwd` 越界检查）、超时限制与审计。但黑名单只匹配命令字符串，看不到 shell 的当前目录，因此：
+
+- 持久化 shell 里 `cd ..` 之后再执行命令，即可操作项目根之外的文件；
+- `type C:\Users\...\.ssh\id_rsa` 这类用绝对路径读取外部文件的方式不在黑名单内；
+- `subst` / `mklink /J` 可以把外部目录映射成根内路径。
+
+Windows 上没有非特权 chroot 类原语，所以这里保证的是「**客户端无法指定路径**」，**不是**「操作系统阻止进程访问根外资源」。终端以服务端用户身份运行，可读写该用户能触及的任何资源（含网络）。请只在本来就信任浏览器客户端的机器上启用，用 `ROUTIVUS_TERMINAL_ENABLED=off` 可完全关闭。真正的 OS 级隔离（AppContainer 或低权限账户）尚未实现。
+
+断开连接、空闲超时或服务退出时，会通过 Windows Job Object（`KILL_ON_JOB_CLOSE`）加 `taskkill /F /T` 兜底回收整棵进程树，避免留下孤儿 shell。
+
+### 行为变更：`execute_command` 的 cwd 校验
+
+`guard_tool_call` 此前对 `execute_command` **只**跑 `command_guard`，`path_guard` 里针对 `cwd` 的检查因分派提前返回而不可达。现已修正为两者都执行：Agent 的 `execute_command` 工具若把 `cwd` 指向项目根之外将被拒绝（`path_outside_root`）。这是有意的收紧。
 
 ## 程序化入口
 
