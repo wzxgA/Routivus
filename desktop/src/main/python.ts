@@ -114,7 +114,10 @@ function waitForHandshake(
       const text = chunk.toString('utf8')
       if (stderrTail.join('').length < 8000) stderrTail.push(text)
       for (const line of text.split(/\r?\n/)) {
-        if (line.trim()) logger.error(`[server] ${line}`)
+        // uvicorn 把 INFO 日志也写到 stderr，所以这里不能按 error 记——否则
+        // 正常的 "Shutting down" 会显示成错误，排障时误导人。真实失败由我们
+        // 自己的 logger.error 记录（spawn 失败 / 握手超时 / 健康检查未通过）。
+        if (line.trim()) logger.info(`[server] ${line}`)
       }
     })
 
