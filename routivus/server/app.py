@@ -32,6 +32,7 @@ from routivus import __version__
 from routivus.safety.audit import AuditLogger
 from routivus.safety.hitl import ApprovalDecision
 from routivus.server.approval import ApprovalBridge
+from routivus.server.completions import completion_payload
 from routivus.server.config import ServerConfig
 from routivus.server.logging_setup import install_token_redaction
 from routivus.server.plan_review import PlanReviewBridge
@@ -726,6 +727,28 @@ def create_app(
     async def list_session_events(session_id: str, after: int = 0, limit: int = 500) -> list[dict[str, Any]]:
         require_session(session_id)
         return [_event_payload(item) for item in workspace_store.list_events(session_id, after, limit)]
+
+    @router.get("/completions")
+    async def completions(
+        q: str = "",
+        cursor: int | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Composer 的 slash 命令补全候选（只读、无副作用、永不 404）。
+
+        只提示桌面聊天真正会执行的命令（/plan、/team，见 completions.py 的
+        白名单说明）；传入 session_id 时按其所属项目 root_path 提供动态路径
+        候选（/team resume --write-scope）。会话/项目缺失时退化为无路径候选。
+        """
+        project_root: Path | None = None
+        if session_id:
+            try:
+                session = require_session(session_id)
+                project = require_project(session.project_id)
+                project_root = Path(project.root_path).resolve()
+            except (ApiError, ProjectRegistryError):
+                project_root = None
+        return completion_payload(q, cursor, project_root=project_root)
 
     async def emit(event_type: str, session: SessionRecord, data: dict[str, Any] | None = None) -> dict[str, Any]:
         event = workspace_store.append_event(session.id, session.project_id, event_type, data)

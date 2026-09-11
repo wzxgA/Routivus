@@ -314,6 +314,9 @@ export function App() {
               <kbd>↑↓</kbd>历史
             </span>
             <span>
+              <kbd>Tab</kbd>补全
+            </span>
+            <span>
               <kbd>Ctrl</kbd>
               <kbd>`</kbd>终端
             </span>

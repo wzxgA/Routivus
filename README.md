@@ -213,7 +213,9 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 - **两级导航**：全局态（首页 / 笔记 / 配置）与项目态（会话 / 笔记）由 hash 路由驱动，刷新后按 URL 恢复项目、会话与视图；项目内无会话时自动创建首个会话。
 - **首页**：项目卡（会话 / 笔记 / 今日调用统计）+ 全部项目活动热力图（52 周 × 7 天，未来日期不渲染）+ 新建项目。
 - **笔记**：全局入口显示全部笔记及项目归属，项目入口只显示当前项目笔记；搜索、新建、编辑、标签、置顶、删除均走服务端；版本冲突返回 409 时提示「用当前内容覆盖」，不静默丢失。
-- **会话视图**：WebSocket 事件流渲染消息、工具卡、计划 / 团队任务卡、审批与提问卡；`/plan <任务>` 与 `/team <任务>` 在会话内直接可用（生成计划后弹出审阅卡：批准执行 / 重新规划 / 取消），`/team resume [task_id] --write-scope <路径>` 用于 `needs_input` 恢复；四页签信息侧栏（Session / Plan / Memory / Safety）；Composer 支持 `Enter` 发送、`↑↓` 历史、运行中停止。
+- **会话视图**：WebSocket 事件流渲染消息、工具卡、计划 / 团队任务卡、审批与提问卡；`/plan <任务>` 与 `/team <任务>` 在会话内直接可用（生成计划后弹出审阅卡：批准执行 / 重新规划 / 取消），`/team resume [task_id] --write-scope <路径>` 用于 `needs_input` 恢复；四页签信息侧栏（Session / Plan / Memory / Safety）；Composer 支持 `Enter` 发送、`↑↓` 历史、`Tab` 应用命令补全、运行中停止。
+
+- **命令补全**：输入 `/` 时 Composer 会拉取 `GET /api/completions` 的候选浮层（`↑↓` 选择、`Tab` 应用、`Esc` 关闭，点击候选项同效）。候选按白名单过滤，只提示桌面聊天真正会执行的命令：`/plan`、`/team`（含 `run` / `resume` 子命令），并按会话所属项目 root 展开工作区路径候选（`/team resume … --write-scope <路径>`）；其余 TUI 命令（/model、/smartrouter 等）在 Web Console 走配置页，不在这里提示。
 - **终端抽屉**：`Ctrl+\`` 或顶栏按钮展开，走 `/api/ws/projects/{id}/terminal`，服务端绑定项目 cwd。
 - **智能路由**：配置页开关与四档；普通对话轮按任务复杂度自动换档，顶栏 chip 与信息侧栏显示本轮档位与实际模型。
 - **主题**：暖白 / 夜间双主题（含夜空动效），偏好存 `localStorage`。

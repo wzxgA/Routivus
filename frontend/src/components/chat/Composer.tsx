@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { SessionStatus } from '../../api/types'
+import { fetchCompletions } from '../../api'
+import type { CompletionResponse, SessionStatus } from '../../api/types'
 
 /** 发送模式：与后端 `/plan`、`/team` 前缀一一对应（见 `_parse_task_command`）。 */
 export type ComposerMode = 'chat' | 'plan' | 'team'
@@ -20,6 +21,7 @@ interface ComposerProps {
   prompt: string
   value: string
   history: string[]
+  sessionId: string | null
   status: SessionStatus | null
   disabled: boolean
   waitingApproval: boolean
@@ -32,6 +34,7 @@ export function Composer({
   prompt,
   value,
   history,
+  sessionId,
   status,
   disabled,
   waitingApproval,
@@ -42,6 +45,9 @@ export function Composer({
   const [cursor, setCursor] = useState(-1)
   const [mode, setMode] = useState<ComposerMode>('chat')
   const [menuOpen, setMenuOpen] = useState(false)
+  const [sugs, setSugs] = useState<CompletionResponse | null>(null)
+  const [active, setActive] = useState(0)
+  const [caret, setCaret] = useState(0)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const modeRef = useRef<HTMLDivElement | null>(null)
 
@@ -62,6 +68,57 @@ export function Composer({
     if (disabled || busy) setMenuOpen(false)
   }, [disabled, busy])
 
+  // 命令补全：输入以 "/" 开头时防抖拉取候选；网络失败静默降级为无提示。
+  useEffect(() => {
+    if (disabled || busy || !value.startsWith('/')) {
+      setSugs(null)
+      return
+    }
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      fetchCompletions(value, caret, sessionId, controller.signal)
+        .then((data) => {
+          if (!data.is_command || data.candidates.length === 0) {
+            setSugs(null)
+            return
+          }
+          setSugs(data)
+          setActive((index) => Math.min(index, data.candidates.length - 1))
+        })
+        .catch((error: unknown) => {
+          // 主动 abort 的旧请求不算错误；真实失败也只降级，不打扰输入。
+          if (!controller.signal.aborted) setSugs(null)
+          void error
+        })
+    }, 120)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [value, caret, disabled, busy, sessionId])
+
+  /** 应用一条候选：按服务端给出的 token 区间替换，光标落在插入文本末尾。 */
+  const applySug = (index: number) => {
+    if (!sugs) return
+    const cand = sugs.candidates[index]
+    if (!cand) return
+    const start = Math.min(sugs.replace_start, value.length)
+    const end = Math.min(sugs.replace_end, value.length)
+    const next = value.slice(0, start) + cand.insert_text + value.slice(end)
+    const nextCaret = start + cand.insert_text.length
+    onChange(next)
+    setSugs(null)
+    requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (!el) return
+      el.focus()
+      el.setSelectionRange(nextCaret, nextCaret)
+      setCaret(nextCaret)
+    })
+  }
+
+  const syncCaret = () => setCaret(inputRef.current?.selectionStart ?? 0)
+
   const submit = () => {
     if (busy || disabled || !value.trim()) return
     // 模式单次生效：交给上层包装成 /plan、/team 后立即回到对话模式
@@ -72,6 +129,30 @@ export function Composer({
   }
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    // 补全浮层打开时：↑↓ 在候选间移动（不再翻历史），Tab 应用，Esc 关闭。
+    // Enter 仍发送 —— 补全只提示不拦截，避免打断“敲完直接回车”的习惯。
+    if (sugs && sugs.candidates.length > 0) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setSugs(null)
+        return
+      }
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setActive((index) => (index + 1) % sugs.candidates.length)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setActive((index) => (index - 1 + sugs.candidates.length) % sugs.candidates.length)
+        return
+      }
+      if (event.key === 'Tab') {
+        event.preventDefault()
+        applySug(active)
+        return
+      }
+    }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       submit()
@@ -107,7 +188,7 @@ export function Composer({
         ? '描述要规划的任务，Enter 发送（计划模式）'
         : mode === 'team'
           ? '描述要交给多个 Agent 的任务，Enter 发送（团队模式）'
-          : '输入任务，Enter 发送，↑↓ 调历史'
+          : '输入任务或 / 命令，Enter 发送，↑↓ 调历史'
 
   return (
     <div className="composer">
@@ -156,7 +237,35 @@ export function Composer({
         disabled={disabled || busy}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={handleKeyDown}
+        onSelect={syncCaret}
+        onClick={syncCaret}
+        onKeyUp={syncCaret}
+        autoComplete="off"
+        spellCheck={false}
       />
+      {sugs && sugs.candidates.length > 0 ? (
+        <div className="csugs" role="listbox" aria-label="命令补全">
+          <div className="csugs-title">Tab 应用 · Esc 关闭</div>
+          {sugs.candidates.map((cand, index) => (
+            <button
+              type="button"
+              key={`${cand.insert_text}-${index}`}
+              role="option"
+              aria-selected={index === active}
+              className={`csug${index === active ? ' active' : ''}`}
+              // mousedown 先于 input blur：阻止失焦才能保住光标与焦点
+              onMouseDown={(event) => {
+                event.preventDefault()
+                applySug(index)
+              }}
+              onMouseEnter={() => setActive(index)}
+            >
+              <span className="csug-name">{cand.label}</span>
+              <span className="csug-desc">{cand.detail}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       {busy ? (
         <button type="button" className="btn tiny" onClick={onCancel}>
           停止

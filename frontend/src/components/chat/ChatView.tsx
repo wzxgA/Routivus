@@ -156,6 +156,7 @@ export function ChatView({
           prompt={projectName}
           value={composer}
           history={history}
+          sessionId={session?.id ?? null}
           status={liveSession?.status ?? null}
           disabled={timeline.connection === 'offline' || !session}
           waitingApproval={Boolean(timeline.approval)}

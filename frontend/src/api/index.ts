@@ -1,6 +1,7 @@
 import { request } from './client'
 import type {
   ActivityDay,
+  CompletionResponse,
   ConfigSnapshot,
   DesktopInfo,
   Message,
@@ -61,6 +62,21 @@ export const listSessionEvents = (sessionId: string, after: number, limit = 500)
 
 export const cancelSession = (sessionId: string) =>
   request<{ cancelled: boolean }>(`/sessions/${sessionId}/cancel`, { method: 'POST' })
+
+// ---- 命令补全 ----
+
+const COMPLETIONS_PATH = '/completions'
+
+export const fetchCompletions = (
+  q: string,
+  cursor: number,
+  sessionId: string | null,
+  signal?: AbortSignal,
+) =>
+  request<CompletionResponse>(COMPLETIONS_PATH, {
+    query: { q, cursor, session_id: sessionId ?? undefined },
+    signal,
+  })
 
 // ---- 笔记 ----
 

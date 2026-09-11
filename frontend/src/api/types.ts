@@ -169,6 +169,22 @@ export interface RouterState {
   error?: string
 }
 
+/** 一条命令补全候选（与 GET /api/completions 的 candidates 项对应）。 */
+export interface CompletionCandidate {
+  label: string
+  insert_text: string
+  detail: string
+  kind: string
+}
+
+/** 补全响应：replace_start/end 是应用候选时 client 端替换的字符区间。 */
+export interface CompletionResponse {
+  is_command: boolean
+  replace_start: number
+  replace_end: number
+  candidates: CompletionCandidate[]
+}
+
 export interface ToolStartedData {
   tool_call_id: string
   name: string
