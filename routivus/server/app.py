@@ -84,7 +84,9 @@ from routivus.server.schemas import (
     ProviderUpdateRequest,
     ProviderView,
     RootGrantRequest,
+    SkillDetail,
     SkillView,
+    SkillWriteBody,
     SmartRouterRequest,
     TierRequest,
     TierView,
@@ -186,7 +188,14 @@ def _build_config_manager(config: ServerConfig) -> Any:
     )
 
 
-def _build_skill_registry(manager: Any, root: Path, settings: Any, audit: Any) -> Any | None:
+def _build_skill_registry(
+    manager: Any,
+    root: Path,
+    settings: Any,
+    audit: Any,
+    *,
+    builtin_root: Path | None = None,
+) -> Any | None:
     """构造只读 Skill 注册表；失败降级为 None（不能挡住会话创建）。
 
     配置以 `settings.skills_*` 为单一事实来源（`load_settings` 已合并 skills.json
@@ -215,6 +224,7 @@ def _build_skill_registry(manager: Any, root: Path, settings: Any, audit: Any) -
             project_root=root,
             config=config,
             config_manager=skill_manager,
+            builtin_root=builtin_root,
             audit=audit,
         )
     except Exception:  # noqa: BLE001 - Skill 目录损坏不能挡住会话创建
@@ -1207,6 +1217,74 @@ def create_app(
     @router.post("/skills/{name}/disable", response_model=list[SkillView])
     async def disable_skill(name: str, project_id: str | None = None) -> list[SkillView]:
         return set_skill_enabled(name, False, project_id)
+
+    def skill_detail(project_id: str | None, name: str) -> SkillDetail:
+        """Skill 详情（含正文）：预览与编辑回填共用，只读无副作用。"""
+        from routivus.skill.errors import SkillError
+        from routivus.skill.parser import META_RE, read_body
+
+        registry = skill_registry_for(project_id)
+        info = registry.get(name) if registry is not None else None
+        if registry is None or info is None:
+            raise ApiError(404, "skill_not_found", f"未找到 Skill：{name}")
+        body = ""
+        try:
+            text, _ = read_body(info.root / "SKILL.md", max_chars=registry.config.max_skill_chars)
+            body = META_RE.sub("", text, count=1).strip()
+        except SkillError:
+            body = ""
+        editable = info.source in {"user", "project"}
+        return SkillDetail(
+            **_skill_view(info).model_dump(),
+            body=body,
+            layer=info.source if editable else "",
+            path=str(info.root / "SKILL.md"),
+            editable=editable,
+        )
+
+    @router.get("/skills/{name}", response_model=SkillDetail)
+    async def get_skill(name: str, project_id: str | None = None) -> SkillDetail:
+        return skill_detail(project_id, name)
+
+    @router.put("/skills/{name}", response_model=SkillDetail)
+    async def write_skill(
+        name: str, payload: SkillWriteBody, project_id: str | None = None
+    ) -> SkillDetail:
+        """新建 / 更新 SKILL.md（用户级或项目级）。
+
+        安全边界：名称走 parser 契约，落点由 writer 二次校验（含符号链接），
+        只允许 user / project 两层；内置 Skill 拒绝写入；同名已存在的 Skill 一律
+        写回它所在的层，避免出现“影子副本”。
+        """
+        from routivus.config.settings import load_settings
+        from routivus.skill.errors import SkillError
+        from routivus.skill.writer import SkillWriteRequest, write_skill_document
+
+        config_manager = _build_config_manager(resolved_config)
+        settings = load_settings(config_manager)
+        project_root: Path | None = None
+        if project_id:
+            project = require_project(project_id)
+            project_root = Path(project.root_path).resolve()
+
+        registry = skill_registry_for(project_id)
+        existing = registry.get(name) if registry is not None else None
+        if existing is not None and existing.source == "builtin":
+            raise ApiError(422, "skill_readonly", "内置 Skill 不可编辑")
+        layer = existing.source if existing is not None else payload.layer
+        try:
+            path, created = write_skill_document(
+                SkillWriteRequest(
+                    name=name, body=payload.body, description=payload.description, layer=layer
+                ),
+                user_dir=Path(config_manager.user_dir),
+                project_root=project_root,
+                max_chars=int(getattr(settings, "skills_max_chars", 32_000)),
+            )
+        except SkillError as exc:
+            raise ApiError(422, "invalid_skill", str(exc)) from exc
+        logger.info("skill written name=%s created=%s path=%s", name, created, path)
+        return skill_detail(project_id, name)
 
     @router.get("/desktop/info", response_model=DesktopInfoResponse)
     async def desktop_info() -> DesktopInfoResponse:

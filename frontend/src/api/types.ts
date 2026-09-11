@@ -196,6 +196,20 @@ export interface SkillView {
   error: string
 }
 
+/** Skill 详情（GET /api/skills/{name}）：正文用于预览与编辑回填。 */
+export interface SkillDetail extends SkillView {
+  body: string
+  layer: string
+  path: string
+  editable: boolean
+}
+
+export interface SkillWritePayload {
+  body: string
+  description?: string
+  layer?: 'user' | 'project'
+}
+
 /** 一条命令补全候选（与 GET /api/completions 的 candidates 项对应）。 */
 export interface CompletionCandidate {
   label: string

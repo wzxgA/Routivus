@@ -214,6 +214,89 @@ def test_rest_lists_project_skill_with_project_id(tmp_path: Path) -> None:
     assert scoped[0]["source"] == "project"
 
 
+def test_get_skill_detail_includes_body_and_editable(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    _write_skill(tmp_path / "userdata" / "skills", "demo", body="规范正文")
+
+    detail = client.get("/api/skills/demo").json()
+    assert detail["body"] == "规范正文"
+    assert detail["editable"] is True and detail["layer"] == "user"
+    assert detail["path"].endswith("SKILL.md")
+    assert client.get("/api/skills/nope").status_code == 404
+
+
+def test_put_creates_user_skill_then_edits_it(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    created = client.put(
+        "/api/skills/api-conventions",
+        json={"body": "# 约束\n\n- 一", "description": "接口约定"},
+    )
+    assert created.status_code == 200
+    assert created.json()["source"] == "user"
+    assert [item["name"] for item in client.get("/api/skills").json()] == ["api-conventions"]
+
+    updated = client.put("/api/skills/api-conventions", json={"body": "# 约束\n\n- 二"})
+    assert updated.json()["body"] == "# 约束\n\n- 二"
+
+
+def test_put_with_project_id_writes_project_layer(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+
+    response = client.put(
+        "/api/skills/proj-skill",
+        params={"project_id": project["id"]},
+        json={"body": "项目规范", "layer": "project"},
+    )
+    assert response.status_code == 200
+    assert response.json()["source"] == "project"
+    path = Path(response.json()["path"])
+    assert path.is_relative_to(Path(project["root_path"]).resolve())
+    assert "项目规范" in path.read_text(encoding="utf-8")
+
+
+def test_put_keeps_existing_layer_to_avoid_shadow_copy(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    client.put(
+        "/api/skills/proj-skill",
+        params={"project_id": project["id"]},
+        json={"body": "项目规范", "layer": "project"},
+    )
+
+    # 再以 layer=user 提交：必须仍写回项目层，不在用户级造影子副本
+    response = client.put(
+        "/api/skills/proj-skill",
+        params={"project_id": project["id"]},
+        json={"body": "改过", "layer": "user"},
+    )
+    assert response.json()["layer"] == "project"
+    assert not (tmp_path / "userdata" / "skills" / "proj-skill").exists()
+
+
+def test_put_rejects_builtin_and_invalid_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path)
+    builtin = tmp_path / "builtin"
+    _write_skill(builtin, "core")
+
+    import routivus.server.app as app_module
+
+    original = app_module._build_skill_registry
+    monkeypatch.setattr(
+        app_module,
+        "_build_skill_registry",
+        lambda manager, root, settings, audit, **kwargs: original(
+            manager, root, settings, audit, builtin_root=builtin
+        ),
+    )
+
+    assert [item["name"] for item in client.get("/api/skills").json()] == ["core"]
+    assert client.put("/api/skills/core", json={"body": "x"}).status_code == 422
+    assert client.put("/api/skills/Bad Name", json={"body": "x"}).status_code == 422
+
+
 def test_web_skill_command_lists_and_toggles(tmp_path: Path) -> None:
     client = _client(tmp_path)
     project = _project(client)

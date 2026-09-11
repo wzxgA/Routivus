@@ -9,10 +9,12 @@ import { HomeView } from './components/home/HomeView'
 import { NotesView } from './components/notes/NotesView'
 import { Nav } from './components/shell/Nav'
 import { TopBar } from './components/shell/TopBar'
+import { SkillsView } from './components/skills/SkillsView'
 import {
   CONFIG,
   GLOBAL_NOTES,
   HOME,
+  SKILLS,
   navigate,
   projectRoute,
   replaceRoute,
@@ -172,6 +174,8 @@ export function App() {
             onMutated={handleNotesMutated}
           />
         )
+      case 'skills':
+        return <SkillsView projects={projects} />
       case 'config':
         return (
           <ConfigView
@@ -272,7 +276,7 @@ export function App() {
         onNewProjectNote={() => void handleNewProjectNote()}
         onGoHome={() => navigate(HOME)}
         onGoNotes={() => navigate(GLOBAL_NOTES)}
-        onGoSkills={() => navigate(CONFIG)}
+        onGoSkills={() => navigate(SKILLS)}
         onGoConfig={() => navigate(CONFIG)}
         onGoProjectNotes={() => {
           if (projectId) navigate(projectRoute(projectId, 'notes'))

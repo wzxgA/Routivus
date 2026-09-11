@@ -5,11 +5,13 @@ export type ProjectView = 'chat' | 'notes'
 export type Route =
   | { kind: 'home' }
   | { kind: 'notes' }
+  | { kind: 'skills' }
   | { kind: 'config' }
   | { kind: 'project'; projectId: string; view: ProjectView; sessionId: string | null }
 
 export const HOME: Route = { kind: 'home' }
 export const GLOBAL_NOTES: Route = { kind: 'notes' }
+export const SKILLS: Route = { kind: 'skills' }
 export const CONFIG: Route = { kind: 'config' }
 
 export function projectRoute(
@@ -25,6 +27,7 @@ export function parseRoute(hash: string): Route {
   if (!raw) return HOME
   const parts = raw.split('/').filter(Boolean)
   if (parts[0] === 'notes') return GLOBAL_NOTES
+  if (parts[0] === 'skills') return SKILLS
   if (parts[0] === 'config') return CONFIG
   if (parts[0] === 'p' && parts[1]) {
     const projectId = decodeURIComponent(parts[1])
@@ -41,6 +44,8 @@ export function routeToHash(route: Route): string {
   switch (route.kind) {
     case 'notes':
       return '#/notes'
+    case 'skills':
+      return '#/skills'
     case 'config':
       return '#/config'
     case 'project': {

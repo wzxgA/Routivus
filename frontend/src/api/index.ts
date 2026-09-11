@@ -10,7 +10,9 @@ import type {
   Project,
   ProviderView,
   Session,
+  SkillDetail,
   SkillView,
+  SkillWritePayload,
 } from './types'
 
 // ---- 项目 ----
@@ -196,6 +198,16 @@ export const listSkills = (projectId?: string, signal?: AbortSignal) =>
 export const setSkillEnabled = (name: string, enabled: boolean, projectId?: string) =>
   request<SkillView[]>(`/skills/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {
     method: 'POST',
+    query: { project_id: projectId },
+  })
+
+export const getSkill = (name: string, projectId?: string) =>
+  request<SkillDetail>(`/skills/${encodeURIComponent(name)}`, { query: { project_id: projectId } })
+
+export const saveSkill = (name: string, payload: SkillWritePayload, projectId?: string) =>
+  request<SkillDetail>(`/skills/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: payload,
     query: { project_id: projectId },
   })
 

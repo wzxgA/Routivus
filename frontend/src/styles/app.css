@@ -1557,6 +1557,39 @@ button {
   color: var(--warn);
   font-weight: 700;
 }
+
+/* 技能页：SKILL.md 预览与编辑 */
+.skill-preview {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 46vh;
+  overflow: auto;
+  background: var(--beige);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.skill-editor {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+  resize: vertical;
+}
+.skill-editor:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 [data-theme='night'] .cmd-bad {
   color: #e08b7d;
 }

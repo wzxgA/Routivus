@@ -319,3 +319,20 @@ class SkillView(BaseModel):
     enabled: bool = True
     valid: bool = True
     error: str = ""
+
+
+class SkillDetail(SkillView):
+    """单个 Skill 的详情：正文用于预览与编辑回填（只读接口除外均不含副作用）。"""
+
+    body: str = ""
+    layer: str = ""
+    path: str = ""
+    editable: bool = True
+
+
+class SkillWriteBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    body: str = Field(min_length=1, max_length=64_000)
+    description: str = Field(default="", max_length=200)
+    layer: Literal["user", "project"] = "user"

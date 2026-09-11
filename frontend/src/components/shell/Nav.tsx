@@ -189,11 +189,15 @@ export function Nav({
                 <div className="sub">Provider · 四档 · HITL</div>
               </span>
             </button>
-            <button type="button" className="nav-link" onClick={onGoSkills}>
+            <button
+              type="button"
+              className={`nav-link${route.kind === 'skills' ? ' active' : ''}`}
+              onClick={onGoSkills}
+            >
               <span className="ic">S</span>
               <span className="nav-link-txt">
                 <span className="tx">技能</span>
-                <div className="sub">/skill 管理</div>
+                <div className="sub">任务规范管理</div>
               </span>
             </button>
           </div>
