@@ -1733,6 +1733,13 @@ def create_app(
                 except Exception as exc:
                     logger.warning("命令执行失败 session_id=%s command=%s", session.id, cmd, exc_info=True)
                     message = f"命令执行失败：{exc}"
+                # service 层的未知命令文案来自 TUI（列出全部 21 个命令，含 Web
+                # 未接入的 /exit /init 等），换成 Web 白名单的一行清单避免误导。
+                if not ok and message.startswith(("未知命令", "Unknown command")):
+                    from routivus.server.completions import WEB_COMMANDS
+
+                    available = " ".join(WEB_COMMANDS)
+                    message = f'未知命令 "{cmd}"。可用命令：{available}，详见 /help'
 
         if cmd == "/clear" and ok:
             # /clear 只清 agent 的运行上下文；已落库消息仍会随快照重建展示。

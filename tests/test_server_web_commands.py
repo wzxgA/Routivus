@@ -210,6 +210,12 @@ def test_unknown_command_returns_failure_receipt(tmp_path: Path) -> None:
         events = _receive_until(socket, _is_command_event)
 
     assert _command_events(events)[0]["ok"] is False
+    # 文案换成 Web 白名单清单：不再出现 /exit /init 等未接入命令（方案 §C）。
+    messages = client.get(f"/api/sessions/{session['id']}/messages").json()
+    receipt = messages[-1]["content"]
+    assert '未知命令 "/nope"' in receipt
+    assert "/plan" in receipt and "/model" in receipt
+    assert "/exit" not in receipt and "/init" not in receipt
 
 
 def test_model_switch_syncs_session_record(tmp_path: Path) -> None:

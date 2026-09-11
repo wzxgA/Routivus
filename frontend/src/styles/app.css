@@ -1464,19 +1464,18 @@ button {
   color: var(--accent);
 }
 
-/* 命令回执卡（slash 命令的执行结果，复用消息流的落库消息） */
+/* 命令回执卡（slash 命令的执行结果）：终端面板式——头部条 + 等宽输出区 */
 .msg-command {
   flex: 0 0 auto;
-  max-width: min(720px, 88%);
+  max-width: min(760px, 88%);
   align-self: flex-start;
-  padding: 9px 12px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
   border-radius: 10px;
   background: var(--panel);
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 .msg-command.failed {
   border-left-color: #b0473a;
@@ -1484,20 +1483,34 @@ button {
 .msg-command-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
+  gap: 9px;
+  padding: 6px 12px;
+  background: var(--beige);
+  border-bottom: 1px solid var(--border);
+}
+.msg-command.failed .msg-command-head {
+  background: transparent;
 }
 .msg-command-head .badge {
-  flex: 0 0 auto;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--beige);
-  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 10.5px;
   font-weight: 700;
+  color: var(--accent);
+}
+.msg-command-head .badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 .msg-command.failed .badge {
   color: #b0473a;
+}
+.msg-command.failed .badge::before {
+  background: #b0473a;
 }
 .msg-command-head code {
   font-family: var(--mono);
@@ -1507,9 +1520,40 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.msg-command .body {
-  font-size: 12.5px;
+/* 输出区：浅色卡片底（夜间跟随主题翻转），等宽 + pre，列对齐优先 */
+.msg-command-body {
+  padding: 10px 14px;
+  background: var(--card);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.75;
   color: var(--text);
+  white-space: pre;
+  overflow-x: auto;
+}
+.cmd-line {
+  min-height: 1.75em;
+}
+/* "键：值"样式行：键名淡化加粗，状态输出一眼可扫 */
+.cmd-key {
+  color: var(--muted);
+  font-weight: 600;
+}
+/* 语义高亮：成功 / 失败 / 四档名（颜色全部走主题变量，夜间自动切换） */
+.cmd-ok {
+  color: var(--ok);
+  font-weight: 700;
+}
+.cmd-bad {
+  color: var(--danger);
+  font-weight: 700;
+}
+.cmd-tier {
+  color: var(--warn);
+  font-weight: 700;
+}
+[data-theme='night'] .cmd-bad {
+  color: #e08b7d;
 }
 
 /* Composer */

@@ -120,7 +120,10 @@ export function Composer({
   const syncCaret = () => setCaret(inputRef.current?.selectionStart ?? 0)
 
   const submit = () => {
-    if (busy || disabled || !value.trim()) return
+    const text = value.trim()
+    // 空 / 单独一个 "/" 不发送：后者多半是命令还没敲完（补全浮层正开着），
+    // 发出去只会换来一张"命令失败"卡。
+    if (busy || disabled || !text || text === '/') return
     // 模式单次生效：交给上层包装成 /plan、/team 后立即回到对话模式
     onSubmit(mode)
     setMode('chat')
