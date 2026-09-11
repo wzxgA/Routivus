@@ -35,6 +35,12 @@ from routivus.server.approval import ApprovalBridge
 from routivus.server.config import ServerConfig
 from routivus.server.logging_setup import install_token_redaction
 from routivus.server.plan_review import PlanReviewBridge
+from routivus.server.routing import (
+    SessionRouter,
+    prewarm_shared_assets,
+    route_timeout_seconds,
+    router_payload,
+)
 from routivus.server.terminal import (
     TerminalSession,
     TerminalSpec,
@@ -441,7 +447,7 @@ def _build_default_agent(project: Any, session: SessionRecord) -> Any:
         project_memory_max_chars=settings.project_memory_max_chars,
         memory_prompt_max_chars=settings.memory_prompt_max_chars,
     )
-    return ReActAgent(
+    agent = ReActAgent(
         llm=llm,
         tools=tools,
         settings=settings,
@@ -449,6 +455,10 @@ def _build_default_agent(project: Any, session: SessionRecord) -> Any:
         audit=audit,
         memory_manager=memory,
     )
+    # SmartRouter 需要同一个 ConfigManager 才能读到四档配置、解析目标 provider 的
+    # API Key 并换 `agent.llm`（与 TUI 的 SessionController 持有 manager 同构）。
+    agent.config_manager = manager
+    return agent
 
 
 def _record_payload(record: Any) -> dict[str, Any]:
@@ -462,6 +472,12 @@ async def _terminal_lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     没有这一步，Ctrl-C 停服务会留下孤儿的 cmd.exe 及其子进程 —— 正是 Phase 5
     完成标准后半句要求覆盖的场景。
     """
+    # 智能路由已开启时，启动即在**当前线程同步**预热重资产。此刻尚未 accept
+    # 连接，阻塞事件循环是安全的；关键是首次重型 import 必须远离后台线程 ——
+    # 否则会与事件循环首次创建 AnyIO worker 线程竞态死锁（窗口打不开）。
+    # 桌面端已在 `__main__` 的事件循环之前预热过，这里通常已是空操作。
+    if getattr(app.state, "smart_router_startup_enabled", False):
+        prewarm_shared_assets(blocking=True)
     yield
     for terminal in list(getattr(app.state, "terminals", {}).values()):
         try:
@@ -519,6 +535,8 @@ def create_app(
     # 计划 / 团队审阅桥接，以及会话内最近一个可续跑的计划执行器（供 /team resume）。
     app.state.session_reviews = {}
     app.state.session_resumable = {}
+    # 会话级 SmartRouter 运行态（惰性创建；None 表示该会话已确认不可用）
+    app.state.session_routers = {}
     app.state.terminals = {}
     app.state.terminal_factory = terminal_factory or (
         lambda spec: select_backend(
@@ -849,6 +867,11 @@ def create_app(
     provider_service = ProviderConfigService(config_manager, None, language="zh")
     tier_service = SmartRouterConfigService(config_manager, None, language="zh")
 
+    # 开关开着才预热：供 lifespan 在启动时读取（关闭时不加载任何重资产）。
+    app.state.smart_router_startup_enabled = bool(
+        config_manager.smart_router_config().get("enabled", False)
+    )
+
     def _provider_views() -> list[ProviderView]:
         views: list[ProviderView] = []
         for row in provider_service.list():
@@ -900,6 +923,30 @@ def create_app(
     def _ensure_ok(result: Any) -> None:
         if not getattr(result, "ok", False):
             raise ApiError(422, "config_rejected", str(getattr(result, "message", "配置被拒绝")))
+
+    def _sync_smart_router_runtime(enabled: bool) -> None:
+        """把开关同步到已缓存的会话 agent。
+
+        agent.settings 是创建时的快照、不会自动刷新，若只改配置而不回写，已存在
+        的会话会一直用旧开关 —— 表现就是「开了智能路由，旧对话仍不路由」。
+        """
+        for cached in app.state.session_agents.values():
+            settings = getattr(cached, "settings", None)
+            if settings is None or not hasattr(settings, "smart_router_enabled"):
+                continue
+            settings.smart_router_enabled = enabled
+            settings.smart_router_saved = (
+                (getattr(settings, "provider", ""), getattr(settings, "model", ""))
+                if enabled
+                else None
+            )
+
+    def _apply_smart_router_state() -> None:
+        """按最新配置同步运行态；开启时顺带后台预热重资产（幂等）。"""
+        enabled = bool(tier_service.get().get("enabled", False))
+        _sync_smart_router_runtime(enabled)
+        if enabled:
+            prewarm_shared_assets()
 
     @router.get("/config", response_model=ConfigSnapshot)
     async def get_config_snapshot() -> ConfigSnapshot:
@@ -973,11 +1020,18 @@ def create_app(
     @router.post("/config/active", response_model=ConfigSnapshot)
     async def set_active_provider(payload: ActiveProviderRequest) -> ConfigSnapshot:
         _ensure_ok(provider_service.switch(payload.provider, payload.model))
+        # 手动优先接管：显式切换模型即关闭智能路由（与 TUI `/model` 的
+        # `_disable_smart_router` 一致），否则下一轮路由会立刻覆盖用户刚选的模型。
+        if tier_service.get().get("enabled"):
+            tier_service.set_enabled(False)
+        _apply_smart_router_state()
         return _snapshot()
 
     @router.put("/config/tiers/{tier_name}", response_model=ConfigSnapshot)
     async def set_tier(tier_name: str, payload: TierRequest) -> ConfigSnapshot:
         _ensure_ok(tier_service.set_tier(tier_name, payload.provider, payload.model))
+        # 配置档位会自动开启总闸：同步已存在会话并在开启时预热。
+        _apply_smart_router_state()
         return _snapshot()
 
     @router.delete("/config/tiers/{tier_name}", response_model=ConfigSnapshot)
@@ -988,6 +1042,8 @@ def create_app(
     @router.post("/config/smart-router", response_model=ConfigSnapshot)
     async def set_smart_router(payload: SmartRouterRequest) -> ConfigSnapshot:
         _ensure_ok(tier_service.set_enabled(payload.enabled))
+        # 点击开启：立即对已存在会话生效，并在后台预热重资产；关闭则不加载。
+        _apply_smart_router_state()
         return _snapshot()
 
     # ---------- 桌面端专用：运行时白名单授权 ----------
@@ -1021,6 +1077,7 @@ def create_app(
     session_approvals: dict[str, ApprovalBridge] = app.state.session_approvals
     session_reviews: dict[str, PlanReviewBridge] = app.state.session_reviews
     session_resumable: dict[str, tuple[str, Any]] = app.state.session_resumable
+    session_routers: dict[str, SessionRouter | None] = app.state.session_routers
     terminals: dict[str, TerminalSession] = app.state.terminals
 
     def approval_bridge(session_id: str) -> ApprovalBridge:
@@ -1151,6 +1208,93 @@ def create_app(
             policy.requester = bridge.request
         if hasattr(agent, "ask_requester"):
             agent.ask_requester = bridge.ask
+
+    def session_router(session_id: str) -> SessionRouter | None:
+        """会话级 SmartRouter 运行态（惰性创建）。
+
+        构造失败只降级为「该会话不路由」并记住结论 —— 每轮重试既无意义，
+        也会把同一条告警刷满日志。
+        """
+        if session_id in session_routers:
+            return session_routers[session_id]
+        router: SessionRouter | None
+        try:
+            router = SessionRouter(session_key=session_id)
+        except Exception:
+            logger.warning("smart router 初始化失败，该会话不做路由 session_id=%s", session_id, exc_info=True)
+            router = None
+        session_routers[session_id] = router
+        return router
+
+    def router_snapshot(session_id: str) -> dict[str, Any]:
+        """会话快照里的路由状态：优先用最近一次路由结果，否则回落到开关状态。"""
+        result = getattr(session_routers.get(session_id), "last", None)
+        if result is not None:
+            return router_payload(result)
+        enabled = False
+        try:
+            enabled = bool(tier_service.get().get("enabled"))
+        except Exception:  # pragma: no cover - 配置损坏时不该挡住快照
+            logger.debug("smart router state unavailable", exc_info=True)
+        return {"enabled": enabled, "tier": "", "provider": "", "model": ""}
+
+    async def apply_smart_routing(
+        forwarder: "_TurnForwarder", agent: Any, content: str, session: SessionRecord
+    ) -> None:
+        """普通对话轮：开关开启时按复杂度换档，并把结果推给客户端。
+
+        只在普通轮调用（`/plan`、`/team` 不路由，与 TUI 的门禁一致）。路由失败
+        或换模型失败都不阻断对话本身——最差就是沿用当前模型。
+        """
+        settings = getattr(agent, "settings", None)
+        if not getattr(settings, "smart_router_enabled", False):
+            return
+        manager = getattr(agent, "config_manager", None)
+        if manager is None:
+            # 测试 / 嵌入方注入的简易 agent：没有 ConfigManager 就无法解析四档的
+            # provider 与 API Key，静默跳过而不是每轮报错。
+            return
+
+        # 路由含同步重活（首次要加载 20+ MB 的 ML / 语义模型），必须丢到工作线程：
+        # 在事件循环里直接跑会把整个 uvicorn 卡住（心跳、其它 HTTP 全停响应），
+        # 表现就是"一对话就卡住"。超时只降级为「本轮不换档」，不阻断对话。
+        timeout = route_timeout_seconds()
+        try:
+            router = await asyncio.wait_for(
+                asyncio.to_thread(session_router, session.id), timeout=timeout
+            )
+            if router is None:
+                await forwarder.emit("router.updated", {
+                    "enabled": True,
+                    "tier": "", "provider": "", "model": "",
+                    "error": "智能路由初始化失败，本轮沿用当前模型",
+                })
+                return
+            result, error = await asyncio.wait_for(
+                asyncio.to_thread(
+                    router.apply, content, settings=settings, manager=manager, agent=agent
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "smart router 超时（>%.0fs） session_id=%s（本轮沿用当前模型）", timeout, session.id
+            )
+            await forwarder.emit("router.updated", {
+                "enabled": True,
+                "tier": "", "provider": "", "model": "",
+                "error": f"智能路由超时（>{timeout:.0f}s），本轮沿用当前模型",
+            })
+            return
+        except Exception as exc:
+            logger.warning("smart router 路由失败 session_id=%s", session.id, exc_info=True)
+            await forwarder.emit("router.updated", {
+                "enabled": True,
+                "tier": "", "provider": "", "model": "",
+                "error": f"路由失败，本轮沿用当前模型：{exc}",
+            })
+            return
+        await forwarder.emit("router.updated", router_payload(result, error))
 
     class _TurnForwarder:
         """一轮执行的共享转发器：把 agent / 计划 / 团队事件映射为会话事件。
@@ -1346,6 +1490,8 @@ def create_app(
                 )
                 return
             bind_interactions(agent, session.id)
+            # 普通轮在执行前路由换档（/plan、/team 不路由，与 TUI 一致）
+            await apply_smart_routing(forwarder, agent, content, session)
             stream = agent.run(content)
             if inspect.isawaitable(stream):
                 stream = await stream
@@ -1540,6 +1686,8 @@ def create_app(
                     "hitl": "server-managed",
                     "status": "ready",
                 },
+                # 智能路由状态：开关 + 最近一次路由到的档位与模型（重连后仍可回显）
+                "router": router_snapshot(session.id),
                 "audit": {
                     "tool_calls": 0,
                     "tool_failures": 0,

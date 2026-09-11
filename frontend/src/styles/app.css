@@ -615,6 +615,14 @@ button {
   border-color: #cfe3d4;
   background: var(--ok-bg);
 }
+.chip.router {
+  color: var(--accent);
+  border-color: var(--border-strong);
+  background: var(--beige);
+}
+.chip.router.warn {
+  color: var(--danger);
+}
 @keyframes breath {
   0%,
   100% {

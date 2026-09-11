@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { PlanPayload, Session } from '../../api/types'
+import type { PlanPayload, RouterState, Session } from '../../api/types'
 import type { AuditTotals, UsageTotals } from '../../state/sessionTimeline'
 import type { ConnState } from '../../ws/sessionSocket'
 import { formatNumber } from '../../utils/format'
@@ -26,6 +26,7 @@ interface SidePanelProps {
   projectNotes: number
   memoryNotice: { kind: string; message: string } | null
   hitl: string | null
+  router: RouterState | null
   contextWindow: number
 }
 
@@ -39,6 +40,7 @@ export function SidePanel({
   projectNotes,
   memoryNotice,
   hitl,
+  router,
   contextWindow,
 }: SidePanelProps) {
   const [tab, setTab] = useState<TabName>('Session')
@@ -65,12 +67,34 @@ export function SidePanel({
             <div className="sec-title">SESSION</div>
             <div className="kv">
               <span>Provider</span>
-              <span className="mono">{session?.active_provider || '—'}</span>
+              <span className="mono">
+                {router?.enabled && router.provider ? router.provider : session?.active_provider || '—'}
+              </span>
             </div>
             <div className="kv">
               <span>Model</span>
-              <span className="mono">{session?.active_model || '—'}</span>
+              <span className="mono">
+                {router?.enabled && router.model ? router.model : session?.active_model || '—'}
+                {router?.enabled && router.model ? ' （路由）' : ''}
+              </span>
             </div>
+            {router?.enabled ? (
+              <div className="kv">
+                <span>智能路由</span>
+                <span className="mono">
+                  {router.tier || '—'}
+                  {router.configured === false ? '（回落 active）' : ''}
+                  {typeof router.confidence === 'number' && router.tier
+                    ? ` · 置信 ${(router.confidence * 100).toFixed(0)}%`
+                    : ''}
+                </span>
+              </div>
+            ) : null}
+            {router?.error ? (
+              <div className="hint" style={{ marginTop: 2 }}>
+                {router.error}
+              </div>
+            ) : null}
             <div className="kv">
               <span>Status</span>
               <span className={session?.status === 'failed' ? 'status-error' : 'status-idle'}>

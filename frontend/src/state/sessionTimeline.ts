@@ -6,6 +6,7 @@ import type {
   Message,
   PlanPayload,
   PlanReviewRequest,
+  RouterState,
   Session,
   SessionSnapshot,
   TeamPayload,
@@ -67,6 +68,7 @@ export interface SessionTimelineValue {
   session: Session | null
   approval: ApprovalRequestedData | null
   planReview: PlanReviewRequest | null
+  router: RouterState | null
   memoryNotice: { kind: string; message: string } | null
   hitl: string | null
   error: string | null
@@ -134,6 +136,7 @@ export function useSessionTimeline(
   const [session, setSession] = useState<Session | null>(initialSession)
   const [approval, setApproval] = useState<ApprovalRequestedData | null>(null)
   const [planReview, setPlanReview] = useState<PlanReviewRequest | null>(null)
+  const [router, setRouter] = useState<RouterState | null>(null)
   const [memoryNotice, setMemoryNotice] = useState<{ kind: string; message: string } | null>(null)
   const [hitl, setHitl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -164,6 +167,7 @@ export function useSessionTimeline(
     setStream({ content: '', thinking: '' })
     setApproval(null)
     setPlanReview(null)
+    setRouter(null)
     setMemoryNotice(null)
     setError(null)
 
@@ -181,6 +185,7 @@ export function useSessionTimeline(
             setStream({ content: '', thinking: '' })
             setAudit(snapshot.audit ?? { tool_calls: 0, tool_failures: 0, approvals: 0 })
             setHitl(snapshot.safety?.hitl ?? null)
+            setRouter(snapshot.router ?? null)
             const snapshotSession = snapshot.session ?? null
             if (snapshotSession) {
               setSession(snapshotSession)
@@ -351,6 +356,21 @@ export function useSessionTimeline(
             setItems((current) => upsertTaskCard(current, 'team', payload))
             return
           }
+          case 'router.updated': {
+            // 普通对话轮在开关开启时按复杂度换档，这里回显本轮实际使用的档位
+            setRouter({
+              enabled: Boolean(data.enabled),
+              tier: String(data.tier ?? ''),
+              tier_idx: Number(data.tier_idx ?? 0),
+              provider: String(data.provider ?? ''),
+              model: String(data.model ?? ''),
+              configured: Boolean(data.configured),
+              confidence: Number(data.confidence ?? 0),
+              hard_rule: Boolean(data.hard_rule),
+              ...(data.error ? { error: String(data.error) } : {}),
+            })
+            return
+          }
           case 'plan.review': {
             // `/plan`、`/team` 生成计划后阻塞等待审阅：批准前不会执行任何工具。
             setPlanReview({
@@ -468,6 +488,7 @@ export function useSessionTimeline(
     session,
     approval,
     planReview,
+    router,
     memoryNotice,
     hitl,
     error,

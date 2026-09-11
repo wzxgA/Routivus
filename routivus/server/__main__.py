@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import socket
 import sys
@@ -35,6 +36,26 @@ def _bind_socket(host: str, port: int) -> socket.socket:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
     return sock
+
+
+def _prewarm_router_before_loop(config: ServerConfig) -> None:
+    """在 uvicorn 事件循环启动前，于主线程同步加载智能路由重资产。
+
+    SmartRouter 的首次重型 import（numpy / sklearn / lightgbm / onnxruntime…）
+    绝不能发生在后台线程里：它会与事件循环首次创建 AnyIO worker 线程
+    （starlette 静态资源的 ``os.stat`` 走 ``to_thread``）抢导入锁而死锁，
+    桌面端表现为后端已就绪但窗口永远打不开。放在这里（accept 之前、主线程）
+    既消除了竞态，又让握手之后 /healthz 立即可用。开关关闭时不加载任何东西，
+    失败只告警，不影响启动（首轮对话仍会惰性加载兜底）。
+    """
+    try:
+        from routivus.server.routing import prewarm_shared_assets_if_enabled
+
+        prewarm_shared_assets_if_enabled(config.user_dir, blocking=True)
+    except Exception:
+        logging.getLogger("routivus.server").warning(
+            "smart router: 启动预热失败，将在首轮对话惰性加载", exc_info=True
+        )
 
 
 def _watch_stdin_for_shutdown(server: uvicorn.Server) -> None:
@@ -97,6 +118,9 @@ def main() -> None:
             log_level="info",
         )
     )
+
+    # 必须在 server.run() 之前、主线程内完成：见 _prewarm_router_before_loop。
+    _prewarm_router_before_loop(config)
 
     if desktop:
         _watch_stdin_for_shutdown(server)

@@ -215,12 +215,13 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 - **笔记**：全局入口显示全部笔记及项目归属，项目入口只显示当前项目笔记；搜索、新建、编辑、标签、置顶、删除均走服务端；版本冲突返回 409 时提示「用当前内容覆盖」，不静默丢失。
 - **会话视图**：WebSocket 事件流渲染消息、工具卡、计划 / 团队任务卡、审批与提问卡；`/plan <任务>` 与 `/team <任务>` 在会话内直接可用（生成计划后弹出审阅卡：批准执行 / 重新规划 / 取消），`/team resume [task_id] --write-scope <路径>` 用于 `needs_input` 恢复；四页签信息侧栏（Session / Plan / Memory / Safety）；Composer 支持 `Enter` 发送、`↑↓` 历史、运行中停止。
 - **终端抽屉**：`Ctrl+\`` 或顶栏按钮展开，走 `/api/ws/projects/{id}/terminal`，服务端绑定项目 cwd。
+- **智能路由**：配置页开关与四档；普通对话轮按任务复杂度自动换档，顶栏 chip 与信息侧栏显示本轮档位与实际模型。
 - **主题**：暖白 / 夜间双主题（含夜空动效），偏好存 `localStorage`。
 
 已知限制：
 
 - 会话断线重连会以服务端 `session.snapshot` 重建消息流（持久化消息不丢），但**计划 / 团队任务卡属于瞬时状态，重连后不保证复原**。
-- 配置页当前只读：后端尚未提供 `/api/config`（Provider 列表、SmartRouter 四档、HITL 运行时）与 Skill 列表接口，页面已如实标注待接入项。
+- 配置页可编辑（Provider 增删改 / Key / 模型列表 / 四档 / SmartRouter 开关，走 `/api/config`）；Skill 列表与 Memory 条目暂无接口，页面未展示。
 - `/plan`、`/team` 在会话内**可用**，但审阅是**阻塞式**的：等待决策期间不接受新指令，客户端需用 `plan_decision`（`action` = `execute` / `cancel` / `replan`）应答；超时按取消落地（`ROUTIVUS_APPROVAL_TIMEOUT`，默认 300s）。协议级测试见 `tests/test_server_plan_team.py`。
 - `/team resume` 只能恢复**本会话最近一次** `/team` 的执行器，且写入范围必须显式声明（`--write-scope`，fail closed）；服务重启后执行器不保留，无法恢复。
 - Memory 页签的条目列表恒为空：会话快照里的 `memory.items` 目前固定是 `[]`，把 `/memory list` 结构化后推送需要后端补接口。
@@ -330,7 +331,19 @@ python -c "from routivus.config.manager import ConfigManager; from routivus.cli.
 
 ## SmartRouter 智能路由
 
-SmartRouter 按任务复杂度动态选择四档模型（Basic / Enhanced / Superior / Ultimate），档位的 provider/model 通过 `/tier` 配置，总开关用 `/smartRouter`：
+SmartRouter 按任务复杂度动态选择四档模型（Basic / Enhanced / Superior / Ultimate）。
+
+**在 Web Console 会话里怎么生效**：普通对话轮在执行前先路由，再按结果切换本轮实际使用的模型 —— 顶栏与信息侧栏会显示 `SmartRouter <档位>` 与本轮模型（`router.updated` 事件 / 会话快照的 `router` 字段）。开关与四档在**配置页**维护（`/api/config/smart-router`、`/api/config/tiers/{tier}`），配置档位会自动打开总闸。
+
+边界：
+
+- **只有普通对话轮路由**：`/plan`、`/team` 不参与（与 TUI 的门禁一致）。计划与团队的子任务沿用执行器拿到的那份 LLM 配置。
+- **路由在工作线程里执行**：校准 / 自学习 / ML 精判（含 23.9 MB 语义 ONNX 会话）是同步重活，首次加载可能数秒；服务端把它丢到工作线程并带超时（`ROUTIVUS_ROUTER_TIMEOUT`），所以**不会阻塞事件循环**（否则表现为「一对话就卡住」、心跳与其它 HTTP 全部停响应）。重资产是进程级单例，只加载一次，后续会话零成本。加载或路由偏慢时会打 WARNING 日志（含耗时），便于排查。
+- 路由结果**只改内存**中的 provider/model，不写回 `active_provider` / `active_model`；重连后档位可从会话快照回显，**服务重启后不保留**。
+- **手动优先**：在顶栏显式切换模型会关闭智能路由（与 `/model` 的行为一致），避免下一轮路由立刻覆盖刚选的模型。
+- 档位未显式配置时回落 active 模型；换模型失败（缺 API Key 等）只会**沿用当前模型**并回报错误，不阻断对话。
+
+档位的 provider/model 用 `/tier` 配置，总开关用 `/smartRouter`（以下命令经 `handle_service_command` 程序化分发，Web Console 请走配置页）：
 
 | 命令 | 行为 |
 |------|------|
@@ -477,6 +490,7 @@ provider 与 SmartRouter 配置统一存于 `config.json`（见「配置 Provide
 | `ROUTIVUS_MAX_PARALLEL` | 并行工具执行并发数（默认 4） |
 | `ROUTIVUS_TOOL_TIMEOUT` | 单工具执行超时秒数（默认 120） |
 | `ROUTIVUS_HITL` | 危险操作审批开关（on 默认 / off 危险模式） |
+| `ROUTIVUS_ROUTER_TIMEOUT` | 智能路由（含首次模型加载）超时秒数（默认 120，下限 5）；超时只降级为「本轮不换档」 |
 | `ROUTIVUS_PLAN_MAX_SUBTASKS` | 计划模式子任务数上限（默认 12，超出截断） |
 | `ROUTIVUS_PLAN_SUBTASK_STEPS` | 计划模式单个子任务最大工具步数（默认 10） |
 | `ROUTIVUS_PLAN_MAX_FAILURES` | 计划级允许失败数（默认 3，超出终止剩余轮次） |

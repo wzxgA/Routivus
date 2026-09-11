@@ -145,8 +145,28 @@ export interface SessionSnapshot {
   messages: Message[]
   memory: { project_id: string; scope: string; status: string; items: unknown[] }
   safety: { project_id: string; hitl: string; status: string }
+  router?: RouterState
   audit: { tool_calls: number; tool_failures: number; approvals: number }
   last_sequence: number
+}
+
+/**
+ * 智能路由状态（服务端 `router.updated` 事件 / 会话快照 `router` 字段）。
+ *
+ * 普通对话轮在开关开启时会先按任务复杂度路由，再把 `agent.llm` 换到结果档；
+ * `tier` / `provider` / `model` 即本轮实际使用的档位。路由或换模型失败时
+ * `error` 非空，该轮沿用原模型。
+ */
+export interface RouterState {
+  enabled: boolean
+  tier?: string
+  tier_idx?: number
+  provider?: string
+  model?: string
+  configured?: boolean
+  confidence?: number
+  hard_rule?: boolean
+  error?: string
 }
 
 export interface ToolStartedData {

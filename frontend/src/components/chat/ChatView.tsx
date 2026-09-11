@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Session } from '../../api/types'
+import type { RouterState, Session } from '../../api/types'
 import { useSessionTimeline } from '../../state/sessionTimeline'
 import type { ConnState } from '../../ws/sessionSocket'
 import { Empty } from '../common/Empty'
@@ -31,6 +31,7 @@ interface ChatViewProps {
   onToggleTerminal: () => void
   onSessionUpdate: (session: Session) => void
   onHitlChange: (hitl: string | null) => void
+  onRouterChange: (router: RouterState | null) => void
   onConnectionChange: (state: ConnState) => void
 }
 
@@ -45,6 +46,7 @@ export function ChatView({
   onToggleTerminal,
   onSessionUpdate,
   onHitlChange,
+  onRouterChange,
   onConnectionChange,
 }: ChatViewProps) {
   const timeline = useSessionTimeline(projectId, session?.id ?? null, session, onSessionUpdate)
@@ -85,6 +87,11 @@ export function ChatView({
   useEffect(() => {
     onConnectionChange(timeline.connection)
   }, [timeline.connection, onConnectionChange])
+
+  // 智能路由档位同步给顶栏（普通对话轮按复杂度换档的结果）
+  useEffect(() => {
+    onRouterChange(timeline.router)
+  }, [timeline.router, onRouterChange])
 
   const handleSubmit = useCallback(
     (mode: ComposerMode) => {
@@ -168,6 +175,7 @@ export function ChatView({
         projectNotes={projectNotesCount}
         memoryNotice={timeline.memoryNotice}
         hitl={timeline.hitl}
+        router={timeline.router}
         contextWindow={contextWindow}
       />
     </section>

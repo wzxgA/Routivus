@@ -20,6 +20,7 @@ build/
 # 测试
 plans/
 .pytest_cache/
+.pytest-tmp/
 .coverage
 htmlcov/
 

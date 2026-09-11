@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ConfigSnapshot, Project, Session } from '../../api/types'
+import type { ConfigSnapshot, Project, RouterState, Session } from '../../api/types'
 import type { Route } from '../../router'
 import { describeError } from '../../state/errors'
 import type { ThemeName } from '../../theme'
@@ -15,6 +15,7 @@ interface TopBarProps {
   theme: ThemeName
   contextWindow: number
   hitl: string | null
+  router: RouterState | null
   terminalOpen: boolean
   config: ConfigSnapshot | null
   onSwitchModel: (provider: string, model: string) => Promise<void>
@@ -56,6 +57,7 @@ export function TopBar({
   theme,
   contextWindow,
   hitl,
+  router,
   terminalOpen,
   config,
   onSwitchModel,
@@ -87,8 +89,11 @@ export function TopBar({
       : 0
   const status = liveSession?.status ?? 'idle'
 
-  const activeProvider = liveSession?.active_provider || config?.active_provider || ''
-  const currentModel = liveSession?.active_model || config?.active_model || ''
+  // 智能路由开启时，会话里的 active_* 仍是「手动配置的模型」，本轮真正跑的是路由
+  // 结果，所以优先展示路由档位，避免顶栏滞后于实际执行的模型。
+  const routed = router?.enabled && router.model ? router : null
+  const activeProvider = routed?.provider || liveSession?.active_provider || config?.active_provider || ''
+  const currentModel = routed?.model || liveSession?.active_model || config?.active_model || ''
   const providerEntry = config?.providers.find((item) => item.name === activeProvider)
   const availableModels = providerEntry
     ? Array.from(
@@ -152,6 +157,19 @@ export function TopBar({
             <span className="chip hitl" title="HITL 由服务端托管">
               {hitl ? 'HITL ON' : 'HITL —'}
             </span>
+            {router?.enabled ? (
+              <span
+                className={`chip router${router.error ? ' warn' : ''}`}
+                title={
+                  router.error ||
+                  `智能路由：普通对话轮按复杂度自动换档${
+                    router.tier ? `，本轮 ${router.tier}` : ''
+                  }${router.configured ? '' : '（该档未显式配置，回落 active 模型）'}`
+                }
+              >
+                SmartRouter {router.error ? '!' : router.tier || 'ON'}
+              </span>
+            ) : null}
           </div>
           <ConnectionBadge state={connection} />
           <div className={`model${modelOpen ? ' open' : ''}`} ref={modelRef}>

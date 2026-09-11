@@ -22,6 +22,7 @@ import { useConfigSnapshot } from './state/config'
 import { useProjectWorkspace } from './state/projectWorkspace'
 import { describeError } from './state/errors'
 import { useWorkspace } from './state/workspaceContext'
+import type { RouterState } from './api/types'
 import type { ConnState } from './ws/sessionSocket'
 
 const CONTEXT_WINDOW = Number(import.meta.env.VITE_ROUTIVUS_CONTEXT_WINDOW ?? 128000) || 128000
@@ -37,6 +38,7 @@ export function App() {
 
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [hitl, setHitl] = useState<string | null>(null)
+  const [router, setRouter] = useState<RouterState | null>(null)
   const [connection, setConnection] = useState<ConnState>('offline')
   const [globalNoteId, setGlobalNoteId] = useState<string | null>(null)
   const [projectNoteSel, setProjectNoteSel] = useState<Record<string, string | null>>({})
@@ -46,6 +48,7 @@ export function App() {
     if (route.kind !== 'project') {
       setTerminalOpen(false)
       setHitl(null)
+      setRouter(null)
       setConnection('offline')
     }
   }, [route.kind])
@@ -222,6 +225,7 @@ export function App() {
             onToggleTerminal={() => setTerminalOpen((value) => !value)}
             onSessionUpdate={workspace.applySessionUpdate}
             onHitlChange={setHitl}
+            onRouterChange={setRouter}
             onConnectionChange={setConnection}
           />
         )
@@ -284,6 +288,7 @@ export function App() {
           theme={theme}
           contextWindow={CONTEXT_WINDOW}
           hitl={hitl}
+          router={router}
           terminalOpen={terminalOpen}
           config={configState.config}
           onSwitchModel={handleSwitchModel}
