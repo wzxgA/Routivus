@@ -1539,6 +1539,11 @@ button {
   color: var(--muted);
   font-weight: 600;
 }
+/* 表格行 k=v 的键部分、纯数字：次级信息淡化 */
+.cmd-kdim,
+.cmd-num {
+  color: var(--muted);
+}
 /* 语义高亮：成功 / 失败 / 四档名（颜色全部走主题变量，夜间自动切换） */
 .cmd-ok {
   color: var(--ok);

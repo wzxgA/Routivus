@@ -10,7 +10,11 @@ import type { ApprovalRequestedData, PlanReviewRequest } from '../../api/types'
 
 // ---- 命令回执的语义高亮 -------------------------------------------------
 // 命令输出是纯文本（service 层拼的表格/状态行），这里按行做轻量着色：
-// "键：值"行淡化键名；命中成功/失败关键词的词着色；四档名着金色。
+// - "键：值"行：键名淡化
+// - 空格分列的表格行（≥2 列）：行首列（档位/provider 名）金色加粗
+// - k=v 形式的 token：键部分淡化、值正常
+// - 成功/失败关键词着绿/红；纯数字淡化
+// 空白分隔符原样保留（pre 下表格对齐不破坏）。
 
 const OK_WORDS = new Set([
   '已开启', '开启', '已启用', '成功', '可用', '通过', '已保存', '完成', 'OK', '✓', 'Enabled',
@@ -18,25 +22,40 @@ const OK_WORDS = new Set([
 const BAD_WORDS = new Set([
   '关闭', '失败', '不可用', '错误', '缺失', '已禁用', '未配置', 'Disabled', '(x)',
 ])
-// 长词在前，避免"已开启"被"开启"拆散
-const TOKEN_RE =
-  /(已开启|已启用|已保存|已禁用|未配置|Enabled|Disabled|不可用|成功|失败|错误|缺失|开启|关闭|可用|通过|完成|OK|✓|\(x\))/g
 const TIER_RE = /^(Basic|Enhanced|Superior|Ultimate)(?=\s|：|:|=)/
 const KEY_RE = /^([^：:=]{1,24}[：:=])\s*(.*)$/
+const NUM_RE = /^\d+(?:[.,]\d+)?$/
+const WS_SPLIT = /(\s+)/
 
-function renderTokens(text: string, key: string): ReactNode {
+function renderTokens(text: string, key: string, lead = false): ReactNode {
   if (!text) return '\u00a0'
-  const parts = text.split(TOKEN_RE)
-  return parts.map((part, index) => {
-    if (OK_WORDS.has(part)) return <span key={`${key}-${index}`} className="cmd-ok">{part}</span>
-    if (BAD_WORDS.has(part)) return <span key={`${key}-${index}`} className="cmd-bad">{part}</span>
-    return <span key={`${key}-${index}`}>{part}</span>
+  let leadPending = lead
+  return text.split(WS_SPLIT).map((part, index) => {
+    const tokenKey = `${key}-${index}`
+    if (part === '' || /^\s+$/.test(part)) return <span key={tokenKey}>{part}</span>
+    const isLead = leadPending
+    leadPending = false
+    if (isLead) return <span key={tokenKey} className="cmd-tier">{part}</span>
+    const eq = part.indexOf('=')
+    if (eq > 0) {
+      return (
+        <span key={tokenKey}>
+          <span className="cmd-kdim">{part.slice(0, eq + 1)}</span>
+          {part.slice(eq + 1)}
+        </span>
+      )
+    }
+    if (OK_WORDS.has(part)) return <span key={tokenKey} className="cmd-ok">{part}</span>
+    if (BAD_WORDS.has(part)) return <span key={tokenKey} className="cmd-bad">{part}</span>
+    if (NUM_RE.test(part)) return <span key={tokenKey} className="cmd-num">{part}</span>
+    return <span key={tokenKey}>{part}</span>
   })
 }
 
 function CmdLine({ line, index }: { line: string; index: number }) {
   const key = `cmd-${index}`
   if (line === '') return <div className="cmd-line">&nbsp;</div>
+  // 四档名开头的行：档位名金色，其余按 token 着色
   const tier = TIER_RE.exec(line)
   if (tier) {
     return (
@@ -46,6 +65,7 @@ function CmdLine({ line, index }: { line: string; index: number }) {
       </div>
     )
   }
+  // "键：值"行：键名淡化，值部分照常着色
   const match = KEY_RE.exec(line)
   if (match) {
     return (
@@ -55,7 +75,9 @@ function CmdLine({ line, index }: { line: string; index: number }) {
       </div>
     )
   }
-  return <div className="cmd-line">{renderTokens(line, key)}</div>
+  // 表格行（≥2 列才认定为表格，避免中文整句被误染）：行首列金色
+  const columns = line.trim().split(/\s+/)
+  return <div className="cmd-line">{renderTokens(line, key, columns.length >= 2)}</div>
 }
 
 interface MessageListProps {
