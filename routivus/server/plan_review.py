@@ -32,6 +32,8 @@ ACTIONS = ("execute", "cancel", "replan")
 @dataclass
 class _PendingReview:
     review_id: str
+    # 发给客户端的完整载荷（含计划视图）：重连快照用它恢复审阅卡，客户端据此继续应答。
+    payload: dict = field(default_factory=dict)
     future: asyncio.Future = field(repr=False, default=None)  # type: ignore[assignment]
 
 
@@ -70,6 +72,14 @@ class PlanReviewBridge:
     def has_pending(self) -> bool:
         return self._pending is not None
 
+    @property
+    def pending_payload(self) -> dict[str, Any] | None:
+        """待决审阅的原始事件载荷（重连快照恢复审阅卡用）；无待决返回 None。"""
+        pending = self._pending
+        if pending is None or not pending.payload:
+            return None
+        return dict(pending.payload)
+
     # ---------- reviewer 接口 ----------
 
     async def review(self, plan: Any) -> ReviewDecision:
@@ -79,17 +89,15 @@ class PlanReviewBridge:
             return ReviewDecision(action="cancel", feedback="review_busy")
         review_id = f"rv-{uuid4().hex[:8]}"
         future: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._pending = _PendingReview(review_id=review_id, future=future)
-        await self._safe_emit(
-            "plan.review",
-            {
-                "kind": "review",
-                "review_id": review_id,
-                "mode": self.mode,
-                "plan": self._safe_view(plan, self.mode),
-                "timeout": self.timeout,
-            },
-        )
+        payload = {
+            "kind": "review",
+            "review_id": review_id,
+            "mode": self.mode,
+            "plan": self._safe_view(plan, self.mode),
+            "timeout": self.timeout,
+        }
+        self._pending = _PendingReview(review_id=review_id, payload=payload, future=future)
+        await self._safe_emit("plan.review", payload)
         try:
             # shield：超时时不要让 wait_for 取消掉 future，否则迟到的 resolve
             # 会撞上 InvalidStateError，客户端的决策也就静默丢失了。

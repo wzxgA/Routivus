@@ -280,6 +280,104 @@ def test_command_is_rejected_while_turn_running(tmp_path: Path) -> None:
     assert client.get(f"/api/sessions/{session['id']}/messages").json() == []
 
 
+class _StubBridge:
+    """只读待决载荷的桥接替身（快照恢复用）。"""
+
+    def __init__(self, payload: dict) -> None:
+        self.pending_payload = payload
+
+
+class _StubResumableTask:
+    def __init__(self, task_id: str) -> None:
+        self.id = task_id
+        self.title = f"任务 {task_id}"
+        self.description = "修复审查未通过"
+        self.deps: list[str] = []
+        self.status = "needs_input"
+        self.pending_repair_scope: list[Any] = []
+
+
+class _StubResumablePlan:
+    def __init__(self) -> None:
+        self.goal = "修复登录"
+        self.tasks = [_StubResumableTask("t1"), _StubResumableTask("t2")]
+
+
+class _StubResumableExecutor:
+    def __init__(self) -> None:
+        self.plan = _StubResumablePlan()
+        self.team_id = "team-1"
+
+
+# ==========================================================================
+# 快照恢复（P0/P1/P2）：卡片事件回放 + 待决交互 + Team needs_input
+# ==========================================================================
+
+
+def test_snapshot_replays_cards_and_defaults_pending_empty(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    session = _session(client, project)
+
+    with client.websocket_connect(_ws(project, session)) as socket:
+        socket.receive_json()  # 初次快照
+        socket.send_json({"type": "user_message", "content": "/help", "request_id": "r1"})
+        _receive_until(socket, _is_command_event)
+
+    # 重连（模拟"重进项目"）：快照必须带回卡片事件，否则命令卡会退化成文字。
+    with client.websocket_connect(_ws(project, session)) as socket:
+        snapshot = socket.receive_json()["data"]
+
+    replay = snapshot["replay"]
+    command_events = [item for item in replay if item["type"] == "command.executed"]
+    assert command_events, "快照应回放 command.executed"
+    receipt_id = command_events[-1]["data"]["message_id"]
+    assert receipt_id, "command.executed 必须携带回执 message_id"
+
+    messages = client.get(f"/api/sessions/{session['id']}/messages").json()
+    assert receipt_id in {item["id"] for item in messages}
+    assert snapshot["pending"] == {}
+
+
+def test_snapshot_pending_restores_approval_and_review(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    session = _session(client, project)
+    client.app.state.session_approvals[session["id"]] = _StubBridge(
+        {"kind": "approval", "approval_id": "ap-1", "tool_name": "shell", "level": "high", "arguments": {}, "timeout": 300}
+    )
+    client.app.state.session_reviews[session["id"]] = _StubBridge(
+        {"kind": "review", "review_id": "rv-1", "mode": "plan", "plan": {"goal": "g", "tasks": [], "batches": []}, "timeout": 300}
+    )
+
+    with client.websocket_connect(_ws(project, session)) as socket:
+        snapshot = socket.receive_json()["data"]
+
+    assert snapshot["pending"]["approval"]["approval_id"] == "ap-1"
+    assert snapshot["pending"]["plan_review"]["review_id"] == "rv-1"
+
+
+def test_snapshot_surfaces_team_needs_input(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    session = _session(client, project)
+    client.app.state.session_resumable[session["id"]] = ("team", _StubResumableExecutor())
+
+    with client.websocket_connect(_ws(project, session)) as socket:
+        snapshot = socket.receive_json()["data"]
+
+    needs_input = [
+        item
+        for item in snapshot["replay"]
+        if item["type"] == "team.updated" and item["data"].get("kind") == "team_needs_input"
+    ]
+    assert needs_input, "needs_input 的团队任务应在快照里出现"
+    payload = needs_input[0]["data"]
+    assert "2 个任务" in payload["message"]
+    assert [task["id"] for task in payload["plan"]["tasks"]] == ["t1", "t2"]
+    assert all(task["status"] == "needs_input" for task in payload["plan"]["tasks"])
+
+
 def test_cancel_alias_maps_to_cancel_channel(tmp_path: Path) -> None:
     client = _client(tmp_path)
     project = _project(client)

@@ -312,6 +312,36 @@ def _plan_card_view(plan: Any, *, mode: str) -> dict[str, Any]:
     }
 
 
+# 卡片类事件：结构化状态只在 events 表里，重连快照必须回放它们才能重建卡片。
+_REPLAY_EVENT_TYPES = (
+    "plan.updated",
+    "team.updated",
+    "tool.started",
+    "tool.completed",
+    "command.executed",
+)
+
+
+def _replay_card_events(events: list[EventRecord]) -> list[dict[str, Any]]:
+    """从历史事件里筛出卡片类事件，供快照恢复卡片渲染。
+
+    刻意排除 `message.*` / `session.*` / `error` / `approval.*`：文本由快照的
+    messages 承载（回放消息事件会让前端重复插入），待决交互由 `pending` 字段
+    承载（走内存桥的可应答态，比回放历史事件更准确）。`router.updated` 是状态
+    类事件，只保留最后一条。
+    """
+    replay: list[dict[str, Any]] = []
+    last_router: dict[str, Any] | None = None
+    for item in events:
+        if item.event_type in _REPLAY_EVENT_TYPES:
+            replay.append({"type": item.event_type, "sequence": item.sequence, "data": item.data})
+        elif item.event_type == "router.updated":
+            last_router = {"type": item.event_type, "sequence": item.sequence, "data": item.data}
+    if last_router is not None:
+        replay.append(last_router)
+    return replay
+
+
 def _task_card_payload(item: Any, *, mode: str) -> dict[str, Any]:
     """把一个 PlanEvent / TeamEvent 摊平成前端直接消费的卡片载荷。"""
     data: dict[str, Any] = {"kind": str(getattr(item, "kind", ""))}
@@ -1750,7 +1780,13 @@ def create_app(
         await send_event(websocket, "message.created", session, {"message": _record_payload(_message_response(user_message)), "request_id": request_id})
         receipt = workspace_store.add_message(session.id, "assistant", message)
         await send_event(websocket, "message.created", session, {"message": _record_payload(_message_response(receipt)), "request_id": request_id})
-        await send_event(websocket, "command.executed", session, {"command": content, "ok": ok, "request_id": request_id})
+        # message_id 让前端精确定位回执条目（在线与回放都不再靠"最近一条"猜测）。
+        await send_event(
+            websocket,
+            "command.executed",
+            session,
+            {"command": content, "ok": ok, "message_id": receipt.id, "request_id": request_id},
+        )
 
         # 状态联动：命令改了配置时，把变化同步给会话记录与顶栏（复用既有事件通道）。
         if ok and agent is not None:
@@ -1839,6 +1875,45 @@ def create_app(
             }
             prior_events = workspace_store.list_events(session.id, after_sequence=0, limit=1000)
             snapshot["last_sequence"] = prior_events[-1].sequence if prior_events else 0
+            # 卡片恢复（plans/enhancement 的重连方案）：
+            # 1) replay = 历史里的卡片类事件，前端按序喂给同一套 reducer；
+            # 2) pending = 内存桥里仍挂起的审批 / 计划审阅，恢复成"可继续应答"的卡片。
+            replay_events = _replay_card_events(prior_events)
+            approval_bridge = session_approvals.get(session.id)
+            pending_payload = getattr(approval_bridge, "pending_payload", None)
+            review_bridge = session_reviews.get(session.id)
+            review_payload = getattr(review_bridge, "pending_payload", None)
+            pending: dict[str, Any] = {}
+            if pending_payload:
+                pending["approval"] = pending_payload
+            if review_payload:
+                pending["plan_review"] = review_payload
+            # 3) Team 断点续跑：needs_input 的任务不在事件里（它靠内存执行器），
+            #    补一条非 start 的 team.updated 让前端重建/更新团队卡。
+            resumable = session_resumable.get(session.id)
+            resumable_executor = resumable[1] if resumable else None
+            resumable_plan = getattr(resumable_executor, "plan", None)
+            if resumable_plan is not None:
+                waiting = [
+                    task
+                    for task in getattr(resumable_plan, "tasks", []) or []
+                    if str(getattr(task, "status", "")) == "needs_input"
+                ]
+                if waiting:
+                    replay_events.append(
+                        {
+                            "type": "team.updated",
+                            "sequence": snapshot["last_sequence"],
+                            "data": {
+                                "kind": "team_needs_input",
+                                "message": f"{len(waiting)} 个任务等待确认写入范围（/team resume …）",
+                                "plan": _plan_card_view(resumable_plan, mode="team"),
+                                "team_id": str(getattr(resumable_executor, "team_id", "") or ""),
+                            },
+                        }
+                    )
+            snapshot["replay"] = replay_events
+            snapshot["pending"] = pending
             snapshot["audit"] = {
                 "tool_calls": sum(item.event_type == "tool.started" for item in prior_events),
                 "tool_failures": sum(item.event_type == "tool.completed" and not bool(item.data.get("ok", False)) for item in prior_events),

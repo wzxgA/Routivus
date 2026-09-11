@@ -222,7 +222,7 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 
 已知限制：
 
-- 会话断线重连会以服务端 `session.snapshot` 重建消息流（持久化消息不丢），但**计划 / 团队任务卡属于瞬时状态，重连后不保证复原**。
+- 会话断线重连以服务端 `session.snapshot` 重建：消息来自 messages 表，**卡片（命令 / 工具 / 计划 / 团队）来自快照带回的 `replay` 事件回放**；仍挂起的审批 / 计划审阅由 `pending` 字段恢复，重连后可直接继续应答。限制：回放窗口为最近 1000 条事件（超长会话的早期卡片会缺失）；服务进程重启后内存桥不再存在，待决交互无法恢复（与 `/team resume` 的限制同源）。
 - 配置页可编辑（Provider 增删改 / Key / 模型列表 / 四档 / SmartRouter 开关，走 `/api/config`）；Skill 列表与 Memory 条目暂无接口，页面未展示。
 - `/plan`、`/team` 在会话内**可用**，但审阅是**阻塞式**的：等待决策期间不接受新指令，客户端需用 `plan_decision`（`action` = `execute` / `cancel` / `replan`）应答；超时按取消落地（`ROUTIVUS_APPROVAL_TIMEOUT`，默认 300s）。协议级测试见 `tests/test_server_plan_team.py`。
 - `/team resume` 只能恢复**本会话最近一次** `/team` 的执行器，且写入范围必须显式声明（`--write-scope`，fail closed）；服务重启后执行器不保留，无法恢复。

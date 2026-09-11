@@ -94,17 +94,9 @@ function messageToItem(message: Message): TimelineItem | null {
     case 'assistant':
       return { kind: 'agent', id: message.id, content: message.content, at: message.created_at }
     case 'tool':
-      return {
-        kind: 'tool',
-        id: message.id,
-        name: message.tool_name ?? 'tool',
-        args: '',
-        ok: null,
-        output: message.tool_result ?? message.content,
-        error: '',
-        durationMs: null,
-        at: message.created_at,
-      }
+      // 工具卡不再从消息表重建（消息里没有参数/成败/耗时，只能画出残缺卡），
+      // 统一由快照 replay 的 tool.started/tool.completed 事件还原，避免重复卡片。
+      return null
     case 'system':
       return { kind: 'system', id: message.id, content: message.content, at: message.created_at }
     default:
@@ -115,9 +107,11 @@ function messageToItem(message: Message): TimelineItem | null {
 /**
  * 会话事件流：把 WebSocket 事件归约为可渲染的时间线。
  *
- * 断线恢复策略：每次（重）连服务端都会推送完整 `session.snapshot`（含持久化消息），
- * 前端以快照为准重建时间线，再按 `sequence` 严格递增应用增量事件。窗口内的
- * 计划/团队卡属于瞬时状态，不在消息表内，重连后不保证复原。
+ * 断线恢复策略：每次（重）连服务端都会推送完整 `session.snapshot`，前端以快照
+ * 为准重建——消息来自 `snapshot.messages`，卡片（命令 / 工具 / 计划 / 团队）
+ * 由 `snapshot.replay` 的历史事件按序回放给同一个 reducer 重建，仍挂起的交互
+ * 由 `snapshot.pending` 恢复成可继续应答的卡片；此后按 `sequence` 严格递增
+ * 应用增量事件。工具卡只认事件（消息表里的 tool 角色缺少参数/成败/耗时）。
  */
 export function useSessionTimeline(
   projectId: string | null,
@@ -172,9 +166,8 @@ export function useSessionTimeline(
     setMemoryNotice(null)
     setError(null)
 
-    const socket = new SessionSocket(projectId, sessionId, {
-      onState: setConnection,
-      onEvent: (event: WsEnvelope) => {
+    // 事件归约：在线增量与快照回放共用同一套 reducer，避免两套渲染逻辑漂移。
+    const applyEvent = (event: WsEnvelope) => {
         const data = (event.data ?? {}) as Record<string, unknown>
         switch (event.type) {
           case 'session.snapshot': {
@@ -198,6 +191,19 @@ export function useSessionTimeline(
               })
               updateRef.current(snapshotSession)
             }
+            // 待决交互：内存桥仍挂着 → 恢复成"可以继续应答"的卡片
+            // （不恢复的话，重连后审批卡消失，用户只能干等超时 fail closed）。
+            setApproval(snapshot.pending?.approval ?? null)
+            setPlanReview(snapshot.pending?.plan_review ?? null)
+            // 卡片类历史事件回放：结构化状态不落消息表，用快照带回的事件重建
+            // （命令卡 / 工具卡 / 计划卡 / 团队卡），喂给同一个 reducer。
+            for (const replayed of snapshot.replay ?? []) {
+              applyEvent({
+                type: replayed.type,
+                sequence: replayed.sequence,
+                data: replayed.data,
+              } as WsEnvelope)
+            }
             return
           }
           case 'message.created': {
@@ -213,19 +219,28 @@ export function useSessionTimeline(
             return
           }
           case 'command.executed': {
-            // 把刚插入的回执条目标记为命令结果（ok 决定成败配色）。
+            // 把回执条目标记为命令结果（ok 决定成败配色）。优先按 message_id
+            // 精确定位——回放时"最近一条 agent"的启发式不再可靠。
             const command = String(data.command ?? '')
             const ok = Boolean(data.ok)
+            const messageId = String(data.message_id ?? '')
             setItems((current) => {
-              for (let index = current.length - 1; index >= 0; index -= 1) {
-                const item = current[index]
-                if (item && item.kind === 'agent') {
-                  const next = [...current]
-                  next[index] = { kind: 'command', id: item.id, command, content: item.content, ok, at: item.at }
-                  return next
+              let index = -1
+              if (messageId) {
+                index = current.findIndex((item) => item.id === messageId)
+              } else {
+                for (let cursor = current.length - 1; cursor >= 0; cursor -= 1) {
+                  if (current[cursor]?.kind === 'agent') {
+                    index = cursor
+                    break
+                  }
                 }
               }
-              return current
+              const item = index >= 0 ? current[index] : undefined
+              if (!item || item.kind !== 'agent') return current
+              const next = [...current]
+              next[index] = { kind: 'command', id: item.id, command, content: item.content, ok, at: item.at }
+              return next
             })
             return
           }
@@ -420,7 +435,11 @@ export function useSessionTimeline(
           default:
             return
         }
-      },
+    }
+
+    const socket = new SessionSocket(projectId, sessionId, {
+      onState: setConnection,
+      onEvent: applyEvent,
     })
     socketRef.current = socket
     socket.open()

@@ -147,7 +147,23 @@ export interface SessionSnapshot {
   safety: { project_id: string; hitl: string; status: string }
   router?: RouterState
   audit: { tool_calls: number; tool_failures: number; approvals: number }
+  /**
+   * 卡片类历史事件（plan/team/tool/command/router）：结构化状态不落消息表，
+   * 重连时由前端按序回放给同一套 reducer，用来重建卡片渲染。
+   */
+  replay?: ReplayEvent[]
+  /** 仍挂起的交互（内存桥）：恢复成可继续应答的审批 / 计划审阅卡。 */
+  pending?: {
+    approval?: ApprovalRequestedData
+    plan_review?: PlanReviewRequest
+  }
   last_sequence: number
+}
+
+export interface ReplayEvent {
+  type: string
+  sequence: number
+  data: Record<string, unknown>
 }
 
 /**
