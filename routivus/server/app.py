@@ -84,6 +84,7 @@ from routivus.server.schemas import (
     ProviderUpdateRequest,
     ProviderView,
     RootGrantRequest,
+    SkillView,
     SmartRouterRequest,
     TierRequest,
     TierView,
@@ -182,6 +183,55 @@ def _build_config_manager(config: ServerConfig) -> Any:
         user_dir=config.user_dir,
         project_dir=Path(config.user_dir).expanduser() / ".no-project-context",
         load_env=False,
+    )
+
+
+def _build_skill_registry(manager: Any, root: Path, settings: Any, audit: Any) -> Any | None:
+    """构造只读 Skill 注册表；失败降级为 None（不能挡住会话创建）。
+
+    配置以 `settings.skills_*` 为单一事实来源（`load_settings` 已合并 skills.json
+    与 env），目录扫描用同一个 ConfigManager 的 user_dir，保证命令与配置页看到的
+    enabled 覆盖一致。索引注入 system prompt，正文由 `load_skill` 工具按需加载。
+    """
+    try:
+        from routivus.config.skills import SkillConfigManager
+        from routivus.skill.models import SkillConfig
+        from routivus.skill.registry import SkillRegistry
+
+        skill_manager = SkillConfigManager(
+            user_dir=getattr(manager, "user_dir", None),
+            project_root=root,
+            env=getattr(manager, "env", None),
+        )
+        config = SkillConfig(
+            enabled=bool(getattr(settings, "skills_enabled", True)),
+            max_index_items=int(getattr(settings, "skills_max_index_items", 20)),
+            max_index_chars=int(getattr(settings, "skills_max_index_chars", 4096)),
+            max_skill_chars=int(getattr(settings, "skills_max_chars", 32_000)),
+            max_reference_chars=int(getattr(settings, "skills_max_reference_chars", 16_000)),
+            max_loaded_chars=int(getattr(settings, "skills_max_loaded_chars", 64_000)),
+        )
+        return SkillRegistry(
+            project_root=root,
+            config=config,
+            config_manager=skill_manager,
+            audit=audit,
+        )
+    except Exception:  # noqa: BLE001 - Skill 目录损坏不能挡住会话创建
+        logger.warning("Skill 注册表初始化失败，本次会话不启用 Skill", exc_info=True)
+        return None
+
+
+def _skill_view(info: Any) -> SkillView:
+    """SkillInfo → 只读响应模型（不下发正文与参考资料）。"""
+    return SkillView(
+        name=str(getattr(info, "name", "")),
+        description=str(getattr(info, "description", "") or ""),
+        source=str(getattr(info, "source", "") or ""),
+        version=getattr(info, "version", None),
+        enabled=bool(getattr(info, "enabled", True)),
+        valid=bool(getattr(info, "valid", True)),
+        error=str(getattr(info, "error", "") or ""),
     )
 
 
@@ -466,12 +516,16 @@ def _build_default_agent(project: Any, session: SessionRecord) -> Any:
         respect_retry_after=settings.llm_respect_retry_after,
     )
     audit = AuditLogger(root / ".routivus" / "audit.log", session_id=session.id)
+    # Skill 注册表：只读扫描 builtin/user/project 三处目录，索引注入 system prompt，
+    # 正文由 load_skill 工具按需加载（见 plans/enhancement/02-skill-integration.md）。
+    skills = _build_skill_registry(manager, root, settings, audit)
     tools = build_registry(
         base_dir=root,
         max_output_chars=settings.max_tool_output_chars,
         guard=lambda name, args: guard_tool_call(root, name, args),
         audit=audit,
         ask_user_enabled=settings.ask_user_enabled,
+        skill_registry=skills,
     )
     memory = MemoryManager(
         root,
@@ -485,6 +539,7 @@ def _build_default_agent(project: Any, session: SessionRecord) -> Any:
         approval_policy=HITLPolicy(enabled=settings.hitl),
         audit=audit,
         memory_manager=memory,
+        skill_registry=skills,
     )
     # SmartRouter 需要同一个 ConfigManager 才能读到四档配置、解析目标 provider 的
     # API Key 并换 `agent.llm`（与 TUI 的 SessionController 持有 manager 同构）。
@@ -1108,6 +1163,50 @@ def create_app(
         return _snapshot()
 
     # ---------- 桌面端专用：运行时白名单授权 ----------
+
+    def skill_registry_for(project_id: str | None) -> Any | None:
+        """按项目上下文构造只读 Skill 注册表；无 project_id 时退化为 builtin + 用户级。"""
+        from routivus.config.settings import load_settings
+
+        config_manager = _build_config_manager(resolved_config)
+        if project_id:
+            project = require_project(project_id)
+            project_root = Path(project.root_path).resolve()
+        else:
+            project_root = Path(resolved_config.user_dir).expanduser()
+        return _build_skill_registry(
+            config_manager, project_root, load_settings(config_manager), None
+        )
+
+    def skill_views(project_id: str | None) -> list[SkillView]:
+        registry = skill_registry_for(project_id)
+        if registry is None:
+            return []
+        return [_skill_view(info) for info in registry.list()]
+
+    def set_skill_enabled(name: str, enabled: bool, project_id: str | None) -> list[SkillView]:
+        registry = skill_registry_for(project_id)
+        if registry is None or registry.get(name) is None:
+            raise ApiError(404, "skill_not_found", f"未找到 Skill：{name}")
+        if not registry.set_enabled(name, enabled):
+            raise ApiError(422, "skill_update_failed", f"Skill 无法更新：{name}")
+        return [_skill_view(info) for info in registry.list()]
+
+    @router.get("/skills", response_model=list[SkillView])
+    async def list_skills(project_id: str | None = None) -> list[SkillView]:
+        """列出 builtin / 用户级 / 项目级 Skill（项目级需带 project_id）。
+
+        只读元数据；正文由会话内的 `load_skill` 工具按需加载，避免把大文本塞进配置页。
+        """
+        return skill_views(project_id)
+
+    @router.post("/skills/{name}/enable", response_model=list[SkillView])
+    async def enable_skill(name: str, project_id: str | None = None) -> list[SkillView]:
+        return set_skill_enabled(name, True, project_id)
+
+    @router.post("/skills/{name}/disable", response_model=list[SkillView])
+    async def disable_skill(name: str, project_id: str | None = None) -> list[SkillView]:
+        return set_skill_enabled(name, False, project_id)
 
     @router.get("/desktop/info", response_model=DesktopInfoResponse)
     async def desktop_info() -> DesktopInfoResponse:

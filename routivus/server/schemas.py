@@ -307,3 +307,15 @@ class DesktopInfoResponse(BaseModel):
     legacy_user_dir: str | None = None
     static_dir: str | None = None
     allowed_roots: list[str]
+
+
+class SkillView(BaseModel):
+    """Skill 元数据（只读）：正文与参考资料不在此处下发，按需由 load_skill 加载。"""
+
+    name: str
+    description: str = ""
+    source: str = ""
+    version: str | None = None
+    enabled: bool = True
+    valid: bool = True
+    error: str = ""

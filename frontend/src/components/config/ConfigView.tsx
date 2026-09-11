@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import * as api from '../../api'
-import type { ConfigSnapshot, ProviderView } from '../../api/types'
+import type { ConfigSnapshot, ProviderView, SkillView } from '../../api/types'
 import { describeError } from '../../state/errors'
 import { Modal } from '../common/Modal'
 
@@ -9,6 +9,12 @@ interface ConfigViewProps {
   loading: boolean
   error: string | null
   onReload: () => Promise<ConfigSnapshot | null>
+}
+
+const SKILL_SOURCE_LABEL: Record<string, string> = {
+  builtin: '内置',
+  user: '用户级',
+  project: '项目级',
 }
 
 type ModalState =
@@ -233,6 +239,8 @@ export function ConfigView({ config, loading, error, onReload }: ConfigViewProps
           <div className="hint">先添加 provider，才能配置档位。</div>
         ) : null}
       </div>
+
+      <SkillsCard />
 
       <div className="big-card">
         <div className="card-name">安全策略</div>
@@ -536,6 +544,106 @@ function KeyModal({
         />
       </div>
     </Modal>
+  )
+}
+
+function SkillsCard() {
+  const [skills, setSkills] = useState<SkillView[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      setSkills(await api.listSkills())
+      setError(null)
+    } catch (err) {
+      setError(describeError(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const toggle = useCallback(async (skill: SkillView) => {
+    setBusy(true)
+    setError(null)
+    try {
+      setSkills(await api.setSkillEnabled(skill.name, !skill.enabled))
+    } catch (err) {
+      setError(describeError(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  return (
+    <div className="big-card">
+      <div className="card-head">
+        <div className="card-name">Skill（任务规范）</div>
+        <button type="button" className="btn" disabled={loading || busy} onClick={() => void load()}>
+          刷新
+        </button>
+      </div>
+      <div className="card-desc">
+        只读的任务规范：索引随系统提示注入，正文由模型按需通过 <code>load_skill</code> 加载。
+        放到 <code>&lt;用户目录&gt;/skills/&lt;名称&gt;/SKILL.md</code> 或项目{' '}
+        <code>.routivus/skills/</code> 下即可被发现；会话内也可用 <code>/skill list</code>。
+      </div>
+      {error ? <div className="banner error">{error}</div> : null}
+      <table className="table">
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>说明</th>
+            <th>来源</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {skills.map((skill) => (
+            <tr key={`${skill.source}-${skill.name}`}>
+              <td className="mono">{skill.name}</td>
+              <td>{skill.description || '—'}</td>
+              <td>{SKILL_SOURCE_LABEL[skill.source] ?? skill.source}</td>
+              <td>
+                {skill.valid
+                  ? skill.enabled
+                    ? <span className="pill-ok">已启用</span>
+                    : '已禁用'
+                  : `无效：${skill.error}`}
+              </td>
+              <td>
+                <button
+                  type="button"
+                  className="btn tiny"
+                  disabled={busy || !skill.valid}
+                  onClick={() => void toggle(skill)}
+                >
+                  {skill.enabled ? '禁用' : '启用'}
+                </button>
+              </td>
+            </tr>
+          ))}
+          {skills.length === 0 ? (
+            <tr>
+              <td colSpan={5}>
+                {loading ? '正在加载 Skill…' : '没有发现 Skill。'}
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+      <div className="hint">
+        这里列出用户级与内置 Skill；项目级 Skill 依赖项目上下文，请在项目会话里用{' '}
+        <code>/skill list</code> 查看与启停。
+      </div>
+    </div>
   )
 }
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, AsyncIterator, Literal
+from typing import TYPE_CHECKING, Any, AsyncIterator, Literal
 
 from routivus.ask import AskRequest, AskRequester
 from routivus.config.settings import Settings
@@ -84,6 +84,7 @@ class ReActAgent:
         memory_manager: MemoryManager | None = None,
         mcp_manager: "McpManager | None" = None,
         ask_requester: AskRequester | None = None,
+        skill_registry: Any | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -93,11 +94,15 @@ class ReActAgent:
         self.memory_manager = memory_manager
         self.mcp_manager = mcp_manager
         self.ask_requester = ask_requester
+        # Skill 注册表：只读索引注入 system prompt，正文由 load_skill 工具按需加载。
+        self.skill_registry = skill_registry
+        self._base_system_prompt = system_prompt
         self.context = ConversationContext(
             system_prompt,
             settings,
             shared_provider=memory_manager.shared_sections if memory_manager else None,
         )
+        self._refresh_skill_index()
         self._reported_memory_warnings: set[str] = set()
         self._reported_mcp_warnings: set[str] = set()
         # 保持早期公开属性兼容：外部追加 messages 会直接进入短期历史。
@@ -106,6 +111,22 @@ class ReActAgent:
     def clear(self) -> None:
         """清空短期对话与摘要（保留基础 prompt 和共享记忆）。"""
         self.context.clear()
+
+    def _refresh_skill_index(self) -> None:
+        """把 Skill 索引拼到 system prompt 尾部（就地更新，避免 prompt 漂移）。
+
+        每轮 `run()` 前刷新：`/skill enable|disable` 之后**下一轮**即生效，无需重建
+        agent。开关关闭、注册表缺失或索引为空时回落到基础 prompt。
+        """
+        index = ""
+        registry = self.skill_registry
+        if registry is not None and getattr(self.settings, "skills_enabled", False):
+            try:
+                index = registry.index_text()
+            except Exception:  # pragma: no cover - 索引失败不该影响对话
+                index = ""
+        content = f"{self._base_system_prompt}\n\n{index}" if index else self._base_system_prompt
+        self.context.base_system_prompt.content = content
 
     def estimate_tokens(self) -> int:
         return self.context.estimate_request_tokens(self.tools.schemas())
@@ -156,6 +177,8 @@ class ReActAgent:
 
     async def run(self, user_input: str) -> AsyncIterator[AgentEvent]:
         """执行一轮 ReAct 循环。"""
+        # 每轮刷新 Skill 索引：/skill 开关变化下一轮生效（见 _refresh_skill_index）。
+        self._refresh_skill_index()
         if self.mcp_manager is not None:
             try:
                 await self.mcp_manager.ensure_started()

@@ -10,6 +10,7 @@ import type {
   Project,
   ProviderView,
   Session,
+  SkillView,
 } from './types'
 
 // ---- 项目 ----
@@ -186,6 +187,17 @@ export const clearTier = (tier: string) =>
 
 export const setSmartRouter = (enabled: boolean) =>
   request<ConfigSnapshot>('/config/smart-router', { method: 'POST', body: { enabled } })
+
+// ---- Skill（只读列表 + 启停） ----
+
+export const listSkills = (projectId?: string, signal?: AbortSignal) =>
+  request<SkillView[]>('/skills', { query: { project_id: projectId }, signal })
+
+export const setSkillEnabled = (name: string, enabled: boolean, projectId?: string) =>
+  request<SkillView[]>(`/skills/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {
+    method: 'POST',
+    query: { project_id: projectId },
+  })
 
 // ---- 桌面端：运行时白名单授权 ----
 

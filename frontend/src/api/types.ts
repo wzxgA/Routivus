@@ -185,6 +185,17 @@ export interface RouterState {
   error?: string
 }
 
+/** Skill 元数据（GET /api/skills）；正文由会话内 load_skill 工具按需加载。 */
+export interface SkillView {
+  name: string
+  description: string
+  source: string
+  version?: string | null
+  enabled: boolean
+  valid: boolean
+  error: string
+}
+
 /** 一条命令补全候选（与 GET /api/completions 的 candidates 项对应）。 */
 export interface CompletionCandidate {
   label: string

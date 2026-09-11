@@ -34,6 +34,7 @@ WEB_COMMANDS: tuple[str, ...] = (
     "/lang",
     "/clear",
     "/cancel",
+    "/skill",
 )
 
 
@@ -97,6 +98,18 @@ def _dynamic_registry(manager: Any = None, agent: Any = None) -> Any:
         lambda ctx: [
             CompletionCandidate(str(entry.id), str(entry.id), detail="记忆", kind="value")
             for entry in (memory.list(20) if memory is not None else [])
+        ],
+    )
+
+    skills = getattr(agent, "skill_registry", None)
+    reg.register(
+        "skill",
+        lambda ctx: [
+            CompletionCandidate(info.name, info.name, detail="skill", kind="value")
+            for info in (
+                skills.list() if skills is not None and skills.config.enabled else ()
+            )
+            if info.enabled
         ],
     )
     return reg
