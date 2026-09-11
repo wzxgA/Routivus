@@ -820,6 +820,33 @@ button {
   font-weight: 700;
   font-family: var(--mono);
 }
+/* 项目卡操作（重命名 / 移除）：卡片整体是打开入口，操作按钮需阻止冒泡 */
+.pt-acts {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.pt-act-btn {
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.pt-act-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.pt-act-btn.danger:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
 .proj-tile.new {
   border-style: dashed;
   display: flex;

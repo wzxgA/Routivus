@@ -12,6 +12,8 @@ interface HomeViewProps {
   error: string | null
   onOpenProject: (projectId: string) => void
   onNewProject: () => void
+  onRenameProject: (project: Project) => void
+  onRemoveProject: (project: Project) => void
   onRetry: () => void
 }
 
@@ -21,6 +23,8 @@ export function HomeView({
   error,
   onOpenProject,
   onNewProject,
+  onRenameProject,
+  onRemoveProject,
   onRetry,
 }: HomeViewProps) {
   const [activity, setActivity] = useState<ActivityDay[]>([])
@@ -67,11 +71,18 @@ export function HomeView({
         </div>
         <div className="proj-grid">
           {projects.map((project) => (
-            <button
-              type="button"
+            <div
               key={project.id}
               className="proj-tile"
+              role="button"
+              tabIndex={0}
               onClick={() => onOpenProject(project.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onOpenProject(project.id)
+                }
+              }}
             >
               <div className="pt-top">
                 <span className="pt-name">{project.name}</span>
@@ -91,7 +102,30 @@ export function HomeView({
                   今日调用 <b>{formatNumber(project.stats.calls_today)}</b>
                 </span>
               </div>
-            </button>
+              {/* 卡片本身是打开项目的入口，操作按钮必须阻止冒泡，否则会连带打开 */}
+              <div className="pt-acts">
+                <button
+                  type="button"
+                  className="pt-act-btn"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onRenameProject(project)
+                  }}
+                >
+                  重命名
+                </button>
+                <button
+                  type="button"
+                  className="pt-act-btn danger"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onRemoveProject(project)
+                  }}
+                >
+                  移除
+                </button>
+              </div>
+            </div>
           ))}
           <button type="button" className="proj-tile new" onClick={onNewProject}>
             + 新建项目

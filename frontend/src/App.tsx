@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import * as api from './api'
-import type { Session } from './api/types'
+import type { Project, Session } from './api/types'
 import { ChatView } from './components/chat/ChatView'
 import { Modal } from './components/common/Modal'
 import { Sky } from './components/common/Sky'
@@ -38,6 +38,8 @@ export function App() {
   const routeSessionId = route.kind === 'project' ? route.sessionId : null
   const workspace = useProjectWorkspace(projectId, routeSessionId)
 
+  const [renameTarget, setRenameTarget] = useState<Project | null>(null)
+  const [removeTarget, setRemoveTarget] = useState<Project | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [hitl, setHitl] = useState<string | null>(null)
   const [router, setRouter] = useState<RouterState | null>(null)
@@ -160,6 +162,8 @@ export function App() {
             error={error}
             onOpenProject={handleSelectProject}
             onNewProject={() => setNewProjectOpen(true)}
+            onRenameProject={setRenameTarget}
+            onRemoveProject={setRemoveTarget}
             onRetry={() => void refresh()}
           />
         )
@@ -341,6 +345,31 @@ export function App() {
           }}
         />
       ) : null}
+
+      {renameTarget ? (
+        <RenameProjectModal
+          project={renameTarget}
+          onClose={() => setRenameTarget(null)}
+          onDone={async () => {
+            setRenameTarget(null)
+            await refresh()
+          }}
+        />
+      ) : null}
+
+      {removeTarget ? (
+        <RemoveProjectModal
+          project={removeTarget}
+          onClose={() => setRemoveTarget(null)}
+          onDone={async () => {
+            const removedId = removeTarget.id
+            setRemoveTarget(null)
+            await refresh()
+            // 若当前正停留在被移除的项目里，退回首页，避免停留在悬空路由
+            if (projectId === removedId) navigate(HOME)
+          }}
+        />
+      ) : null}
     </div>
   )
 }
@@ -453,6 +482,137 @@ function NewProjectModal({
             ? '通过系统目录选择器选中即完成授权，无需手输路径。'
             : '路径需位于服务端允许的工作区根目录内（ROUTIVUS_WORKSPACE_ROOTS）。'}
         </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** 重命名项目：只改显示名，项目根目录不变。 */
+function RenameProjectModal({
+  project,
+  onClose,
+  onDone,
+}: {
+  project: Project
+  onClose: () => void
+  onDone: () => Promise<void>
+}) {
+  const [name, setName] = useState(project.name)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const submit = async () => {
+    if (!name.trim()) {
+      setError('项目名称不能为空')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      await api.updateProject(project.id, { name: name.trim() })
+      await onDone()
+    } catch (err) {
+      setError(describeError(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      title={`重命名项目：${project.name}`}
+      description={`根目录保持不变：${project.root_path}`}
+      onClose={onClose}
+      actions={
+        <>
+          <button type="button" className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={saving || !name.trim() || name.trim() === project.name}
+            onClick={() => void submit()}
+          >
+            {saving ? '保存中…' : '保存'}
+          </button>
+        </>
+      }
+    >
+      {error ? (
+        <div className="banner error" style={{ margin: '0 0 10px' }}>
+          {error}
+        </div>
+      ) : null}
+      <div className="field">
+        <label htmlFor="rename-project">项目名称</label>
+        <input
+          id="rename-project"
+          value={name}
+          autoFocus
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') void submit()
+          }}
+        />
+      </div>
+    </Modal>
+  )
+}
+
+/** 移除项目：只摘注册表，不删磁盘文件与会话 / 笔记数据。 */
+function RemoveProjectModal({
+  project,
+  onClose,
+  onDone,
+}: {
+  project: Project
+  onClose: () => void
+  onDone: () => Promise<void>
+}) {
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const submit = async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      await api.deleteProject(project.id)
+      await onDone()
+    } catch (err) {
+      setError(describeError(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      title={`移除项目：${project.name}`}
+      description="只从项目列表移除，不会删除磁盘上的任何文件。"
+      onClose={onClose}
+      actions={
+        <>
+          <button type="button" className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button type="button" className="btn danger" disabled={saving} onClick={() => void submit()}>
+            {saving ? '移除中…' : '移除'}
+          </button>
+        </>
+      }
+    >
+      {error ? (
+        <div className="banner error" style={{ margin: '0 0 10px' }}>
+          {error}
+        </div>
+      ) : null}
+      <div className="ed-meta">
+        根目录：<code>{project.root_path}</code>
+      </div>
+      <div className="ed-meta" style={{ marginTop: 6 }}>
+        该项目的会话、消息与笔记仍保留在本地数据库中；重新添加同一路径即可恢复可见。
+        若该项目仍有运行中的会话，服务端会拒绝移除（先停止会话）。
       </div>
     </Modal>
   )

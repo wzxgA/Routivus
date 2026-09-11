@@ -95,6 +95,31 @@ def test_project_crud_does_not_mutate_project_directory(tmp_path: Path) -> None:
     assert marker.read_text(encoding="utf-8") == "# demo\n"
 
 
+def test_remove_project_blocked_while_session_running(tmp_path: Path) -> None:
+    """移除只摘注册表：运行中的会话先拦住，移除后数据仍可访问。"""
+    client, workspace, _ = _client(tmp_path)
+    project_root = workspace / "demo"
+    project_root.mkdir()
+    project = client.post(
+        "/api/projects", json={"name": "Demo", "root_path": str(project_root)}
+    ).json()
+    session = client.post(f"/api/projects/{project['id']}/sessions", json={"title": "t"}).json()
+
+    class _PendingTask:
+        def done(self) -> bool:
+            return False
+
+    client.app.state.running_tasks[session["id"]] = _PendingTask()
+    blocked = client.delete(f"/api/projects/{project['id']}")
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "project_busy"
+
+    client.app.state.running_tasks.pop(session["id"], None)
+    assert client.delete(f"/api/projects/{project['id']}").status_code == 204
+    # 数据保留：会话仍可读取（项目只是从列表里摘掉）
+    assert client.get(f"/api/sessions/{session['id']}").status_code == 200
+
+
 def test_project_path_must_be_inside_allowed_workspace(tmp_path: Path) -> None:
     client, workspace, root = _client(tmp_path)
     outside = root / "outside"

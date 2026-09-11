@@ -742,6 +742,19 @@ def create_app(
 
     @router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_project(project_id: str) -> Response:
+        """移除项目注册：只摘 projects.json，不删除磁盘文件与会话 / 笔记数据。
+
+        运行中的轮次还在往该项目写事件与审计，先拦住更安全。判定以**内存任务表**
+        为准——数据库里的 running 可能是服务重启后留下的陈旧状态。
+        """
+        require_project(project_id)
+        busy = [
+            item.id
+            for item in workspace_store.list_sessions(project_id, limit=500)
+            if item.id in running_tasks and not running_tasks[item.id].done()
+        ]
+        if busy:
+            raise ApiError(409, "project_busy", "该项目仍有运行中的会话，请先停止后再移除")
         project_registry.delete(project_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
