@@ -1464,6 +1464,54 @@ button {
   color: var(--accent);
 }
 
+/* 命令回执卡（slash 命令的执行结果，复用消息流的落库消息） */
+.msg-command {
+  flex: 0 0 auto;
+  max-width: min(720px, 88%);
+  align-self: flex-start;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.msg-command.failed {
+  border-left-color: #b0473a;
+}
+.msg-command-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.msg-command-head .badge {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--beige);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.msg-command.failed .badge {
+  color: #b0473a;
+}
+.msg-command-head code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-command .body {
+  font-size: 12.5px;
+  color: var(--text);
+}
+
 /* Composer */
 .composer {
   flex: 0 0 auto;

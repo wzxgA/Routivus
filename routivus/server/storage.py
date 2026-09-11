@@ -278,6 +278,8 @@ class WorkspaceStore:
         *,
         title: str | None = None,
         status: str | None = None,
+        active_provider: str | None = None,
+        active_model: str | None = None,
         prompt_tokens: int | None = None,
         completion_tokens: int | None = None,
         total_tokens: int | None = None,
@@ -293,8 +295,9 @@ class WorkspaceStore:
             raise ValueError("会话标题无效")
         record = SessionRecord(
             id=current.id, project_id=current.project_id, title=clean_title,
-            status=status or current.status, active_provider=current.active_provider,
-            active_model=current.active_model,
+            status=status or current.status,
+            active_provider=active_provider if active_provider is not None else current.active_provider,
+            active_model=active_model if active_model is not None else current.active_model,
             prompt_tokens=max(0, prompt_tokens if prompt_tokens is not None else current.prompt_tokens),
             completion_tokens=max(0, completion_tokens if completion_tokens is not None else current.completion_tokens),
             total_tokens=max(0, total_tokens if total_tokens is not None else current.total_tokens),
@@ -302,10 +305,11 @@ class WorkspaceStore:
         )
         with self._lock, self._connect() as conn:
             conn.execute(
-                """UPDATE sessions SET title=?, status=?, prompt_tokens=?, completion_tokens=?,
-                total_tokens=?, updated_at=? WHERE id=?""",
-                (record.title, record.status, record.prompt_tokens, record.completion_tokens,
-                 record.total_tokens, record.updated_at, record.id),
+                """UPDATE sessions SET title=?, status=?, active_provider=?, active_model=?,
+                prompt_tokens=?, completion_tokens=?, total_tokens=?, updated_at=? WHERE id=?""",
+                (record.title, record.status, record.active_provider, record.active_model,
+                 record.prompt_tokens, record.completion_tokens, record.total_tokens,
+                 record.updated_at, record.id),
             )
         return record
 

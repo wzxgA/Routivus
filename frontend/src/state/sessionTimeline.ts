@@ -43,6 +43,7 @@ export type TimelineItem =
   | { kind: 'agent'; id: string; content: string; at: string; streaming?: boolean }
   | { kind: 'thinking'; id: string; content: string }
   | { kind: 'system'; id: string; content: string; at: string }
+  | { kind: 'command'; id: string; command: string; content: string; ok: boolean; at: string }
   | ToolItem
   | PlanItem
   | TeamItem
@@ -202,7 +203,30 @@ export function useSessionTimeline(
           case 'message.created': {
             const message = data.message as Message | undefined
             if (!message) return
-            setItems((current) => [...current, { kind: 'user', id: message.id, content: message.content, at: message.created_at }])
+            // 命令回执也是 assistant 消息（run_command_turn 落库后广播），
+            // 不能再像用户输入那样渲染成右侧气泡。
+            if (message.role === 'user') {
+              setItems((current) => [...current, { kind: 'user', id: message.id, content: message.content, at: message.created_at }])
+            } else {
+              setItems((current) => [...current, { kind: 'agent', id: message.id, content: message.content, at: message.created_at }])
+            }
+            return
+          }
+          case 'command.executed': {
+            // 把刚插入的回执条目标记为命令结果（ok 决定成败配色）。
+            const command = String(data.command ?? '')
+            const ok = Boolean(data.ok)
+            setItems((current) => {
+              for (let index = current.length - 1; index >= 0; index -= 1) {
+                const item = current[index]
+                if (item && item.kind === 'agent') {
+                  const next = [...current]
+                  next[index] = { kind: 'command', id: item.id, command, content: item.content, ok, at: item.at }
+                  return next
+                }
+              }
+              return current
+            })
             return
           }
           case 'message.delta': {

@@ -77,11 +77,13 @@ def test_payload_prefix_matches_whitelist_only() -> None:
     assert [cand["insert_text"] for cand in payload["candidates"]] == ["/plan"]
     assert payload["is_command"] is True
 
-    # 刚敲 "/"：列出白名单内的全部命令。
-    assert [cand["insert_text"] for cand in completion_payload("/")["candidates"]] == [
-        "/plan",
-        "/team",
-    ]
+    # 刚敲 "/"：列出白名单内的全部命令（不含 /path /mcp /exit 等未接入命令）。
+    # /smartRouter 的候选保留 spec 原始大小写，这里按小写比较。
+    texts = {cand["insert_text"].lower() for cand in completion_payload("/")["candidates"]}
+    assert {"/plan", "/team", "/model", "/smartrouter", "/clear", "/cancel"} <= texts
+    assert "/path" not in texts
+    assert "/mcp" not in texts
+    assert "/exit" not in texts
 
 
 def test_payload_resolved_command_keeps_subcommands() -> None:
@@ -89,10 +91,11 @@ def test_payload_resolved_command_keeps_subcommands() -> None:
     assert [cand["insert_text"] for cand in payload["candidates"]] == ["run", "resume"]
 
 
-def test_payload_hides_non_desktop_command() -> None:
-    # /model 在桌面聊天里不会被执行（走配置页），不能给出假提示。
-    assert completion_payload("/model dee")["candidates"] == []
-    assert completion_payload("/model")["candidates"] == []
+def test_payload_excludes_non_web_commands() -> None:
+    # /path、/exit 未接入 Web 命令通道，不能给出假提示。
+    assert completion_payload("/path")["candidates"] == []
+    assert completion_payload("/path src")["candidates"] == []
+    assert completion_payload("/exit")["candidates"] == []
 
 
 def test_payload_replace_span_points_at_current_token() -> None:
@@ -100,6 +103,62 @@ def test_payload_replace_span_points_at_current_token() -> None:
     assert payload["replace_start"] == len("/team ")
     assert payload["replace_end"] == len("/team res")
     assert payload["candidates"][0]["insert_text"] == "resume"
+
+
+# ==========================================================================
+# 动态值候选（provider / model / memory_id）
+# ==========================================================================
+
+
+class _StubActive:
+    model = "am1"
+
+
+class _StubManager:
+    """补全动态层需要的最小 ConfigManager 面。"""
+
+    def provider_names(self) -> list[str]:
+        return ["alpha"]
+
+    def resolve_provider(self, name: str):  # noqa: ANN201 - 测试桩
+        from routivus.config.providers import Provider
+
+        return Provider(
+            name="alpha",
+            display_name="Alpha",
+            api_base="http://127.0.0.1:9",
+            default_model="am1",
+            models=("am2",),
+        )
+
+    def active(self):  # noqa: ANN201 - 测试桩
+        return _StubActive()
+
+
+class _StubMemory:
+    def list(self, limit: int):  # noqa: ANN201 - 测试桩
+        class _Entry:
+            id = 7
+
+        return [_Entry() for _ in range(2)]
+
+
+class _StubAgent:
+    memory_manager = _StubMemory()
+
+
+def test_dynamic_model_candidates_from_manager() -> None:
+    # /model 的动态规则：第二个 token 是 model 子命令时，值槽提示该 provider 的模型。
+    payload = completion_payload("/model model am", manager=_StubManager())
+    texts = [cand["insert_text"] for cand in payload["candidates"]]
+    assert {"am1", "am2"} <= set(texts)
+
+
+def test_dynamic_memory_id_candidates_from_agent() -> None:
+    payload = completion_payload("/memory delete ", agent=_StubAgent())
+    texts = [cand["insert_text"] for cand in payload["candidates"]]
+    # 两条记忆同 ID 的桩场景下去重后应为单一候选。
+    assert texts == ["7"]
 
 
 # ==========================================================================

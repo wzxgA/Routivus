@@ -45,6 +45,18 @@ export function MessageList({
                 </div>
               </div>
             )
+          case 'command':
+            return (
+              <div className={`msg-command${item.ok ? '' : ' failed'}`} key={item.id}>
+                <div className="msg-command-head">
+                  <span className="badge">{item.ok ? '命令' : '命令失败'}</span>
+                  <code>{item.command}</code>
+                </div>
+                <div className="body">
+                  <Markdown text={item.content} />
+                </div>
+              </div>
+            )
           case 'thinking':
             return (
               <div className="thinking" key={item.id}>

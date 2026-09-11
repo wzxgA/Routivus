@@ -736,11 +736,13 @@ def create_app(
     ) -> dict[str, Any]:
         """Composer 的 slash 命令补全候选（只读、无副作用、永不 404）。
 
-        只提示桌面聊天真正会执行的命令（/plan、/team，见 completions.py 的
-        白名单说明）；传入 session_id 时按其所属项目 root_path 提供动态路径
-        候选（/team resume --write-scope）。会话/项目缺失时退化为无路径候选。
+        提示 Web 端真正会执行的命令（白名单见 completions.py）；传入 session_id
+        时按其所属项目 root_path 提供动态路径候选，并从会话 agent 的
+        ConfigManager / memory_manager 生成动态值候选（/model 的模型名、
+        /memory 的记忆 ID）。会话/项目缺失时优雅降级为静态候选。
         """
         project_root: Path | None = None
+        session_agent = session_agents.get(session_id) if session_id else None
         if session_id:
             try:
                 session = require_session(session_id)
@@ -748,7 +750,13 @@ def create_app(
                 project_root = Path(project.root_path).resolve()
             except (ApiError, ProjectRegistryError):
                 project_root = None
-        return completion_payload(q, cursor, project_root=project_root)
+        return completion_payload(
+            q,
+            cursor,
+            project_root=project_root,
+            manager=getattr(session_agent, "config_manager", None),
+            agent=session_agent,
+        )
 
     async def emit(event_type: str, session: SessionRecord, data: dict[str, Any] | None = None) -> dict[str, Any]:
         event = workspace_store.append_event(session.id, session.project_id, event_type, data)
@@ -1667,6 +1675,110 @@ def create_app(
             return run_team_resume_turn(websocket, project, session, options, request_id)
         return run_agent_turn(websocket, project, session, content, request_id)
 
+    async def perform_cancel(websocket: WebSocket | None, session: SessionRecord, request_id: str) -> SessionRecord:
+        """取消当前任务：有运行中轮次就取消任务，否则把会话标记为 cancelled。
+
+        供 `cancel` 消息与 `/cancel`、`/c` 命令别名共用（行为必须完全一致）。
+        """
+        _cancel_bridges(session.id)
+        task = running_tasks.get(session.id)
+        if task is not None and not task.done():
+            task.cancel()
+            return session
+        updated = workspace_store.update_session(session.id, status="cancelled")
+        if updated is not None:
+            await send_event(websocket, "session.status", updated, {"status": "cancelled", "request_id": request_id})
+            return updated
+        return session
+
+    async def run_command_turn(
+        websocket: WebSocket | None, project: Any, session: SessionRecord, content: str, request_id: str = ""
+    ) -> SessionRecord:
+        """同步执行 slash 命令（复用 TUI 的 CommandService），回执落库并广播。
+
+        与轮次的关键差异：不创建 running_tasks、不改会话状态、不触发智能路由。
+        回执以 assistant 消息落库（重连可见），`command.executed` 事件附 ok 标记
+        供前端着色。设计方案见 plans/enhancement/01-web-slash-commands.md。
+        """
+        from routivus.cli.commands import CommandContext, CommandService
+
+        cmd = content.split(maxsplit=1)[0].lower()
+        ok = False
+        message = ""
+        agent: Any | None = None
+        if cmd in ("/exit", "/quit"):
+            # Web 没有"退出进程"语义，/exit 已从命令通道移除：按未知命令处理。
+            # 不能放行到 CommandService——其 /exit 返回 goodbye + should_exit。
+            message = "未知命令：/exit（Web Console 无退出命令；直接关闭窗口即可）"
+        else:
+            try:
+                agent = await ensure_session_agent(project, session)
+            except Exception as exc:
+                agent = None
+                logger.warning("命令执行前创建 agent 失败 session_id=%s", session.id, exc_info=True)
+                message = f"Agent 尚未就绪（{exc}）。请先在配置页完成 Provider 设置。"
+            if agent is None:
+                if not message:
+                    message = "Agent 尚未配置。请先在配置页完成 Provider 设置再使用命令。"
+            else:
+                ctx = CommandContext(
+                    agent=agent,
+                    settings=getattr(agent, "settings", None),
+                    manager=getattr(agent, "config_manager", None),
+                )
+                try:
+                    result = await CommandService(ctx).execute(content)
+                    message = result.message or "（无输出）"
+                    ok = bool(result.ok)
+                except Exception as exc:
+                    logger.warning("命令执行失败 session_id=%s command=%s", session.id, cmd, exc_info=True)
+                    message = f"命令执行失败：{exc}"
+
+        if cmd == "/clear" and ok:
+            # /clear 只清 agent 的运行上下文；已落库消息仍会随快照重建展示。
+            message += "\n（说明：仅清空模型的运行上下文；会话记录仍保留在消息流中）"
+
+        # 命令输入本身也落库：重连后能看出"当时敲了什么命令"。
+        user_message = workspace_store.add_message(session.id, "user", content)
+        await send_event(websocket, "message.created", session, {"message": _record_payload(_message_response(user_message)), "request_id": request_id})
+        receipt = workspace_store.add_message(session.id, "assistant", message)
+        await send_event(websocket, "message.created", session, {"message": _record_payload(_message_response(receipt)), "request_id": request_id})
+        await send_event(websocket, "command.executed", session, {"command": content, "ok": ok, "request_id": request_id})
+
+        # 状态联动：命令改了配置时，把变化同步给会话记录与顶栏（复用既有事件通道）。
+        if ok and agent is not None:
+            settings = getattr(agent, "settings", None)
+            if cmd in ("/model", "/provider", "/config"):
+                updated = workspace_store.update_session(
+                    session.id,
+                    active_provider=str(getattr(settings, "provider", "") or ""),
+                    active_model=str(getattr(settings, "model", "") or ""),
+                )
+                if updated is not None:
+                    session = updated
+                    await send_event(websocket, "session.status", session, {"status": session.status, "request_id": request_id})
+            elif cmd == "/smartrouter":
+                # 开关状态以 agent.settings 为准：全局 tier_service 读的是
+                # ServerConfig.user_dir 的配置，而命令写的是 agent 级
+                # ConfigManager（两处 user_dir 在生产环境也可能不同，见方案 §11）。
+                # 同时清掉会话路由器的最近一次结果，避免快照回落到旧档位。
+                router = session_routers.get(session.id)
+                if router is not None:
+                    router.last = None
+                await send_event(
+                    websocket,
+                    "router.updated",
+                    session,
+                    {
+                        "enabled": bool(getattr(settings, "smart_router_enabled", False)),
+                        "tier": "",
+                        "provider": "",
+                        "model": "",
+                        "request_id": request_id,
+                    },
+                )
+        return session
+
     @app.websocket("/api/ws/projects/{project_id}/sessions/{session_id}")
     async def session_socket(websocket: WebSocket, project_id: str, session_id: str) -> None:
         if not websocket_authorized(websocket):
@@ -1773,15 +1885,7 @@ def create_app(
                     if not request_is_new(session.id, request_id):
                         await send_event(websocket, "error", session, {"code": "duplicate_request", "request_id": request_id})
                         continue
-                    _cancel_bridges(session.id)
-                    task = running_tasks.get(session.id)
-                    if task and not task.done():
-                        task.cancel()
-                    else:
-                        updated = workspace_store.update_session(session.id, status="cancelled")
-                        if updated:
-                            session = updated
-                            await send_event(websocket, "session.status", session, {"status": "cancelled", "request_id": request_id})
+                    session = await perform_cancel(websocket, session, request_id)
                     continue
                 if message_type in {"approve", "reject", "ask_answer", "ask_cancel"}:
                     if not request_is_new(session.id, request_id):
@@ -1848,6 +1952,26 @@ def create_app(
                     continue
                 if turn_kind == "team_resume" and options.get("error"):
                     await send_event(websocket, "error", session, {"code": "invalid_resume", "message": str(options["error"]), "request_id": request_id})
+                    continue
+                # slash 命令通道（plans/enhancement/01-web-slash-commands.md）：
+                # /cancel 别名等价于 cancel 消息（必须在运行中也可用）；其余命令
+                # 与普通输入共用互斥规则，避免 /clear、/model 等与运行中轮次并发。
+                if turn_kind == "chat" and content.startswith("/"):
+                    cmd = content.split(maxsplit=1)[0].lower()
+                    if cmd in ("/cancel", "/c"):
+                        if not request_is_new(session.id, request_id):
+                            await send_event(websocket, "error", session, {"code": "duplicate_request", "request_id": request_id})
+                            continue
+                        session = await perform_cancel(websocket, session, request_id)
+                        continue
+                    task = running_tasks.get(session.id)
+                    if task is not None and not task.done():
+                        await send_event(websocket, "error", session, {"code": "session_busy", "message": "会话正在运行，请先停止或取消当前任务", "request_id": request_id})
+                        continue
+                    if not request_is_new(session.id, request_id):
+                        await send_event(websocket, "error", session, {"code": "duplicate_request", "request_id": request_id})
+                        continue
+                    session = await run_command_turn(websocket, project, session, content, request_id)
                     continue
                 task = running_tasks.get(session.id)
                 if task and not task.done():
