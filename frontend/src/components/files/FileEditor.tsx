@@ -42,7 +42,8 @@ export function FileEditor({ projectId, file, onSaved, onReload }: FileEditorPro
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [cursor, setCursor] = useState<Cursor>({ line: 1, column: 1 })
-  const [preview, setPreview] = useState(false)
+  // 默认进预览态：点开文件先看内容，想改再点「编辑」（避免误触键盘就改动文件）
+  const [preview, setPreview] = useState(true)
   const areaRef = useRef<HTMLTextAreaElement | null>(null)
   const noticeTimer = useRef<number | null>(null)
 
@@ -53,9 +54,9 @@ export function FileEditor({ projectId, file, onSaved, onReload }: FileEditorPro
     setError('')
   }, [file.content, file.path, file.version])
 
-  // 切换文件时回到编辑态（同一组件实例会被复用）
+  // 切换文件时回到预览态（同一组件实例会被复用，状态不重置就会把上个文件的状态带过来）
   useEffect(() => {
-    setPreview(false)
+    setPreview(true)
     setCursor({ line: 1, column: 1 })
   }, [file.path])
 
@@ -138,28 +139,34 @@ export function FileEditor({ projectId, file, onSaved, onReload }: FileEditorPro
           type="button"
           className={`btn tiny${preview ? ' primary' : ''}`}
           onClick={() => setPreview((value) => !value)}
-          title={preview ? '回到编辑' : '渲染预览（内容是当前草稿，不是磁盘版本）'}
+          title={preview ? '切换到编辑' : '渲染预览（内容是当前草稿，不是磁盘版本）'}
           disabled={!preview && tooLargeForPreview}
         >
           {preview ? '编辑' : '预览'}
         </button>
-        <button
-          type="button"
-          className="btn tiny"
-          disabled={!dirty}
-          onClick={onReload}
-          title="丢弃当前改动，重新读取磁盘内容"
-        >
-          放弃改动
-        </button>
-        <button
-          type="button"
-          className="btn tiny primary"
-          disabled={!dirty || saving}
-          onClick={() => void save()}
-        >
-          {saving ? '保存中…' : '保存'}
-        </button>
+        {/* 预览态且没有改动时只留「编辑」：干净；一旦改过（例如编辑后又切回预览）
+            保存入口必须还在，否则要绕回编辑态才能存 */}
+        {dirty || !preview ? (
+          <>
+            <button
+              type="button"
+              className="btn tiny"
+              disabled={!dirty}
+              onClick={onReload}
+              title="丢弃当前改动，重新读取磁盘内容"
+            >
+              放弃改动
+            </button>
+            <button
+              type="button"
+              className="btn tiny primary"
+              disabled={!dirty || saving}
+              onClick={() => void save()}
+            >
+              {saving ? '保存中…' : '保存'}
+            </button>
+          </>
+        ) : null}
       </div>
 
       {conflict ? (
@@ -208,8 +215,9 @@ export function FileEditor({ projectId, file, onSaved, onReload }: FileEditorPro
       )}
 
       <div className="fe-status">
-        行 {cursor.line}，列 {cursor.column} · {file.line_ending === 'crlf' ? 'CRLF' : 'LF'} ·{' '}
-        {(file.size / 1024).toFixed(1)} KB
+        {/* 预览态没有光标可言，只在编辑态显示行列 */}
+        {preview ? '预览' : `行 ${cursor.line}，列 ${cursor.column}`} ·{' '}
+        {file.line_ending === 'crlf' ? 'CRLF' : 'LF'} · {(file.size / 1024).toFixed(1)} KB
         {dirty ? ' · 未保存' : ''}
         {notice ? ` · ${notice}` : ''}
       </div>
