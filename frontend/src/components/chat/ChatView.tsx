@@ -174,6 +174,8 @@ export function ChatView({
         plan={latestPlan}
         projectPath={projectPath}
         projectNotes={projectNotesCount}
+        memory={timeline.memory}
+        onRefreshMemory={timeline.refreshMemory}
         memoryNotice={timeline.memoryNotice}
         hitl={timeline.hitl}
         router={timeline.router}

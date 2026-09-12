@@ -215,7 +215,7 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 - **笔记**：全局入口显示全部笔记及项目归属，项目入口只显示当前项目笔记；搜索、新建、编辑、标签、置顶、删除均走服务端；版本冲突返回 409 时提示「用当前内容覆盖」，不静默丢失。
 - **会话视图**：WebSocket 事件流渲染消息、工具卡、计划 / 团队任务卡、审批与提问卡；`/plan <任务>` 与 `/team <任务>` 在会话内直接可用（生成计划后弹出审阅卡：批准执行 / 重新规划 / 取消），`/team resume [task_id] --write-scope <路径>` 用于 `needs_input` 恢复；四页签信息侧栏（Session / Plan / Memory / Safety）；Composer 支持 `Enter` 发送、`↑↓` 历史、`Tab` 应用命令补全、运行中停止。
 
-- **命令执行与补全**：会话内可直接执行 slash 命令——`/help`、`/model`、`/smartrouter`、`/tier`、`/provider`、`/config`、`/hitl`、`/memory`、`/save`、`/lang`、`/clear`、`/skill`（复用 TUI 的 `CommandService`，回执以消息落库；`/cancel` 等价取消按钮；`/exit` 已移除，按未知命令处理）。命令切模型 / 开关智能路由会实时同步顶栏与配置页。补全浮层覆盖上述全部命令（`↑↓` 选择、`Tab` 应用、`Esc` 关闭），`/model model <前缀>` 提示真实模型名，`/skill load <前缀>` 提示 Skill 名，`/team resume … --write-scope <路径>` 提示工作区路径。运行中的会话不接受命令（先停止或取消）。
+- **命令执行与补全**：会话内可直接执行 slash 命令——`/help`、`/model`、`/smartrouter`、`/tier`、`/provider`、`/config`、`/hitl`、`/memory`、`/save`、`/lang`、`/clear`、`/skill`（复用 TUI 的 `CommandService`，回执以消息落库；`/cancel` 等价取消按钮；`/exit` 已移除，按未知命令处理）。命令切模型 / 开关智能路由会实时同步顶栏与配置页，`/save`、`/memory` 改完长期记忆会刷新侧栏 Memory 页签。补全浮层覆盖上述全部命令（`↑↓` 选择、`Tab` 应用、`Esc` 关闭），`/model model <前缀>` 提示真实模型名，`/skill load <前缀>` 提示 Skill 名，`/team resume … --write-scope <路径>` 提示工作区路径。运行中的会话不接受命令（先停止或取消）。
 - **Skill（任务规范）**：独立管理页（导航「技能」，路由 `#/skills`）——顶部项目选择器切换「全局（内置 + 用户级）/ 某项目」，支持列表、正文预览、新建与编辑（写入 `SKILL.md`）、启用/禁用；会话内也可用 `/skill list|load|enable|disable`，两者共用同一份配置。规范放 `<用户目录>/skills/<名称>/SKILL.md` 或项目 `.routivus/skills/` 下即被自动发现；索引注入 system prompt（开关变更后下一轮生效），正文由模型按需调用 `load_skill` 加载，参考资料受路径白名单与字数上限约束。
 - **终端抽屉**：`Ctrl+\`` 或顶栏按钮展开，走 `/api/ws/projects/{id}/terminal`，服务端绑定项目 cwd。
 - **智能路由**：配置页开关与四档；普通对话轮按任务复杂度自动换档，顶栏 chip 与信息侧栏显示本轮档位与实际模型。
@@ -224,10 +224,10 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 已知限制：
 
 - 会话断线重连以服务端 `session.snapshot` 重建：消息来自 messages 表，**卡片（命令 / 工具 / 计划 / 团队）来自快照带回的 `replay` 事件回放**；仍挂起的审批 / 计划审阅由 `pending` 字段恢复，重连后可直接继续应答。限制：回放窗口为最近 1000 条事件（超长会话的早期卡片会缺失）；服务进程重启后内存桥不再存在，待决交互无法恢复（与 `/team resume` 的限制同源）。
-- 配置页可编辑（Provider 增删改 / Key / 模型列表 / 四档 / SmartRouter 开关，走 `/api/config`）；Skill 有独立页面（走 `/api/skills`，可切换全局 / 项目上下文并新建、编辑、启停）；Memory 条目暂无接口，页面未展示。
+- 配置页可编辑（Provider 增删改 / Key / 模型列表 / 四档 / SmartRouter 开关，走 `/api/config`）；Skill 有独立页面（走 `/api/skills`，可切换全局 / 项目上下文并新建、编辑、启停）；Memory 条目在会话侧栏 Memory 页展示（走 `/api/sessions/{id}/memory`）。
 - `/plan`、`/team` 在会话内**可用**，但审阅是**阻塞式**的：等待决策期间不接受新指令，客户端需用 `plan_decision`（`action` = `execute` / `cancel` / `replan`）应答；超时按取消落地（`ROUTIVUS_APPROVAL_TIMEOUT`，默认 300s）。协议级测试见 `tests/test_server_plan_team.py`。
 - `/team resume` 只能恢复**本会话最近一次** `/team` 的执行器，且写入范围必须显式声明（`--write-scope`，fail closed）；服务重启后执行器不保留，无法恢复。
-- Memory 页签的条目列表恒为空：会话快照里的 `memory.items` 目前固定是 `[]`，把 `/memory list` 结构化后推送需要后端补接口。
+- Memory 页签展示的是**项目级**长期记忆（`<项目根>/.routivus/memory.db`，同一项目的所有会话共享同一份）；会话快照的 `memory` 段与 `/api/sessions/{id}/memory` 都直接读它，`/save`、`/memory delete` 执行后会推送 `memory.updated` 让页签重拉。库里没有条目时为空态（不会为了看一眼记忆就在项目里建库）；条目默认只回传最近 20 条（`limit` 上限 100），超出会在页签里提示总数。
 - 终端通道要求鉴权：Vite 开发端口是 `5183`，需把后端 `ROUTIVUS_ALLOWED_ORIGINS` 设为 `http://localhost:5183`（或配置 `VITE_ROUTIVUS_TOKEN`），否则终端会以 `terminal_auth_required` 拒绝。
 - 未实现「开发环境 mock adapter」：前端全部走真实 REST / WebSocket，没有离线可视化回归模式，视觉回归依赖真实后端。
 

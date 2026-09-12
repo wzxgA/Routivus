@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { fetchSessionMemory } from '../api'
 import { newRequestId } from '../api/client'
 import type {
   ApprovalRequestedData,
   AskRequest,
+  MemoryPayload,
   Message,
   PlanPayload,
   PlanReviewRequest,
@@ -70,9 +72,11 @@ export interface SessionTimelineValue {
   approval: ApprovalRequestedData | null
   planReview: PlanReviewRequest | null
   router: RouterState | null
+  memory: MemoryPayload | null
   memoryNotice: { kind: string; message: string } | null
   hitl: string | null
   error: string | null
+  refreshMemory: () => void
   sendMessage: (content: string) => void
   cancel: () => void
   resolveApproval: (
@@ -132,6 +136,7 @@ export function useSessionTimeline(
   const [approval, setApproval] = useState<ApprovalRequestedData | null>(null)
   const [planReview, setPlanReview] = useState<PlanReviewRequest | null>(null)
   const [router, setRouter] = useState<RouterState | null>(null)
+  const [memory, setMemory] = useState<MemoryPayload | null>(null)
   const [memoryNotice, setMemoryNotice] = useState<{ kind: string; message: string } | null>(null)
   const [hitl, setHitl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -139,6 +144,23 @@ export function useSessionTimeline(
   const socketRef = useRef<SessionSocket | null>(null)
   const sessionRef = useRef<Session | null>(initialSession)
   const updateRef = useRef(onSessionUpdate)
+
+  /** 重拉项目长期记忆条目（快照已带一份，这里用于命令改动后刷新）。 */
+  const refreshMemory = useCallback(() => {
+    if (!sessionId) return
+    fetchSessionMemory(sessionId)
+      .then((data) => setMemory(data))
+      .catch(() => {
+        /* 附加只读信息：失败静默，不打扰会话主流程 */
+      })
+  }, [sessionId])
+
+  // 事件回调要用最新的 refreshMemory，但又不能把它塞进 socket effect 的依赖
+  // （会导致每次刷新都重建连接），照 updateRef 的做法走 ref。
+  const refreshMemoryRef = useRef(refreshMemory)
+  useEffect(() => {
+    refreshMemoryRef.current = refreshMemory
+  }, [refreshMemory])
 
   // 在 effect 内同步最新的回调，避免渲染期间写入 ref。
   // 该 effect 声明在 socket effect 之前，因此连接建立前 updateRef 已是最新值。
@@ -163,6 +185,7 @@ export function useSessionTimeline(
     setApproval(null)
     setPlanReview(null)
     setRouter(null)
+    setMemory(null)
     setMemoryNotice(null)
     setError(null)
 
@@ -180,6 +203,8 @@ export function useSessionTimeline(
             setAudit(snapshot.audit ?? { tool_calls: 0, tool_failures: 0, approvals: 0 })
             setHitl(snapshot.safety?.hitl ?? null)
             setRouter(snapshot.router ?? null)
+            // 项目长期记忆条目随快照下发，重连/切会话即可见。
+            setMemory(snapshot.memory ?? null)
             const snapshotSession = snapshot.session ?? null
             if (snapshotSession) {
               setSession(snapshotSession)
@@ -383,6 +408,9 @@ export function useSessionTimeline(
               kind: String(data.kind ?? ''),
               message: String(data.message ?? ''),
             })
+            // /save、/memory delete 等改了长期记忆：条目列表重拉一次
+            // （上下文压缩类的通知也会走到这里，多拉一次只读端点无妨）。
+            refreshMemoryRef.current()
             return
           }
           case 'plan.updated': {
@@ -532,9 +560,11 @@ export function useSessionTimeline(
     approval,
     planReview,
     router,
+    memory,
     memoryNotice,
     hitl,
     error,
+    refreshMemory,
     sendMessage,
     cancel,
     resolveApproval,

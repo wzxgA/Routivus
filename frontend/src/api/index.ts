@@ -4,6 +4,7 @@ import type {
   CompletionResponse,
   ConfigSnapshot,
   DesktopInfo,
+  MemoryPayload,
   Message,
   Note,
   NoteStats,
@@ -65,6 +66,12 @@ export const listSessionEvents = (sessionId: string, after: number, limit = 500)
 
 export const cancelSession = (sessionId: string) =>
   request<{ cancelled: boolean }>(`/sessions/${sessionId}/cancel`, { method: 'POST' })
+
+// ---- 长期记忆 ----
+
+/** 会话所属项目的长期记忆条目（只读；命令改动后由侧栏重新拉取）。 */
+export const fetchSessionMemory = (sessionId: string, limit = 20, signal?: AbortSignal) =>
+  request<MemoryPayload>(`/sessions/${sessionId}/memory`, { query: { limit }, signal })
 
 // ---- 命令补全 ----
 

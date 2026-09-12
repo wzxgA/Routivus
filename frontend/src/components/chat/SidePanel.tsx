@@ -1,8 +1,8 @@
-import { useState } from 'react'
-import type { PlanPayload, RouterState, Session } from '../../api/types'
+import { useEffect, useState } from 'react'
+import type { MemoryPayload, PlanPayload, RouterState, Session } from '../../api/types'
 import type { AuditTotals, UsageTotals } from '../../state/sessionTimeline'
 import type { ConnState } from '../../ws/sessionSocket'
-import { formatNumber } from '../../utils/format'
+import { formatDateTime, formatNumber } from '../../utils/format'
 
 const TABS = ['Session', 'Plan', 'Memory', 'Safety'] as const
 type TabName = (typeof TABS)[number]
@@ -24,6 +24,8 @@ interface SidePanelProps {
   plan: PlanPayload | null
   projectPath: string | null
   projectNotes: number
+  memory: MemoryPayload | null
+  onRefreshMemory: () => void
   memoryNotice: { kind: string; message: string } | null
   hitl: string | null
   router: RouterState | null
@@ -38,6 +40,8 @@ export function SidePanel({
   plan,
   projectPath,
   projectNotes,
+  memory,
+  onRefreshMemory,
   memoryNotice,
   hitl,
   router,
@@ -46,6 +50,18 @@ export function SidePanel({
   const [tab, setTab] = useState<TabName>('Session')
   const usedTokens = session?.total_tokens ?? 0
   const ratio = contextWindow > 0 ? Math.min(1, usedTokens / contextWindow) : 0
+  const memoryItems = memory?.items ?? []
+  const memoryEmptyHint =
+    memory?.status === 'unavailable'
+      ? `长期记忆库不可用${memory.error ? `：${memory.error}` : ''}`
+      : memory === null
+        ? '正在读取项目长期记忆…'
+        : '这个项目还没有长期记忆。用 /save <内容> 保存一条，/memory list 查看全部。'
+
+  // 打开 Memory 页签时才拉条目：快照自带的那份在切会话后可能已经过期。
+  useEffect(() => {
+    if (tab === 'Memory') onRefreshMemory()
+  }, [tab, onRefreshMemory])
 
   return (
     <aside className="side">
@@ -212,10 +228,29 @@ export function SidePanel({
               <span className="num">{projectNotes}</span>
             </div>
             <div className="sec-title">记忆条目</div>
-            <div className="hint">
-              会话快照中的 `memory.items` 目前恒为空数组：服务端尚未把 `/memory list` 的输出结构化后
-              推送，记忆条目接入需要后端补充接口。
+            <div className="kv">
+              <span>条数</span>
+              <span className="num">{memory?.count ?? 0}</span>
             </div>
+            {memoryItems.length > 0 ? (
+              memoryItems.map((entry) => (
+                <div className="mem-item" key={entry.id}>
+                  <div className="mem-meta">
+                    #{entry.id}
+                    {entry.updated_at ? ` · ${formatDateTime(entry.updated_at)}` : ''}
+                    {entry.source ? ` · ${entry.source}` : ''}
+                  </div>
+                  <div className="mem-body">{entry.content}</div>
+                </div>
+              ))
+            ) : (
+              <div className="hint">{memoryEmptyHint}</div>
+            )}
+            {memoryItems.length > 0 && (memory?.count ?? 0) > memoryItems.length ? (
+              <div className="hint">
+                仅显示最近 {memoryItems.length} 条（共 {memory?.count} 条）。
+              </div>
+            ) : null}
             {memoryNotice ? (
               <div className="mem-item">
                 <div className="mem-meta">{memoryNotice.kind}</div>
@@ -223,7 +258,8 @@ export function SidePanel({
               </div>
             ) : null}
             <div className="hint">
-              项目长期记忆由 <code>/save</code>、<code>/memory search</code> 管理；笔记与 Memory 是两套独立数据。
+              项目长期记忆由 <code>/save</code>、<code>/memory list</code>、<code>/memory delete</code> 管理；
+              笔记与 Memory 是两套独立数据。
             </div>
           </>
         ) : null}

@@ -139,11 +139,35 @@ export interface WsEnvelope<T = unknown> {
   terminal_id?: string
 }
 
+/** 一条项目长期记忆（服务端 MemoryEntry 的视图）。 */
+export interface MemoryItem {
+  id: number
+  content: string
+  source: string
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * 项目长期记忆视图（会话快照的 `memory` 段 / `GET /api/sessions/{id}/memory`）。
+ *
+ * 记忆是**项目级**数据：同一项目的所有会话共享同一份；`status` 为
+ * `unavailable` 表示库读不到（此时 items 为空、error 有说明）。
+ */
+export interface MemoryPayload {
+  project_id: string
+  scope: string
+  status: string
+  count: number
+  items: MemoryItem[]
+  error?: string
+}
+
 export interface SessionSnapshot {
   project: { id: string; name: string; root_path: string }
   session: Session
   messages: Message[]
-  memory: { project_id: string; scope: string; status: string; items: unknown[] }
+  memory: MemoryPayload
   safety: { project_id: string; hitl: string; status: string }
   router?: RouterState
   audit: { tool_calls: number; tool_failures: number; approvals: number }

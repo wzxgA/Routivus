@@ -29,12 +29,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from routivus import __version__
+from routivus.memory.manager import MemoryManager
 from routivus.safety.audit import AuditLogger
 from routivus.safety.hitl import ApprovalDecision
 from routivus.server.approval import ApprovalBridge
 from routivus.server.completions import completion_payload
 from routivus.server.config import ServerConfig
 from routivus.server.logging_setup import install_token_redaction
+from routivus.server.memory_view import memory_payload
 from routivus.server.plan_review import PlanReviewBridge
 from routivus.server.routing import (
     SessionRouter,
@@ -633,6 +635,8 @@ def create_app(
     app.state.session_resumable = {}
     # 会话级 SmartRouter 运行态（惰性创建；None 表示该会话已确认不可用）
     app.state.session_routers = {}
+    # 项目级长期记忆库句柄（按项目根缓存，惰性打开；见 project_memory）
+    app.state.project_memories = {}
     app.state.terminals = {}
     app.state.terminal_factory = terminal_factory or (
         lambda spec: select_backend(
@@ -865,6 +869,18 @@ def create_app(
             manager=getattr(session_agent, "config_manager", None),
             agent=session_agent,
         )
+
+    @router.get("/sessions/{session_id}/memory")
+    async def get_session_memory(session_id: str, limit: int = 20) -> dict[str, Any]:
+        """会话所属项目的长期记忆条目（只读、无副作用）。
+
+        侧栏 Memory 页签的数据源：命令改了记忆（/save、/memory delete）后由前端
+        重新拉取。记忆是项目级数据，同一项目的不同会话看到同一份。库不存在或损坏
+        时返回 `status="unavailable"` 的空视图，不报 500。
+        """
+        session = require_session(session_id)
+        project = require_project(session.project_id)
+        return memory_snapshot(session, project, limit=limit)
 
     async def emit(event_type: str, session: SessionRecord, data: dict[str, Any] | None = None) -> dict[str, Any]:
         event = workspace_store.append_event(session.id, session.project_id, event_type, data)
@@ -1329,6 +1345,7 @@ def create_app(
     session_reviews: dict[str, PlanReviewBridge] = app.state.session_reviews
     session_resumable: dict[str, tuple[str, Any]] = app.state.session_resumable
     session_routers: dict[str, SessionRouter | None] = app.state.session_routers
+    project_memories: dict[str, MemoryManager] = app.state.project_memories
     terminals: dict[str, TerminalSession] = app.state.terminals
 
     def approval_bridge(session_id: str) -> ApprovalBridge:
@@ -1488,6 +1505,38 @@ def create_app(
         except Exception:  # pragma: no cover - 配置损坏时不该挡住快照
             logger.debug("smart router state unavailable", exc_info=True)
         return {"enabled": enabled, "tier": "", "provider": "", "model": ""}
+
+    def project_memory(project_root: Any) -> MemoryManager | None:
+        """取项目长期记忆库（只读视图用）；取不到返回 None。
+
+        优先复用该会话 agent 已打开的实例（`memory_snapshot` 负责）。走到这里说明
+        agent 还没建：只在 `<root>/.routivus/memory.db` **已存在**时才打开——看一眼
+        记忆不该在用户的项目里凭空建出数据库文件（没库＝没记忆过，返回 None 即可）。
+        按项目根缓存句柄，避免每次请求重复初始化 SQLite。
+        """
+        root = Path(str(project_root))
+        key = str(root)
+        if key in project_memories:
+            return project_memories[key]
+        if not (root / ".routivus" / "memory.db").exists():
+            return None
+        try:
+            manager = MemoryManager(root)
+        except Exception:  # noqa: BLE001 - 库损坏 / 权限不足都不该打断界面
+            logger.warning("长期记忆库打开失败 project_root=%s", root, exc_info=True)
+            return None
+        project_memories[key] = manager
+        return manager
+
+    def memory_snapshot(session: SessionRecord, project: Any, limit: int = 20) -> dict[str, Any]:
+        """会话快照 / 记忆端点共用的载荷：会话所属项目的长期记忆条目。
+
+        记忆是项目级数据，与"哪个会话"无关；走 agent 的实例只是为了复用同一个
+        已打开的库句柄（agent 未创建时按需读取磁盘上的库，见 project_memory）。
+        """
+        agent = session_agents.get(session.id)
+        memory = getattr(agent, "memory_manager", None) or project_memory(getattr(project, "root_path", ""))
+        return memory_payload(project.id, memory, limit=limit)
 
     async def apply_smart_routing(
         forwarder: "_TurnForwarder", agent: Any, content: str, session: SessionRecord
@@ -2010,6 +2059,15 @@ def create_app(
                         "request_id": request_id,
                     },
                 )
+            elif cmd in ("/save", "/memory"):
+                # 长期记忆被改（/save 新增、/memory delete 删除）：推 memory.updated
+                # 让侧栏 Memory 页签重拉条目列表（与上下文压缩的提示共用同一事件）。
+                await send_event(
+                    websocket,
+                    "memory.updated",
+                    session,
+                    {"kind": "memory.command", "message": message.splitlines()[0] if message else "", "request_id": request_id},
+                )
         return session
 
     @app.websocket("/api/ws/projects/{project_id}/sessions/{session_id}")
@@ -2043,12 +2101,8 @@ def create_app(
                 },
                 "session": _record_payload(_session_response(session)),
                 "messages": [_record_payload(_message_response(item)) for item in workspace_store.list_messages(session.id)],
-                "memory": {
-                    "project_id": project.id,
-                    "scope": "project",
-                    "status": "available",
-                    "items": [],
-                },
+                # 项目级长期记忆条目：重连即可见（此前是写死的空数组）。
+                "memory": memory_snapshot(session, project),
                 "safety": {
                     "project_id": project.id,
                     "hitl": "server-managed",
