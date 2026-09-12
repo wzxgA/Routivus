@@ -14,6 +14,7 @@ import type {
   TeamPayload,
   WsEnvelope,
 } from '../api/types'
+import { StreamBatcher } from '../utils/streamBatch'
 import { SessionSocket, type ConnState } from '../ws/sessionSocket'
 
 export interface ToolItem {
@@ -179,9 +180,25 @@ export function useSessionTimeline(
       return
     }
 
+    // 流式文本先攒批再刷出：模型逐 token 吐字，每个 token 都触发一次重型渲染
+    // （Markdown 解析成本随正文长度线性增长），攒批把渲染次数封顶。
+    // 局限：只减少次数、不降低单次成本，见 utils/streamBatch.ts 与方案 §11。
+    const batch = new StreamBatcher((delta) => {
+      setStream((current) => ({
+        content: current.content + delta.content,
+        thinking: current.thinking + delta.thinking,
+      }))
+    })
+
+    /** 清空流式区：连同攒批里的尾巴一起丢掉（否则定时器到点会把旧内容补回来）。 */
+    const resetStream = () => {
+      batch.reset()
+      setStream({ content: '', thinking: '' })
+    }
+
     // 切换会话：清空上一会话的时间线，避免串数据。
     setItems([])
-    setStream({ content: '', thinking: '' })
+    resetStream()
     setApproval(null)
     setPlanReview(null)
     setRouter(null)
@@ -199,7 +216,7 @@ export function useSessionTimeline(
               .map(messageToItem)
               .filter((item): item is TimelineItem => item !== null)
             setItems(restored)
-            setStream({ content: '', thinking: '' })
+            resetStream()
             setAudit(snapshot.audit ?? { tool_calls: 0, tool_failures: 0, approvals: 0 })
             setHitl(snapshot.safety?.hitl ?? null)
             setRouter(snapshot.router ?? null)
@@ -270,19 +287,13 @@ export function useSessionTimeline(
             return
           }
           case 'message.delta': {
-            const kind = String(data.kind ?? 'content')
-            const text = String(data.text ?? '')
-            if (!text) return
-            setStream((current) =>
-              kind === 'thinking'
-                ? { ...current, thinking: current.thinking + text }
-                : { ...current, content: current.content + text },
-            )
+            batch.push(String(data.kind ?? 'content'), String(data.text ?? ''))
             return
           }
           case 'message.completed': {
             const message = data.message as Message | undefined
-            setStream({ content: '', thinking: '' })
+            // 完整正文由这条消息接管，攒批里的尾巴直接丢弃（避免重复补上）。
+            resetStream()
             if (message) {
               setItems((current) => [
                 ...current,
@@ -472,6 +483,8 @@ export function useSessionTimeline(
     socketRef.current = socket
     socket.open()
     return () => {
+      // 攒批里可能还压着内容，切会话/卸载时必须丢掉并取消定时器。
+      batch.reset()
       socket.close()
       socketRef.current = null
     }
