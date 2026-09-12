@@ -3361,6 +3361,28 @@ kbd {
   outline: none;
   border-color: var(--border-strong);
 }
+/* 预览态：与文本域同一块区域，保持边框与底色一致，切换时不跳 */
+.fe-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--card);
+}
+.fe-preview-large {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.fe-status {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
 
 /* ---- 只读预览 ---- */
 .fp-code,
