@@ -122,6 +122,19 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   return JSON.parse(text) as T
 }
 
+/**
+ * 构造带令牌的 REST 地址。
+ *
+ * 用于 `<img src>` 这类无法设置 Authorization 头的场景——服务端
+ * `TokenAuthMiddleware.extract_token` 同样接受 `?token=`（日志侧有脱敏兜底）。
+ */
+export function authedUrl(path: string): string {
+  const base = `${API_PREFIX}${path}`
+  if (!authToken) return base
+  const separator = base.includes('?') ? '&' : '?'
+  return `${base}${separator}token=${encodeURIComponent(authToken)}`
+}
+
 /** 构造 WebSocket 地址：同源 + /api 前缀 + 可选 token 查询参数。 */
 export function wsUrl(path: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'

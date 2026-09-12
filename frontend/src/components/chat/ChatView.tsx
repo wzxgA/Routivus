@@ -3,6 +3,7 @@ import type { RouterState, Session } from '../../api/types'
 import { useSessionTimeline } from '../../state/sessionTimeline'
 import type { ConnState } from '../../ws/sessionSocket'
 import { Empty } from '../common/Empty'
+import { FilesDrawer } from '../files/FilesDrawer'
 import { TerminalDrawer } from '../terminal/TerminalDrawer'
 import { Composer, type ComposerMode } from './Composer'
 import { MessageList } from './MessageList'
@@ -27,8 +28,11 @@ interface ChatViewProps {
   session: Session | null
   projectNotesCount: number
   terminalOpen: boolean
+  filesOpen: boolean
   contextWindow: number
   onToggleTerminal: () => void
+  onToggleFiles: () => void
+  onOpenFilesPage: (path: string | null) => void
   onSessionUpdate: (session: Session) => void
   onHitlChange: (hitl: string | null) => void
   onRouterChange: (router: RouterState | null) => void
@@ -42,8 +46,11 @@ export function ChatView({
   session,
   projectNotesCount,
   terminalOpen,
+  filesOpen,
   contextWindow,
   onToggleTerminal,
+  onToggleFiles,
+  onOpenFilesPage,
   onSessionUpdate,
   onHitlChange,
   onRouterChange,
@@ -165,6 +172,13 @@ export function ChatView({
           onCancel={cancelSession}
         />
       </div>
+
+      <FilesDrawer
+        projectId={projectId}
+        open={filesOpen}
+        onRequestClose={onToggleFiles}
+        onOpenInPage={onOpenFilesPage}
+      />
 
       <SidePanel
         session={liveSession}

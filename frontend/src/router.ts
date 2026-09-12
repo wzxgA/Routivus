@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export type ProjectView = 'chat' | 'notes'
+export type ProjectView = 'chat' | 'notes' | 'files'
 
 export type Route =
   | { kind: 'home' }
@@ -32,6 +32,7 @@ export function parseRoute(hash: string): Route {
   if (parts[0] === 'p' && parts[1]) {
     const projectId = decodeURIComponent(parts[1])
     if (parts[2] === 'notes') return { kind: 'project', projectId, view: 'notes', sessionId: null }
+    if (parts[2] === 'files') return { kind: 'project', projectId, view: 'files', sessionId: null }
     if (parts[2] === 's' && parts[3]) {
       return { kind: 'project', projectId, view: 'chat', sessionId: decodeURIComponent(parts[3]) }
     }
@@ -51,6 +52,7 @@ export function routeToHash(route: Route): string {
     case 'project': {
       const base = `#/p/${encodeURIComponent(route.projectId)}`
       if (route.view === 'notes') return `${base}/notes`
+      if (route.view === 'files') return `${base}/files`
       return route.sessionId ? `${base}/s/${encodeURIComponent(route.sessionId)}` : base
     }
     default:

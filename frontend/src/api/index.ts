@@ -1,9 +1,12 @@
-import { request } from './client'
+import { authedUrl, request } from './client'
 import type {
   ActivityDay,
   CompletionResponse,
   ConfigSnapshot,
   DesktopInfo,
+  FileContent,
+  FileListing,
+  FileWriteResult,
   MemoryPayload,
   Message,
   Note,
@@ -72,6 +75,56 @@ export const cancelSession = (sessionId: string) =>
 /** 会话所属项目的长期记忆条目（只读；命令改动后由侧栏重新拉取）。 */
 export const fetchSessionMemory = (sessionId: string, limit = 20, signal?: AbortSignal) =>
   request<MemoryPayload>(`/sessions/${sessionId}/memory`, { query: { limit }, signal })
+
+// ---- 项目工作区文件 ----
+
+const fileApiPath = (projectId: string) => `/projects/${projectId}/file`
+
+/** 列一层目录（逐层懒加载；`includeIgnored` 打开后才列出 .git / node_modules 等）。 */
+export const listProjectFiles = (
+  projectId: string,
+  path = '',
+  options?: { includeIgnored?: boolean; signal?: AbortSignal },
+) =>
+  request<FileListing>(`/projects/${projectId}/files`, {
+    query: { path, include_ignored: options?.includeIgnored ? '1' : '' },
+    signal: options?.signal,
+  })
+
+/** 读文本文件（二进制只给元信息；超限截断、解码失败标 lossy）。 */
+export const readProjectFile = (projectId: string, path: string, signal?: AbortSignal) =>
+  request<FileContent>(fileApiPath(projectId), { query: { path }, signal })
+
+/**
+ * 保存文件。`expectedVersion` 是打开时拿到的内容版本——服务端比对不上就回 409
+ * `file_conflict`（绝不静默覆盖）；用户确认覆盖时传 `force`。
+ */
+export const writeProjectFile = (
+  projectId: string,
+  payload: { path: string; content: string; expectedVersion?: string; force?: boolean },
+) =>
+  request<FileWriteResult>(fileApiPath(projectId), {
+    method: 'PUT',
+    body: {
+      path: payload.path,
+      content: payload.content,
+      expected_version: payload.expectedVersion ?? null,
+      force: payload.force ?? false,
+    },
+  })
+
+export const createProjectEntry = (
+  projectId: string,
+  payload: { path: string; kind: 'file' | 'dir' },
+) =>
+  request<{ path: string; type: string; created: boolean }>(
+    `/projects/${projectId}/files`,
+    { method: 'POST', body: payload },
+  )
+
+/** 图片原始字节地址（`<img src>` 无法带 Authorization 头，走查询参数令牌）。 */
+export const projectFileRawUrl = (projectId: string, path: string) =>
+  authedUrl(`${fileApiPath(projectId)}/raw?path=${encodeURIComponent(path)}`)
 
 // ---- 命令补全 ----
 

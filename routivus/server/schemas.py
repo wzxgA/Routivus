@@ -336,3 +336,21 @@ class SkillWriteBody(BaseModel):
     body: str = Field(min_length=1, max_length=64_000)
     description: str = Field(default="", max_length=200)
     layer: Literal["user", "project"] = "user"
+
+
+class FileWriteBody(BaseModel):
+    """保存项目文件。`expected_version` 是内容 sha256（乐观并发，见方案 §5.2）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
+    content: str = ""
+    expected_version: str | None = Field(default=None, max_length=64)
+    force: bool = False
+
+
+class FileCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4096)
+    kind: Literal["file", "dir"] = "file"

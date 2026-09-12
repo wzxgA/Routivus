@@ -35,6 +35,14 @@ from routivus.safety.hitl import ApprovalDecision
 from routivus.server.approval import ApprovalBridge
 from routivus.server.completions import completion_payload
 from routivus.server.config import ServerConfig
+from routivus.server.files import (
+    WorkspaceFileError,
+    create_entry,
+    list_entries,
+    read_image,
+    read_text_file,
+    write_text_file,
+)
 from routivus.server.logging_setup import install_token_redaction
 from routivus.server.memory_view import memory_payload
 from routivus.server.plan_review import PlanReviewBridge
@@ -80,6 +88,8 @@ from routivus.server.schemas import (
     ActiveProviderRequest,
     ConfigSnapshot,
     DesktopInfoResponse,
+    FileCreateBody,
+    FileWriteBody,
     ModelRequest,
     ProviderCreateRequest,
     ProviderKeyRequest,
@@ -680,6 +690,10 @@ def create_app(
     async def handle_note_conflict(request: Request, exc: NoteConflictError):
         return _error_response(request, 409, "note_conflict", str(exc))
 
+    @app.exception_handler(WorkspaceFileError)
+    async def handle_workspace_file_error(request: Request, exc: WorkspaceFileError):
+        return _error_response(request, exc.status_code, exc.code, exc.message)
+
     @app.exception_handler(ProjectRegistryError)
     async def handle_registry_error(request: Request, exc: ProjectRegistryError):
         if isinstance(exc, ProjectNotFoundError):
@@ -1006,6 +1020,61 @@ def create_app(
         require_project(project_id)
         record = workspace_store.create_note(payload.title, payload.body_markdown, payload.tags, project_id)
         return _note_response(record, project_registry)
+
+    # ---------- 项目工作区文件 ----------
+    # 只读列举 + 受控写入。路径校验、忽略规则与护栏都在 server/files.py 里，
+    # 设计与取舍见 plans/enhancement/04-workspace-files.md。
+
+    @router.get("/projects/{project_id}/files")
+    async def list_project_files(
+        project_id: str, path: str = "", include_ignored: bool = False
+    ) -> dict[str, Any]:
+        """列**一层**目录（逐层懒加载，不做递归扫描）。"""
+        project = require_project(project_id)
+        return list_entries(
+            Path(project.root_path), path, include_ignored=include_ignored
+        )
+
+    @router.get("/projects/{project_id}/file")
+    async def read_project_file(project_id: str, path: str) -> dict[str, Any]:
+        """读文本文件：二进制只给元信息；超限截断、解码失败标记 lossy（两者禁止保存）。"""
+        project = require_project(project_id)
+        return read_text_file(Path(project.root_path), path)
+
+    @router.get("/projects/{project_id}/file/raw")
+    async def read_project_file_raw(project_id: str, path: str) -> Response:
+        """图片原始字节（给 `<img>` 用）。后缀 + magic bytes 双重校验。"""
+        project = require_project(project_id)
+        data, media_type = read_image(Path(project.root_path), path)
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @router.put("/projects/{project_id}/file")
+    async def write_project_file(
+        project_id: str, payload: FileWriteBody
+    ) -> dict[str, Any]:
+        """保存文件。人工保存不走 HITL（用户即批准者），但校验与审计一步不少。"""
+        project = require_project(project_id)
+        return write_text_file(
+            Path(project.root_path),
+            payload.path,
+            payload.content,
+            expected_version=payload.expected_version,
+            force=payload.force,
+        )
+
+    @router.post(
+        "/projects/{project_id}/files", status_code=status.HTTP_201_CREATED
+    )
+    async def create_project_entry(
+        project_id: str, payload: FileCreateBody
+    ) -> dict[str, Any]:
+        """新建文件或目录（父目录必须已存在）。"""
+        project = require_project(project_id)
+        return create_entry(Path(project.root_path), payload.path, payload.kind)
 
     # ---------- Web Console 配置接口 ----------
     # 桌面端与 Web 端共用。没有这组接口，用户就只能靠 REPL / CLI 配 provider，

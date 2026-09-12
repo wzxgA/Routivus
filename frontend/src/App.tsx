@@ -5,6 +5,7 @@ import { ChatView } from './components/chat/ChatView'
 import { Modal } from './components/common/Modal'
 import { Sky } from './components/common/Sky'
 import { ConfigView } from './components/config/ConfigView'
+import { FilesView } from './components/files/FilesView'
 import { HomeView } from './components/home/HomeView'
 import { NotesView } from './components/notes/NotesView'
 import { Nav } from './components/shell/Nav'
@@ -41,6 +42,7 @@ export function App() {
   const [renameTarget, setRenameTarget] = useState<Project | null>(null)
   const [removeTarget, setRemoveTarget] = useState<Project | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
+  const [filesOpen, setFilesOpen] = useState(false)
   const [hitl, setHitl] = useState<string | null>(null)
   const [router, setRouter] = useState<RouterState | null>(null)
   const [connection, setConnection] = useState<ConnState>('offline')
@@ -51,23 +53,31 @@ export function App() {
   useEffect(() => {
     if (route.kind !== 'project') {
       setTerminalOpen(false)
+      setFilesOpen(false)
       setHitl(null)
       setRouter(null)
       setConnection('offline')
     }
   }, [route.kind])
 
-  // Ctrl+` 折叠 / 展开终端（仅项目态）
+  // Ctrl+` 折叠 / 展开终端；Ctrl+Shift+E 折叠 / 展开项目文件抽屉（都只在项目态）
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.ctrlKey && event.key === '`') {
         event.preventDefault()
         if (route.kind === 'project') setTerminalOpen((value) => !value)
+        return
+      }
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'e') {
+        event.preventDefault()
+        if (route.kind === 'project' && route.view === 'chat') {
+          setFilesOpen((value) => !value)
+        }
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [route.kind])
+  }, [route])
 
   // 进入项目但 URL 未带 sessionId 时，把自动选中的会话写回地址，保证刷新可恢复。
   useEffect(() => {
@@ -221,6 +231,15 @@ export function App() {
             />
           )
         }
+        if (route.view === 'files') {
+          return (
+            <FilesView
+              projectId={route.projectId}
+              projectName={activeProject?.name ?? 'project'}
+              projectPath={activeProject?.root_path ?? null}
+            />
+          )
+        }
         return (
           <ChatView
             projectId={route.projectId}
@@ -229,8 +248,11 @@ export function App() {
             session={liveSession}
             projectNotesCount={workspace.projectNotes.length}
             terminalOpen={terminalOpen}
+            filesOpen={filesOpen}
             contextWindow={CONTEXT_WINDOW}
             onToggleTerminal={() => setTerminalOpen((value) => !value)}
+            onToggleFiles={() => setFilesOpen((value) => !value)}
+            onOpenFilesPage={() => navigate(projectRoute(route.projectId, 'files'))}
             onSessionUpdate={workspace.applySessionUpdate}
             onHitlChange={setHitl}
             onRouterChange={setRouter}
@@ -251,6 +273,7 @@ export function App() {
     liveSession,
     workspace,
     terminalOpen,
+    filesOpen,
     projectNoteSel,
     globalNoteId,
     handleSelectNote,
@@ -298,10 +321,12 @@ export function App() {
           hitl={hitl}
           router={router}
           terminalOpen={terminalOpen}
+          filesOpen={filesOpen}
           config={configState.config}
           onSwitchModel={handleSwitchModel}
           onToggleTheme={toggleTheme}
           onToggleTerminal={() => setTerminalOpen((value) => !value)}
+          onToggleFiles={() => setFilesOpen((value) => !value)}
           onGoHome={() => navigate(HOME)}
           onGoNotes={() => navigate(GLOBAL_NOTES)}
           onGoConfig={() => navigate(CONFIG)}
@@ -310,6 +335,9 @@ export function App() {
           }}
           onGoProjectNotes={() => {
             if (projectId) navigate(projectRoute(projectId, 'notes'))
+          }}
+          onGoProjectFiles={() => {
+            if (projectId) navigate(projectRoute(projectId, 'files'))
           }}
         />
         <div className="views">{view}</div>

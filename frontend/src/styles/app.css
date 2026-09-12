@@ -3148,3 +3148,273 @@ kbd {
     flex-basis: 220px;
   }
 }
+
+/* ================= 项目工作区文件 =================
+   整页视图（树 + 编辑/预览）与聊天侧只读抽屉。设计与取舍见
+   plans/enhancement/04-workspace-files.md。 */
+
+/* .view.view-page 默认是块级 + 整页滚动；文件页要"外壳不滚、内部各自滚" */
+.view.files-view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+.files-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.files-head .spacer,
+.fe-bar .spacer {
+  margin-left: auto;
+}
+.files-head .page-sub {
+  margin: 4px 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.files-body {
+  flex: 1;
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+}
+.files-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.files-scroll {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+/* ---- 文件树（懒加载） ---- */
+.file-tree {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--card);
+  overflow: hidden;
+}
+.files-body > .file-tree {
+  flex: 0 0 248px;
+}
+.ft-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--border);
+  background: var(--beige);
+}
+.ft-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.ft-toggle input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.ft-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 0;
+  min-height: 0;
+}
+.ft-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 3px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.ft-row:hover {
+  background: var(--beige);
+}
+.ft-row.active {
+  background: var(--beige);
+  color: var(--accent);
+  font-weight: 600;
+}
+.ft-row.muted {
+  color: var(--faint);
+}
+.file-tree.compact .ft-row {
+  font-size: 11.5px;
+  padding: 2px 8px;
+}
+.ft-caret {
+  flex: 0 0 9px;
+  font-size: 9px;
+  color: var(--faint);
+}
+.ft-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ft-flag {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--beige-deep);
+  color: var(--muted);
+  font-size: 9.5px;
+}
+.ft-note {
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--faint);
+}
+.ft-note.error {
+  color: var(--danger);
+}
+
+/* ---- 编辑器 ---- */
+.file-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 6px;
+}
+.fe-bar,
+.fp-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--beige);
+  min-width: 0;
+}
+.fe-path {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fe-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+.fe-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.fe-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.fe-area {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--card);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: none;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+.fe-area:focus {
+  outline: none;
+  border-color: var(--border-strong);
+}
+
+/* ---- 只读预览 ---- */
+.fp-code,
+.fp-md {
+  padding: 2px 2px 12px;
+}
+.fp-code .md-code-wrap:first-child,
+.fp-md > :first-child {
+  margin-top: 0;
+}
+.fp-image {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+}
+.fp-image img {
+  max-width: 100%;
+  max-height: 70vh;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+/* ---- 聊天侧只读抽屉 ---- */
+.files-drawer {
+  flex: 0 0 296px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 10px;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+}
+.fd-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.fd-head .spacer {
+  margin-left: auto;
+}
+.fd-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.files-drawer .file-tree {
+  flex: 1 1 55%;
+}
+.fd-preview {
+  flex: 1 1 45%;
+  overflow: auto;
+  min-height: 0;
+  padding: 6px 2px;
+  border-top: 1px dashed var(--border);
+}

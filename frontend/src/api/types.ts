@@ -250,6 +250,61 @@ export interface CompletionResponse {
   candidates: CompletionCandidate[]
 }
 
+// ---- 项目工作区文件 ----
+
+/** 目录项（`GET /api/projects/{id}/files` 的一层）。 */
+export interface FileEntry {
+  name: string
+  /** 项目内 POSIX 相对路径（根为空串）。 */
+  path: string
+  type: 'dir' | 'file' | 'other'
+  size: number
+  mtime: string
+  /** 软链接或 Windows junction。 */
+  symlink: boolean
+  broken: boolean
+  /** 链接指向项目根之外（点开会被服务端拒绝）。 */
+  outside: boolean
+  /** 位于 IGNORED_DIRS 内（仅在 include_ignored 时出现）。 */
+  ignored: boolean
+}
+
+export interface FileListing {
+  path: string
+  parent: string
+  entries: FileEntry[]
+  truncated: boolean
+  limit: number
+}
+
+/**
+ * 文件内容。三类护栏：`binary` 不下发内容；`lossy`（含无法解码字节）与
+ * `truncated`（超 1MB）虽然能看，但**不能保存**（`editable` 为 false）。
+ */
+export interface FileContent {
+  path: string
+  size: number
+  mtime: string
+  /** 内容 sha256 前 16 位，保存时回传做冲突检测；截断文件为空。 */
+  version: string
+  binary: boolean
+  lossy: boolean
+  truncated: boolean
+  line_ending: string
+  content: string
+  editable: boolean
+  reason: string
+}
+
+export interface FileWriteResult {
+  path: string
+  size: number
+  created: boolean
+  forced: boolean
+  line_ending: string
+  version: string
+}
+
 export interface ToolStartedData {
   tool_call_id: string
   name: string

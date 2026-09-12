@@ -17,15 +17,18 @@ interface TopBarProps {
   hitl: string | null
   router: RouterState | null
   terminalOpen: boolean
+  filesOpen: boolean
   config: ConfigSnapshot | null
   onSwitchModel: (provider: string, model: string) => Promise<void>
   onToggleTheme: () => void
   onToggleTerminal: () => void
+  onToggleFiles: () => void
   onGoHome: () => void
   onGoNotes: () => void
   onGoConfig: () => void
   onGoChat: () => void
   onGoProjectNotes: () => void
+  onGoProjectFiles: () => void
 }
 
 const STATUS_TEXT: Record<string, string> = {
@@ -59,15 +62,18 @@ export function TopBar({
   hitl,
   router,
   terminalOpen,
+  filesOpen,
   config,
   onSwitchModel,
   onToggleTheme,
   onToggleTerminal,
+  onToggleFiles,
   onGoHome,
   onGoNotes,
   onGoConfig,
   onGoChat,
   onGoProjectNotes,
+  onGoProjectFiles,
 }: TopBarProps) {
   const [modelOpen, setModelOpen] = useState(false)
   const [switchError, setSwitchError] = useState<string | null>(null)
@@ -133,6 +139,13 @@ export function TopBar({
               笔记
               {projectNotesCount > 0 ? ` ${projectNotesCount}` : ''}
             </button>
+            <button
+              type="button"
+              className={`vtab${route.view === 'files' ? ' active' : ''}`}
+              onClick={onGoProjectFiles}
+            >
+              文件
+            </button>
           </div>
           <button
             type="button"
@@ -142,6 +155,16 @@ export function TopBar({
           >
             <span className="term-ic">&gt;_</span>终端
           </button>
+          {route.view === 'chat' ? (
+            <button
+              type="button"
+              className={`term-toggle${filesOpen ? ' on' : ''}`}
+              onClick={onToggleFiles}
+              title="折叠 / 展开项目文件抽屉（Ctrl+Shift+E）"
+            >
+              <span className="term-ic">▤</span>文件
+            </button>
+          ) : null}
           <div className="chips">
             {status === 'running' || status === 'waiting_approval' ? (
               <span className="chip">
