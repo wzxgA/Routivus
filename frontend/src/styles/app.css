@@ -5,6 +5,8 @@
    ============================================================ */
 
 :root {
+  /* 让浏览器原生控件（select 下拉、datalist、滚动条、自动填充）跟随配色 */
+  color-scheme: light;
   --page-bg: #efece3;
   --bg: #faf9f5;
   --panel: #fdfcf9;
@@ -46,6 +48,12 @@ html,
 body,
 #root {
   height: 100%;
+}
+
+/* 原生按钮的 UA 样式是 `color: buttontext`（黑色），会压过继承——夜间模式下就成了
+   黑字压深底。统一改为继承（具体按钮规则里的 color 仍按自身特异性生效）。 */
+button {
+  color: inherit;
 }
 
 body {
@@ -279,6 +287,7 @@ button {
   cursor: pointer;
   border: 1px solid transparent;
   background: transparent;
+  color: var(--text);
   width: 100%;
   text-align: left;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
@@ -1505,7 +1514,7 @@ button {
   flex-direction: column;
 }
 .msg-command.failed {
-  border-left-color: #b0473a;
+  border-left-color: var(--danger);
 }
 .msg-command-head {
   display: flex;
@@ -1534,10 +1543,10 @@ button {
   background: var(--accent);
 }
 .msg-command.failed .badge {
-  color: #b0473a;
+  color: var(--danger);
 }
 .msg-command.failed .badge::before {
-  background: #b0473a;
+  background: var(--danger);
 }
 .msg-command-head code {
   font-family: var(--mono);
@@ -1619,6 +1628,17 @@ button {
 }
 [data-theme='night'] .cmd-bad {
   color: #e08b7d;
+}
+/* .pill-warn 的底色是硬编码浅色（#f8f1df），夜间必须换深底否则字看不清 */
+[data-theme='night'] .pill-warn {
+  background: #2a2416;
+  border-color: #4a3f22;
+}
+/* 原生下拉/自动填充弹层：显式给 option 上色，配合 color-scheme 双保险 */
+[data-theme='night'] select option,
+[data-theme='night'] datalist option {
+  background: var(--card);
+  color: var(--text);
 }
 
 /* Composer */
@@ -2646,6 +2666,9 @@ kbd {
 
 /* ================= 主题系统：夜间 ================= */
 [data-theme='night'] {
+  /* 关键：不声明 dark 时，原生 select/datalist 弹层仍是浅色底 + 我们设置的浅色文字，
+     表现为「字看不见」；同时滚动条、自动填充也会错色 */
+  color-scheme: dark;
   --page-bg: #000000;
   --bg: #0a0a0a;
   --panel: #121212;
@@ -2662,6 +2685,8 @@ kbd {
   --ok-bg: #1b2e22;
   --ok-text: #8fd6a2;
   --warn: #d9b45f;
+  /* 浅色主题的 --danger(#b0473a) 在深底上对比度不足，夜里换成亮红 */
+  --danger: #e08b7d;
   --term-bg: #000000;
   --term-bar: #000000;
   --term-line: #222222;
