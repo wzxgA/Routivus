@@ -36,6 +36,30 @@
   --term-faint: #6f6a62;
   --term-green: #7fbb90;
   --term-red: #d98b7d;
+  /* 代码块外观 + 语法着色（夜间在下方主题块里整体覆盖；切换主题是 CSS 层的事，
+     不需要让 React 重渲染历史消息） */
+  --code-bg: #f2eee3;
+  --code-bar: #e9e3d3;
+  --code-line: #ded6c2;
+  --code-fg: #2c2925;
+  /* 顶栏（语言角标 / 复制按钮）文字：--faint 在代码块底色上只有 1.9 对比度，不可用 */
+  --code-bar-fg: #665f52;
+  /* 着色全部经对比度校核（对代码块底色最低 4.73，见 plans/enhancement/03 §7） */
+  --hl-keyword: #8a4b8f;
+  --hl-string: #3f7451;
+  --hl-comment: #6f685a;
+  --hl-number: #8a5f16;
+  --hl-func: #2f6f8f;
+  --hl-type: #8a5a2b;
+  --hl-attr: #2f6b63;
+  --hl-builtin: #a4503f;
+  --hl-tag: #b0473a;
+  --hl-meta: #625c4f;
+  --hl-regexp: #6d5a1f;
+  --hl-op: #6b6660;
+  --hl-punct: #6a6455;
+  --hl-add: #357045;
+  --hl-del: #b0473a;
 }
 
 * {
@@ -1452,49 +1476,255 @@ button {
   padding-left: 8px;
 }
 
-/* Markdown 渲染 */
-.md-para {
-  margin: 0 0 6px;
-}
-.md-para:last-child {
-  margin-bottom: 0;
-}
-.md-heading {
-  font-size: 14px;
-  font-weight: 700;
-  margin: 8px 0 4px;
-}
-.md-heading:first-child {
+/* ================= Markdown 渲染（会话正文） =================
+   react-markdown 输出的是原生标签，因此按元素作用域在 .msg-agent .body 下；
+   只有代码块保留 .md-code 类（外壳需要类名）。 */
+
+.msg-agent .body > :first-child {
   margin-top: 0;
 }
-.md-list {
-  margin: 0 0 6px;
-  padding-left: 20px;
+.msg-agent .body > :last-child {
+  margin-bottom: 0;
 }
-.md-list li {
-  margin: 1px 0;
+.msg-agent .body p {
+  margin: 0 0 8px;
 }
-.md-quote {
+.msg-agent .body h1,
+.msg-agent .body h2,
+.msg-agent .body h3,
+.msg-agent .body h4,
+.msg-agent .body h5,
+.msg-agent .body h6 {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+  margin: 10px 0 5px;
+}
+.msg-agent .body ul,
+.msg-agent .body ol {
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+.msg-agent .body li {
+  margin: 2px 0;
+}
+/* 嵌套列表收紧行距，避免深层列表把回答拉得很长 */
+.msg-agent .body li > ul,
+.msg-agent .body li > ol {
+  margin: 2px 0;
+}
+.msg-agent .body blockquote {
   border-left: 3px solid var(--beige-deep);
   padding-left: 9px;
   color: var(--muted);
-  margin: 4px 0;
-}
-.md-code {
-  font-family: var(--mono);
-  font-size: 12px;
-  background: var(--beige);
-  border: 1px solid var(--beige-deep);
-  border-radius: 6px;
-  padding: 8px 10px;
   margin: 6px 0;
-  overflow-x: auto;
-  white-space: pre;
 }
-.md-hr {
+.msg-agent .body hr {
   border: none;
   border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+.msg-agent .body del {
+  color: var(--muted);
+}
+
+/* 任务列表：复选框只是状态示意，不可点 */
+.msg-agent .body li.task-list-item,
+.msg-agent .body li:has(> input[type='checkbox']) {
+  list-style: none;
+  margin-left: -18px;
+}
+.msg-agent .body input[type='checkbox'] {
+  margin-right: 6px;
+  pointer-events: none;
+  accent-color: var(--accent);
+}
+
+/* 表格：自带横向滚动容器（会话列宽有限，宽表格不能撑破布局） */
+.md-table-wrap {
   margin: 8px 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.md-table {
+  border-collapse: collapse;
+  /* 内容宽就撑开并滚动，内容窄则铺满容器 */
+  width: max-content;
+  min-width: 100%;
+  font-size: 12.5px;
+}
+.md-table th,
+.md-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+}
+.md-table th {
+  background: var(--beige);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.md-table tr:last-child td {
+  border-bottom: none;
+}
+.md-table th:last-child,
+.md-table td:last-child {
+  border-right: none;
+}
+
+/* 图片：限宽 + 圆角（模型给的 URL 不可信，渲染上也不给 referrer） */
+.md-img {
+  max-width: 100%;
+  border-radius: 6px;
+  margin: 4px 0;
+}
+
+/* ---- 代码块：外壳（顶栏 + 滚动区） ---- */
+.md-code-wrap {
+  margin: 8px 0;
+  border: 1px solid var(--code-line);
+  border-radius: 8px;
+  background: var(--code-bg);
+  overflow: hidden;
+}
+.md-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+  padding: 2px 6px 2px 10px;
+  border-bottom: 1px solid var(--code-line);
+  background: var(--code-bar);
+}
+.md-code-lang {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--code-bar-fg);
+}
+.md-code-copy {
+  padding: 1px 8px;
+  border: 1px solid var(--code-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--code-bar-fg);
+  font-size: 10.5px;
+  cursor: pointer;
+  /* 平时不显，hover / 聚焦 / 刚复制完才出现：窄宽度下不挤占代码区 */
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease), color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+.md-code-wrap:hover .md-code-copy,
+.md-code-copy:focus-visible,
+.md-code-copy.done {
+  opacity: 1;
+}
+.md-code-copy:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.md-code-copy.done {
+  color: var(--ok-text);
+  border-color: currentColor;
+}
+
+.md-code {
+  margin: 0;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow-x: auto;
+  white-space: pre;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+/* 清掉 .msg-agent code（行内代码样式）串进代码块的内层框——否则框里还会再套一层框。
+   两条选择器特异性相同，靠"在文件里更靠后"取胜，不要把它挪到行内代码规则之前。 */
+.md-code code {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--code-fg);
+}
+
+/* ---- 语法着色：只把 highlight.js 的 token 类映射到主题变量 ---- */
+.md-code .hljs {
+  color: var(--code-fg);
+}
+.md-code .hljs-comment,
+.md-code .hljs-quote {
+  color: var(--hl-comment);
+  font-style: italic;
+}
+.md-code .hljs-keyword,
+.md-code .hljs-doctag,
+.md-code .hljs-meta .hljs-keyword {
+  color: var(--hl-keyword);
+}
+.md-code .hljs-string,
+.md-code .hljs-char.escape_ {
+  color: var(--hl-string);
+}
+.md-code .hljs-number,
+.md-code .hljs-literal {
+  color: var(--hl-number);
+}
+.md-code .hljs-title,
+.md-code .hljs-function .hljs-title {
+  color: var(--hl-func);
+}
+.md-code .hljs-title.class_,
+.md-code .hljs-class .hljs-title,
+.md-code .hljs-type {
+  color: var(--hl-type);
+}
+.md-code .hljs-attr,
+.md-code .hljs-attribute,
+.md-code .hljs-variable,
+.md-code .hljs-template-variable,
+.md-code .hljs-property {
+  color: var(--hl-attr);
+}
+.md-code .hljs-built_in,
+.md-code .hljs-symbol,
+.md-code .hljs-bullet {
+  color: var(--hl-builtin);
+}
+.md-code .hljs-tag,
+.md-code .hljs-name,
+.md-code .hljs-selector-tag {
+  color: var(--hl-tag);
+}
+.md-code .hljs-meta,
+.md-code .hljs-section {
+  color: var(--hl-meta);
+}
+.md-code .hljs-regexp {
+  color: var(--hl-regexp);
+}
+.md-code .hljs-operator {
+  color: var(--hl-op);
+}
+.md-code .hljs-punctuation,
+.md-code .hljs-subst {
+  color: var(--hl-punct);
+}
+.md-code .hljs-addition {
+  color: var(--hl-add);
+}
+.md-code .hljs-deletion {
+  color: var(--hl-del);
 }
 .msg-agent a {
   color: var(--accent);
@@ -2695,6 +2925,27 @@ kbd {
   --term-faint: #666666;
   --term-green: #7fd0a0;
   --term-red: #e08b7d;
+  /* 代码块比气泡底更深一档，形成"内嵌"观感；着色全部用亮色系保证深底可读 */
+  --code-bg: #0c0c0c;
+  --code-bar: #161616;
+  --code-line: #262626;
+  --code-fg: #dcd8d0;
+  --code-bar-fg: #9c968a;
+  --hl-keyword: #c792c9;
+  --hl-string: #8fd6a2;
+  --hl-comment: #8a8578;
+  --hl-number: #d9b45f;
+  --hl-func: #7fb8d8;
+  --hl-type: #d8a86a;
+  --hl-attr: #7fc9b8;
+  --hl-builtin: #e08b7d;
+  --hl-tag: #e0705f;
+  --hl-meta: #9e9e9e;
+  --hl-regexp: #d8c07a;
+  --hl-op: #b9b3a6;
+  --hl-punct: #8a857c;
+  --hl-add: #8fd6a2;
+  --hl-del: #e08b7d;
 }
 
 [data-theme='night'] .app {

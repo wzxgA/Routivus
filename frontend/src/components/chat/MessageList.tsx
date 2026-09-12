@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 import type { TimelineItem } from '../../state/sessionTimeline'
 import { Markdown } from '../../utils/markdown'
 import { ApprovalCard } from './ApprovalCard'
@@ -92,6 +92,56 @@ interface MessageListProps {
   onDecideReview: (action: 'execute' | 'cancel' | 'replan', feedback?: string) => void
 }
 
+/**
+ * 单行消息。用 `memo` 包住是**性能关键**：流式追加时父组件每一帧都渲染，若不冻结
+ * 已完成的行，屏幕上每条历史回答都会跟着重新跑一遍 Markdown 解析与着色。
+ *
+ * 可靠性前提：`sessionTimeline` 里所有对 item 的更新都是新建对象（`map` 出新对象、
+ * `upsertTaskCard` 返回新数组），没有原地改字段——**原地改会让 memo 静默失效**。
+ */
+const ChatRow = memo(function ChatRow({ item }: { item: TimelineItem }) {
+  switch (item.kind) {
+    case 'user':
+      return <div className="msg-user">{item.content}</div>
+    case 'agent':
+      return (
+        <div className="msg-agent">
+          <div className={`body${item.streaming ? ' streaming-caret' : ''}`}>
+            <Markdown text={item.content} streaming={Boolean(item.streaming)} />
+          </div>
+        </div>
+      )
+    case 'command':
+      return (
+        <div className={`msg-command${item.ok ? '' : ' failed'}`}>
+          <div className="msg-command-head">
+            <span className="badge">{item.ok ? '命令' : '命令失败'}</span>
+            <code>{item.command}</code>
+          </div>
+          {/* 命令输出是多行对齐的纯文本表格：不能用 Markdown（会折叠换行）。
+              深色终端面板 + 逐行语义着色，见文件顶部 CmdLine。 */}
+          <div className="msg-command-body">
+            {item.content.split('\n').map((line, index) => (
+              <CmdLine key={index} line={line} index={index} />
+            ))}
+          </div>
+        </div>
+      )
+    case 'thinking':
+      return <div className="thinking">{item.content}</div>
+    case 'tool':
+      return <ToolCard item={item} />
+    case 'system':
+      return <div className="msg-system">{item.content}</div>
+    case 'plan':
+      return <PlanCard payload={item.payload} />
+    case 'team':
+      return <TeamCard payload={item.payload} />
+    default:
+      return null
+  }
+})
+
 export function MessageList({
   items,
   approval,
@@ -102,60 +152,9 @@ export function MessageList({
 }: MessageListProps) {
   return (
     <>
-      {items.map((item) => {
-        switch (item.kind) {
-          case 'user':
-            return (
-              <div className="msg-user" key={item.id}>
-                {item.content}
-              </div>
-            )
-          case 'agent':
-            return (
-              <div className="msg-agent" key={item.id}>
-                <div className={`body${item.streaming ? ' streaming-caret' : ''}`}>
-                  <Markdown text={item.content} />
-                </div>
-              </div>
-            )
-          case 'command':
-            return (
-              <div className={`msg-command${item.ok ? '' : ' failed'}`} key={item.id}>
-                <div className="msg-command-head">
-                  <span className="badge">{item.ok ? '命令' : '命令失败'}</span>
-                  <code>{item.command}</code>
-                </div>
-                {/* 命令输出是多行对齐的纯文本表格：不能用 Markdown（会折叠换行）。
-                    深色终端面板 + 逐行语义着色，见文件顶部 CmdLine。 */}
-                <div className="msg-command-body">
-                  {item.content.split('\n').map((line, index) => (
-                    <CmdLine key={index} line={line} index={index} />
-                  ))}
-                </div>
-              </div>
-            )
-          case 'thinking':
-            return (
-              <div className="thinking" key={item.id}>
-                {item.content}
-              </div>
-            )
-          case 'tool':
-            return <ToolCard key={item.id} item={item} />
-          case 'system':
-            return (
-              <div className="msg-system" key={item.id}>
-                {item.content}
-              </div>
-            )
-          case 'plan':
-            return <PlanCard key={item.id} payload={item.payload} />
-          case 'team':
-            return <TeamCard key={item.id} payload={item.payload} />
-          default:
-            return null
-        }
-      })}
+      {items.map((item) => (
+        <ChatRow key={item.id} item={item} />
+      ))}
       {approval ? (
         <ApprovalCard
           approval={approval}
