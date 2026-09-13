@@ -2814,7 +2814,8 @@ button {
   margin-bottom: 3px;
 }
 .field input,
-.field textarea {
+.field textarea,
+.field select {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -2826,8 +2827,20 @@ button {
   outline: none;
 }
 .field input:focus,
-.field textarea:focus {
+.field textarea:focus,
+.field select:focus {
   border-color: var(--border-strong);
+}
+/* select 自绘箭头：原生控件（系统字体、OS 主题蓝高亮）与暖白/夜间两套配色都不是一套 */
+.field select,
+.ask-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239a978f' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+  cursor: pointer;
 }
 .modal-actions {
   display: flex;

@@ -600,6 +600,7 @@ function ProviderFormModal({
         <label htmlFor="pv-output-field">输出上限字段</label>
         <select
           id="pv-output-field"
+          className="ask-select"
           value={outputField}
           onChange={(event) => setOutputField(event.target.value as MaxTokensField)}
         >
