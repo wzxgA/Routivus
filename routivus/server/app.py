@@ -29,6 +29,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from routivus import __version__
+from routivus.config.providers import DEFAULT_MAX_TOKENS_FIELD
 from routivus.memory.manager import MemoryManager
 from routivus.safety.audit import AuditLogger
 from routivus.safety.hitl import ApprovalDecision
@@ -77,6 +78,7 @@ from routivus.server.schemas import (
     ProjectUpdateRequest,
     ActivityResponse,
     MessageResponse,
+    ModelLimitView,
     NoteCreateRequest,
     NoteResponse,
     NoteUpdateRequest,
@@ -529,6 +531,8 @@ def _build_default_agent(project: Any, session: SessionRecord) -> Any:
         api_base=settings.api_base,
         api_key=settings.api_key,
         model=settings.model,
+        max_tokens=settings.max_output_tokens,
+        max_tokens_field=settings.max_tokens_field,
         retry_enabled=settings.llm_retry_enabled,
         max_retries=settings.llm_max_retries,
         retry_base_delay=settings.llm_retry_base_delay,
@@ -1112,6 +1116,15 @@ def create_app(
                     api_key_masked=str(detail.get("api_key_masked", "")),
                     is_base=bool(row.get("is_base")),
                     layer=str(row.get("layer") or "user"),
+                    context_window=int(row.get("context_window") or 0),
+                    model_limits={
+                        str(model_name): ModelLimitView(**(limits or {}))
+                        for model_name, limits in (row.get("model_limits") or {}).items()
+                    },
+                    max_output_tokens=int(row.get("max_output_tokens") or 0),
+                    max_tokens_field=str(
+                        row.get("max_tokens_field") or DEFAULT_MAX_TOKENS_FIELD
+                    ),
                 )
             )
         return views
@@ -1125,10 +1138,16 @@ def create_app(
     def _snapshot() -> ConfigSnapshot:
         active_provider = ""
         active_model = ""
+        context_window = 128_000
+        max_output_tokens = 0
+        max_tokens_field = DEFAULT_MAX_TOKENS_FIELD
         try:
             active = config_manager.active()
             active_provider = active.provider_name
             active_model = active.model
+            context_window = active.context_window
+            max_output_tokens = active.max_output_tokens
+            max_tokens_field = active.max_tokens_field
         except Exception:
             # 尚未配置任何 provider 是正常的初始状态，不是错误
             pass
@@ -1142,6 +1161,9 @@ def create_app(
             user_dir=str(resolved_config.user_dir),
             legacy_user_dir=_legacy_user_dir(resolved_config),
             desktop=_desktop_mode(),
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            max_tokens_field=max_tokens_field,
         )
 
     def _ensure_ok(result: Any) -> None:
@@ -1193,6 +1215,17 @@ def create_app(
                 payload.default_model,
                 payload.display_name,
                 payload.api_key,
+                context_window=payload.context_window,
+                max_output_tokens=payload.max_output_tokens,
+                max_tokens_field=payload.max_tokens_field,
+                model_limits=(
+                    {
+                        name: item.model_dump(exclude_none=True)
+                        for name, item in payload.model_limits.items()
+                    }
+                    if payload.model_limits is not None
+                    else None
+                ),
             )
         )
         if payload.set_base:
@@ -1213,6 +1246,19 @@ def create_app(
             fields["default_model"] = payload.default_model
         if "display_name" in payload.model_fields_set:
             fields["display_name"] = payload.display_name
+        # 能力上限：只在显式提交时改动（`extra="forbid"` 已挡住拼错的键名）。
+        # model_limits 是整表覆盖语义——空对象即清空覆盖（方案 §4.1）。
+        if "context_window" in payload.model_fields_set and payload.context_window is not None:
+            fields["context_window"] = payload.context_window
+        if "max_output_tokens" in payload.model_fields_set and payload.max_output_tokens is not None:
+            fields["max_output_tokens"] = payload.max_output_tokens
+        if "max_tokens_field" in payload.model_fields_set and payload.max_tokens_field is not None:
+            fields["max_tokens_field"] = payload.max_tokens_field
+        if "model_limits" in payload.model_fields_set and payload.model_limits is not None:
+            fields["model_limits"] = {
+                name: item.model_dump(exclude_none=True)
+                for name, item in payload.model_limits.items()
+            }
         if fields:
             _ensure_ok(provider_service.update(provider_name, fields))
         return _provider_view(provider_name)
@@ -1607,6 +1653,69 @@ def create_app(
         memory = getattr(agent, "memory_manager", None) or project_memory(getattr(project, "root_path", ""))
         return memory_payload(project.id, memory, limit=limit)
 
+    def context_payload(session: SessionRecord, agent: Any | None = None) -> dict[str, Any]:
+        """当前生效的能力上限（会话快照 / `context.updated` 事件共用）。
+
+        优先取 agent.settings —— 每次 `_attach_model` 之后它都是最新解析结果，所以
+        `/model` 切模型与 SmartRouter 换档都会让它变化（方案 §4.4）。agent 还没创建
+        （只是打开会话）时按会话记录里的 provider/model 现算，保证界面一打开就能看到
+        真数，而不是等下一轮对话。
+
+        三个数一起返回：window 与 max_output 同源、同时变，分开下发会让界面出现
+        「新窗口 + 旧输出上限」的中间态。
+        """
+        settings = getattr(agent, "settings", None) if agent is not None else None
+        provider_name = str(
+            getattr(settings, "provider", "") or getattr(session, "active_provider", "") or ""
+        )
+        model = str(
+            getattr(settings, "model", "") or getattr(session, "active_model", "") or ""
+        )
+        window = int(getattr(settings, "context_window", 0) or 0)
+        max_output = int(getattr(settings, "max_output_tokens", 0) or 0)
+        output_field = str(
+            getattr(settings, "max_tokens_field", DEFAULT_MAX_TOKENS_FIELD) or ""
+        )
+        source = "provider"
+        manager = getattr(agent, "config_manager", None) if agent is not None else None
+        manager = manager or config_manager
+        if not provider_name:
+            # 会话记录里可能还没写 provider（新建会话、agent 尚未创建）：回落到
+            # 当前生效的 base provider，保证「刚打开会话」看到的也是真数。
+            try:
+                active = manager.active()
+            except Exception:  # noqa: BLE001 - 未配置 provider 属正常初始状态
+                active = None
+            if active is not None:
+                provider_name = active.provider_name
+                model = model or active.model
+        provider = None
+        resolver = getattr(manager, "resolve_provider", None)
+        if callable(resolver) and provider_name:
+            try:
+                provider = resolver(provider_name)
+            except Exception:  # noqa: BLE001 - 只读展示字段，不能影响对话
+                provider = None
+        if provider is not None:
+            try:
+                resolved, source = manager.resolve_window_detail(provider, model)
+                window = window or resolved
+                max_output = max_output or manager.resolve_output_limit(provider, model)
+                if settings is None:
+                    output_field = manager.resolve_output_field(provider)
+            except Exception:  # noqa: BLE001 - 同上，失败就退回 settings 上的现成值
+                pass
+        elif window <= 0:
+            window, source = 128_000, "default"
+        return {
+            "window": window,
+            "max_output": max_output,
+            "output_field": output_field,
+            "provider": provider_name,
+            "model": model,
+            "source": source,
+        }
+
     async def apply_smart_routing(
         forwarder: "_TurnForwarder", agent: Any, content: str, session: SessionRecord
     ) -> None:
@@ -1664,6 +1773,9 @@ def create_app(
             })
             return
         await forwarder.emit("router.updated", router_payload(result, error))
+        # 路由换档可能连 provider 一起换掉：窗口与输出上限跟着变，必须同步给界面，
+        # 否则「使用率」会一直按上一档的分母算（方案 §4.4 最容易漏的一处）。
+        await forwarder.emit("context.updated", context_payload(session, agent))
 
     class _TurnForwarder:
         """一轮执行的共享转发器：把 agent / 计划 / 团队事件映射为会话事件。
@@ -2108,6 +2220,13 @@ def create_app(
                 if updated is not None:
                     session = updated
                     await send_event(websocket, "session.status", session, {"status": session.status, "request_id": request_id})
+                # 命令可能改了 provider/model（进而改了窗口与输出上限）：同步给界面。
+                await send_event(
+                    websocket,
+                    "context.updated",
+                    session,
+                    {**context_payload(session, agent), "request_id": request_id},
+                )
             elif cmd == "/smartrouter":
                 # 开关状态以 agent.settings 为准：全局 tier_service 读的是
                 # ServerConfig.user_dir 的配置，而命令写的是 agent 级
@@ -2169,6 +2288,9 @@ def create_app(
                     "root_path": project.root_path,
                 },
                 "session": _record_payload(_session_response(session)),
+                # 当前模型的能力上限（窗口 / 输出上限 / 发送字段名）：界面据此显示
+                # 使用率分母与实际下发的限制，不再依赖构建期常量。
+                "context": context_payload(session),
                 "messages": [_record_payload(_message_response(item)) for item in workspace_store.list_messages(session.id)],
                 # 项目级长期记忆条目：重连即可见（此前是写死的空数组）。
                 "memory": memory_snapshot(session, project),

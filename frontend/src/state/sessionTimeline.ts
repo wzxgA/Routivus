@@ -4,6 +4,7 @@ import { newRequestId } from '../api/client'
 import type {
   ApprovalRequestedData,
   AskRequest,
+  ContextPayload,
   MemoryPayload,
   Message,
   PlanPayload,
@@ -74,6 +75,13 @@ export interface SessionTimelineValue {
   planReview: PlanReviewRequest | null
   router: RouterState | null
   memory: MemoryPayload | null
+  /**
+   * 当前模型的窗口 / 输出上限（快照恢复 + `context.updated` 更新）。
+   *
+   * **会变**：`/model` 换模型与 SmartRouter 换档都会让它变化，所以界面上的
+   * 使用率分母与输出上限都必须读它，不能缓存成常量。
+   */
+  context: ContextPayload | null
   memoryNotice: { kind: string; message: string } | null
   hitl: string | null
   error: string | null
@@ -138,6 +146,7 @@ export function useSessionTimeline(
   const [planReview, setPlanReview] = useState<PlanReviewRequest | null>(null)
   const [router, setRouter] = useState<RouterState | null>(null)
   const [memory, setMemory] = useState<MemoryPayload | null>(null)
+  const [context, setContext] = useState<ContextPayload | null>(null)
   const [memoryNotice, setMemoryNotice] = useState<{ kind: string; message: string } | null>(null)
   const [hitl, setHitl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -203,6 +212,7 @@ export function useSessionTimeline(
     setPlanReview(null)
     setRouter(null)
     setMemory(null)
+    setContext(null)
     setMemoryNotice(null)
     setError(null)
 
@@ -222,6 +232,8 @@ export function useSessionTimeline(
             setRouter(snapshot.router ?? null)
             // 项目长期记忆条目随快照下发，重连/切会话即可见。
             setMemory(snapshot.memory ?? null)
+            // 当前模型的窗口 / 输出上限：重连即可见，不必等下一轮对话刷新。
+            setContext(snapshot.context ?? null)
             const snapshotSession = snapshot.session ?? null
             if (snapshotSession) {
               setSession(snapshotSession)
@@ -414,6 +426,19 @@ export function useSessionTimeline(
             }
             return
           }
+          case 'context.updated': {
+            // 换模型（/model）或 SmartRouter 换档后，窗口与输出上限会变：
+            // 用它更新使用率分母，不做任何换算，避免界面与后端算的不是同一个数。
+            setContext({
+              window: Number(data.window ?? 0),
+              max_output: Number(data.max_output ?? 0),
+              output_field: String(data.output_field ?? ''),
+              provider: String(data.provider ?? ''),
+              model: String(data.model ?? ''),
+              source: String(data.source ?? ''),
+            })
+            return
+          }
           case 'memory.updated': {
             setMemoryNotice({
               kind: String(data.kind ?? ''),
@@ -574,6 +599,7 @@ export function useSessionTimeline(
     planReview,
     router,
     memory,
+    context,
     memoryNotice,
     hitl,
     error,

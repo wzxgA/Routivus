@@ -22,6 +22,10 @@ class Settings:
     api_key: str = ""
     model: str = ""
     context_window: int = 128_000
+    # 单次输出上限（token）；0 = 不限制（不下发 max_tokens）
+    max_output_tokens: int = 0
+    # 输出上限的请求字段名：max_tokens / max_completion_tokens / ""（不发送）
+    max_tokens_field: str = "max_tokens"
     tool_steps: int = 20
     # LLM transient request retry policy.
     llm_retry_enabled: bool = True
@@ -163,6 +167,8 @@ def load_settings(manager: ConfigManager | None = None) -> Settings:
         api_key=active.api_key if active else "",
         model=active.model if active else "",
         context_window=active.context_window if active else 128_000,
+        max_output_tokens=active.max_output_tokens if active else 0,
+        max_tokens_field=active.max_tokens_field if active else "max_tokens",
         provider_missing=provider_missing,
         tool_steps=_get_int(manager.env, "ROUTIVUS_TOOL_STEPS", 20),
         llm_retry_enabled=manager.env.get("ROUTIVUS_LLM_RETRY_ENABLED", "on").lower() not in ("off", "0", "false"),

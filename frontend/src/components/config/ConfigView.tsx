@@ -1,8 +1,57 @@
 import { useCallback, useMemo, useState } from 'react'
 import * as api from '../../api'
-import type { ConfigSnapshot, ProviderView } from '../../api/types'
+import type {
+  ConfigSnapshot,
+  MaxTokensField,
+  ModelLimit,
+  ProviderView,
+} from '../../api/types'
 import { describeError } from '../../state/errors'
+import { formatNumber } from '../../utils/format'
 import { Modal } from '../common/Modal'
+
+/** 窗口 / 输出上限的取值范围，与后端 provider_service 的校验保持一致。 */
+const MIN_CONTEXT_WINDOW = 1024
+const MAX_LIMIT = 10_000_000
+
+/**
+ * 输出上限字段名三选一：不同网关叫法不一，且无法可靠自动探测，所以交给用户选
+ * （见 plans/enhancement/06 §4.6）。空串表示该 provider 干脆不发送。
+ */
+const OUTPUT_FIELD_OPTIONS = [
+  { value: 'max_tokens', label: 'max_tokens（默认，绝大多数网关）' },
+  { value: 'max_completion_tokens', label: 'max_completion_tokens（OpenAI 新推理模型）' },
+  { value: '', label: '不发送（该网关不支持限制输出长度）' },
+]
+
+/** 列表里的能力摘要：窗口 / 输出上限 / 覆盖了几个模型。 */
+function limitSummary(provider: ProviderView) {
+  const window = provider.context_window ? formatNumber(provider.context_window) : '默认'
+  const output = provider.max_output_tokens > 0 ? formatNumber(provider.max_output_tokens) : '不限制'
+  const overrides = Object.keys(provider.model_limits ?? {}).length
+  return `${window} / ${output}${overrides > 0 ? ` · ${overrides} 个模型覆盖` : ''}`
+}
+
+/**
+ * 把表单里的覆盖行收敛成请求载荷：只保留填了值的项，空对象＝清空覆盖表
+ * （后端整表覆盖语义，见 plans/enhancement/06 §4.1）。
+ */
+function buildLimits(
+  rows: Record<string, { window: string; max_output: string }>,
+): Record<string, ModelLimit> {
+  const out: Record<string, ModelLimit> = {}
+  for (const [model, row] of Object.entries(rows)) {
+    const item: ModelLimit = {}
+    const window = Number(row.window)
+    if (row.window.trim() && Number.isFinite(window) && window > 0) item.window = window
+    const maxOutput = Number(row.max_output)
+    if (row.max_output.trim() && Number.isFinite(maxOutput) && maxOutput > 0) {
+      item.max_output = maxOutput
+    }
+    if (Object.keys(item).length > 0) out[model] = item
+  }
+  return out
+}
 
 interface ConfigViewProps {
   config: ConfigSnapshot | null
@@ -110,6 +159,7 @@ export function ConfigView({ config, loading, error, onReload }: ConfigViewProps
               <th>默认模型</th>
               <th>Key</th>
               <th>层级</th>
+              <th>窗口 / 输出上限</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -124,6 +174,7 @@ export function ConfigView({ config, loading, error, onReload }: ConfigViewProps
                 <td className="mono">{provider.default_model}</td>
                 <td className="mono">{provider.has_key ? provider.api_key_masked : '(未配置)'}</td>
                 <td>{provider.layer === 'project' ? '项目级' : '用户级'}</td>
+                <td className="mono">{limitSummary(provider)}</td>
                 <td>
                   <span className="task-acts">
                     {provider.is_base ? null : (
@@ -163,7 +214,7 @@ export function ConfigView({ config, loading, error, onReload }: ConfigViewProps
             ))}
             {providers.length === 0 ? (
               <tr>
-                <td colSpan={6}>
+                <td colSpan={7}>
                   {loading
                     ? '正在加载配置…'
                     : '尚未配置任何 provider。没有 provider 时 Agent 无法执行，请先添加一个。'}
@@ -307,6 +358,10 @@ export function ConfigView({ config, loading, error, onReload }: ConfigViewProps
                     api_base: payload.api_base,
                     default_model: payload.default_model,
                     display_name: payload.display_name,
+                    context_window: payload.context_window,
+                    max_output_tokens: payload.max_output_tokens,
+                    max_tokens_field: payload.max_tokens_field,
+                    model_limits: payload.model_limits,
                   })
                 : api.createProvider(payload),
             )
@@ -381,6 +436,10 @@ function ProviderFormModal({
     display_name?: string | null
     api_key?: string | null
     set_base?: boolean
+    context_window: number
+    max_output_tokens: number
+    max_tokens_field: MaxTokensField
+    model_limits: Record<string, ModelLimit>
   }) => void
 }) {
   const editing = Boolean(provider)
@@ -390,8 +449,44 @@ function ProviderFormModal({
   const [displayName, setDisplayName] = useState(provider?.display_name ?? '')
   const [apiKey, setApiKey] = useState('')
   const [setBase, setSetBase] = useState(!editing)
+  // 能力上限：空字符串表示「该项不覆盖」，与 0（不限制）区分开
+  const [contextWindow, setContextWindow] = useState(String(provider?.context_window || 128000))
+  const [maxOutput, setMaxOutput] = useState(String(provider?.max_output_tokens ?? 0))
+  const [outputField, setOutputField] = useState<MaxTokensField>(
+    (provider?.max_tokens_field as MaxTokensField) ?? 'max_tokens',
+  )
+  const [limits, setLimits] = useState<Record<string, { window: string; max_output: string }>>(
+    () => {
+      const initial: Record<string, { window: string; max_output: string }> = {}
+      for (const [model, limit] of Object.entries(provider?.model_limits ?? {})) {
+        initial[model] = {
+          window: limit.window ? String(limit.window) : '',
+          max_output: limit.max_output ? String(limit.max_output) : '',
+        }
+      }
+      return initial
+    },
+  )
 
-  const canSubmit = name.trim() && apiBase.trim() && defaultModel.trim()
+  // 覆盖区列出 provider 的模型列表 + 已存在覆盖但不在列表里的模型（后者标出来，
+  // 免得删了模型之后残留的条目变成看不见的配置）。
+  const overrideModels = useMemo(() => {
+    const names = new Set<string>(provider?.models ?? [])
+    for (const model of Object.keys(provider?.model_limits ?? {})) names.add(model)
+    return [...names]
+  }, [provider])
+
+  const windowValue = Number(contextWindow)
+  const windowValid =
+    Number.isInteger(windowValue) &&
+    windowValue >= MIN_CONTEXT_WINDOW &&
+    windowValue <= MAX_LIMIT
+  const maxOutputValue = Number(maxOutput || 0)
+  const maxOutputValid =
+    Number.isInteger(maxOutputValue) && maxOutputValue >= 0 && maxOutputValue <= MAX_LIMIT
+
+  const canSubmit =
+    name.trim() && apiBase.trim() && defaultModel.trim() && windowValid && maxOutputValid
 
   return (
     <Modal
@@ -417,6 +512,10 @@ function ProviderFormModal({
                 api_base: apiBase.trim(),
                 default_model: defaultModel.trim(),
                 display_name: displayName.trim() || null,
+                context_window: windowValue,
+                max_output_tokens: maxOutputValue,
+                max_tokens_field: outputField,
+                model_limits: buildLimits(limits),
                 ...(editing ? {} : { api_key: apiKey.trim() || null, set_base: setBase }),
               })
             }
@@ -463,6 +562,99 @@ function ProviderFormModal({
           onChange={(event) => setDisplayName(event.target.value)}
         />
       </div>
+      <div className="field">
+        <label htmlFor="pv-window">上下文窗口（token）</label>
+        <input
+          id="pv-window"
+          type="number"
+          min={MIN_CONTEXT_WINDOW}
+          max={MAX_LIMIT}
+          value={contextWindow}
+          onChange={(event) => setContextWindow(event.target.value)}
+          placeholder="128000"
+        />
+        <div className="hint">
+          该 provider 的默认值，用于上下文预算与界面使用率。同一 provider 下不同模型可以在下面单独覆盖。
+        </div>
+        {windowValid ? null : (
+          <div className="hint" style={{ color: 'var(--danger)' }}>
+            上下文窗口必须是 {MIN_CONTEXT_WINDOW} ~ {formatNumber(MAX_LIMIT)} 之间的整数。
+          </div>
+        )}
+      </div>
+      <div className="field">
+        <label htmlFor="pv-max-output">最大输出（token，0 = 不限制）</label>
+        <input
+          id="pv-max-output"
+          type="number"
+          min={0}
+          max={MAX_LIMIT}
+          value={maxOutput}
+          onChange={(event) => setMaxOutput(event.target.value)}
+        />
+        <div className="hint">
+          0 表示不下发输出上限，由服务商决定长度（长回答不会被截断）。填了才会限制，模型可能「说到一半停」。
+        </div>
+      </div>
+      <div className="field">
+        <label htmlFor="pv-output-field">输出上限字段</label>
+        <select
+          id="pv-output-field"
+          value={outputField}
+          onChange={(event) => setOutputField(event.target.value as MaxTokensField)}
+        >
+          {OUTPUT_FIELD_OPTIONS.map((option) => (
+            <option key={option.value || 'none'} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <div className="hint">
+          网关不认该字段时会报 400 并给出提示；按提示换成另一个名字，或选「不发送」。
+        </div>
+      </div>
+      {editing && overrideModels.length > 0 ? (
+        <div className="field">
+          <label>按模型覆盖（留空 = 用 provider 默认）</label>
+          {overrideModels.map((model) => (
+            <div className="kv" key={model} style={{ gap: 8, alignItems: 'center' }}>
+              <span className="mono" style={{ minWidth: 140 }}>
+                {model}
+              </span>
+              <input
+                type="number"
+                min={MIN_CONTEXT_WINDOW}
+                max={MAX_LIMIT}
+                placeholder="窗口"
+                value={limits[model]?.window ?? ''}
+                onChange={(event) =>
+                  setLimits((current) => ({
+                    ...current,
+                    [model]: { window: event.target.value, max_output: current[model]?.max_output ?? '' },
+                  }))
+                }
+              />
+              <input
+                type="number"
+                min={0}
+                max={MAX_LIMIT}
+                placeholder="最大输出"
+                value={limits[model]?.max_output ?? ''}
+                onChange={(event) =>
+                  setLimits((current) => ({
+                    ...current,
+                    [model]: { window: current[model]?.window ?? '', max_output: event.target.value },
+                  }))
+                }
+              />
+            </div>
+          ))}
+          <div className="hint">覆盖表整表保存：清空某一行的两个输入即删除该模型的覆盖。</div>
+        </div>
+      ) : null}
+      {editing || overrideModels.length > 0 ? null : (
+        <div className="hint">保存后可在「编辑」里为单个模型覆盖窗口与最大输出。</div>
+      )}
       {editing ? null : (
         <>
           <div className="field">

@@ -474,11 +474,30 @@ Server 工具会动态注册为 `mcp__{server}__{tool}`，默认经过 HITL 确�
 
 provider 与 SmartRouter 配置统一存于 `config.json`（见「配置 Provider」与「SmartRouter」章节），对应字段为 `active_provider` / `active_model` / `providers` / `smart_router` / `tier` / `ui_language`。
 
+### Provider 能力上限（窗口 / 输出上限）
+
+每个 provider 的能力上限存在 `config.json` 的 `providers.<name>`，**配置页可以直接改**（也可以手写文件）：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `context_window` | `128000` | provider 默认窗口（token），用于上下文预算与界面使用率 |
+| `model_limits` | `{}` | 按模型的覆盖 `{"<模型>": {"window": N, "max_output": M}}`；**只写例外**，没配的模型走 `context_window` |
+| `max_output_tokens` | `0` | 单次输出上限；**0 = 不限制（不下发）** |
+| `max_tokens_field` | `"max_tokens"` | 输出上限用哪个请求字段名发送；可换 `max_completion_tokens`，或留空表示该 provider 不发送 |
+
+窗口解析优先级：`ROUTIVUS_CONTEXT_WINDOW` 环境变量 > `model_limits[模型].window` > `providers.<name>.context_window` > `128000`。
+**窗口是模型级属性**，所以同一 provider 下不同模型可以有自己的值；换模型（`/model`）或智能路由换档后，界面上的窗口与使用率分母会随之变化，这是预期行为。
+
+两点提醒：
+
+- **输出上限默认不发送**：只有 `max_output_tokens > 0` 才会写进请求体。配了之后模型可能被硬截断（"说到一半停"），这是该配置的预期代价。
+- **网关不认 `max_tokens`** 时请求会返回 400，错误信息里会直接给出改法（换成 `max_completion_tokens`，或选择不发送）。若请求成功但输出没被限制，可能是网关忽略了未知字段——会话侧栏会显示"实际发送的字段名"，可对照网关文档确认。
+
 其余可用环境变量（均为可选进阶项，来自 `.env` / `.env.example`）：
 
 | 环境变量 | 说明 |
 |----------|------|
-| `ROUTIVUS_CONTEXT_WINDOW` | 上下文窗口（token），覆盖 provider 能力声明 |
+| `ROUTIVUS_CONTEXT_WINDOW` | 上下文窗口（token）；优先级最高，压过模型覆盖与 provider 默认（见「Provider 能力上限」） |
 | `ROUTIVUS_CONTEXT_BUDGET_RATIO` | 自动压缩前的输入预算比例（默认 0.8，限制 0.5~0.9） |
 | `ROUTIVUS_CONTEXT_KEEP_RECENT_TURNS` | 自动压缩保留的最近完整对话轮次（默认 4） |
 | `ROUTIVUS_CONTEXT_SUMMARY_MAX_TOKENS` | 摘要输出动态预留上限（默认 4096） |

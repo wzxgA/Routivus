@@ -25,10 +25,13 @@ import { useConfigSnapshot } from './state/config'
 import { useProjectWorkspace } from './state/projectWorkspace'
 import { describeError } from './state/errors'
 import { useWorkspace } from './state/workspaceContext'
-import type { RouterState } from './api/types'
+import type { ContextPayload, RouterState } from './api/types'
 import type { ConnState } from './ws/sessionSocket'
 
-const CONTEXT_WINDOW = Number(import.meta.env.VITE_ROUTIVUS_CONTEXT_WINDOW ?? 128000) || 128000
+// 窗口不再来自构建期常量：过去这里读 VITE_ROUTIVUS_CONTEXT_WINDOW（全仓库无人设置，
+// 恒等于 128000），导致界面显示与后端实际预算各说各话。现在以服务端为准——
+// 会话连上后由 `context.updated` / 快照给「本轮模型」的值，未连上时退回配置快照。
+const FALLBACK_CONTEXT_WINDOW = 128_000
 
 export function App() {
   const route = useRoute()
@@ -45,6 +48,8 @@ export function App() {
   const [filesOpen, setFilesOpen] = useState(false)
   const [hitl, setHitl] = useState<string | null>(null)
   const [router, setRouter] = useState<RouterState | null>(null)
+  // 会话当前的窗口 / 输出上限（由 ChatView 上报，含 SmartRouter 换档后的变化）
+  const [liveContext, setLiveContext] = useState<ContextPayload | null>(null)
   const [connection, setConnection] = useState<ConnState>('offline')
   const [globalNoteId, setGlobalNoteId] = useState<string | null>(null)
   const [projectNoteSel, setProjectNoteSel] = useState<Record<string, string | null>>({})
@@ -162,6 +167,11 @@ export function App() {
     [configState],
   )
 
+  // 窗口的两个来源：会话实时的（含 SmartRouter 换档后的变化）> 配置快照（还没连上
+  // 会话时）> 兜底。之前这里是构建期常量，与后端算的不是同一个数。
+  const contextWindow =
+    liveContext?.window ?? configState.config?.context_window ?? FALLBACK_CONTEXT_WINDOW
+
   const view = useMemo(() => {
     switch (route.kind) {
       case 'home':
@@ -249,13 +259,14 @@ export function App() {
             projectNotesCount={workspace.projectNotes.length}
             terminalOpen={terminalOpen}
             filesOpen={filesOpen}
-            contextWindow={CONTEXT_WINDOW}
+            contextWindow={contextWindow}
             onToggleTerminal={() => setTerminalOpen((value) => !value)}
             onToggleFiles={() => setFilesOpen((value) => !value)}
             onOpenFilesPage={() => navigate(projectRoute(route.projectId, 'files'))}
             onSessionUpdate={workspace.applySessionUpdate}
             onHitlChange={setHitl}
             onRouterChange={setRouter}
+            onContextChange={setLiveContext}
             onConnectionChange={setConnection}
           />
         )
@@ -280,6 +291,7 @@ export function App() {
     handleSelectProject,
     handleNotesMutated,
     configState,
+    contextWindow,
   ])
 
   const inProject = route.kind === 'project'
@@ -317,7 +329,7 @@ export function App() {
           projectNotesCount={workspace.projectNotes.length}
           connection={inProject ? connection : 'offline'}
           theme={theme}
-          contextWindow={CONTEXT_WINDOW}
+          contextWindow={contextWindow}
           hitl={hitl}
           router={router}
           terminalOpen={terminalOpen}

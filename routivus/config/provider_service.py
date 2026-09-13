@@ -14,10 +14,23 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from routivus.config.manager import ConfigManager, _is_placeholder, mask_key
+from routivus.config.providers import DEFAULT_MAX_TOKENS_FIELD, MAX_TOKENS_FIELDS
 from routivus.tui.i18n import UiLanguage, normalize_language, translate
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
-_ALLOWED_FIELDS = ("api_base", "default_model", "display_name")
+_ALLOWED_FIELDS = (
+    "api_base",
+    "default_model",
+    "display_name",
+    "context_window",
+    "max_output_tokens",
+    "max_tokens_field",
+    "model_limits",
+)
+# 能力字段取值范围：与 server/schemas.py 的 Field 约束共用同一组常量（单一事实来源）
+MIN_CONTEXT_WINDOW = 1_024
+MAX_CONTEXT_WINDOW = 10_000_000
+MAX_OUTPUT_TOKENS = 10_000_000
 
 
 @dataclass
@@ -58,6 +71,81 @@ def validate_model(model: str, language: UiLanguage = "zh") -> str | None:
     if any(ch in model for ch in ("`", " ")):
         return translate(language, "ui.validation.model_chars")
     return None
+
+
+def _to_int(value: object) -> int | None:
+    """宽松整数解析；布尔与不可解析值返回 None（配置来自界面输入或手写 JSON）。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def validate_context_window(value: object, language: UiLanguage = "zh") -> tuple[int, str]:
+    """上下文窗口：正整数且落在 [MIN_CONTEXT_WINDOW, MAX_CONTEXT_WINDOW]；返回 (值, 错误)。"""
+    number = _to_int(value)
+    if number is None or not MIN_CONTEXT_WINDOW <= number <= MAX_CONTEXT_WINDOW:
+        return 0, translate(
+            language,
+            "ui.validation.context_window_range",
+            min=MIN_CONTEXT_WINDOW,
+            max=MAX_CONTEXT_WINDOW,
+        )
+    return number, ""
+
+
+def validate_max_output_tokens(value: object, language: UiLanguage = "zh") -> tuple[int, str]:
+    """单次输出上限：0 表示不限制；返回 (值, 错误)。"""
+    number = _to_int(value)
+    if number is None or number < 0 or number > MAX_OUTPUT_TOKENS:
+        return 0, translate(language, "ui.validation.max_output_range", max=MAX_OUTPUT_TOKENS)
+    return number, ""
+
+
+def validate_max_tokens_field(value: object, language: UiLanguage = "zh") -> tuple[str, str]:
+    """输出上限的请求字段名：白名单校验，避免拼错导致「静默不生效」。"""
+    field = "" if value is None else str(value).strip()
+    if field not in MAX_TOKENS_FIELDS:
+        return DEFAULT_MAX_TOKENS_FIELD, translate(language, "ui.validation.max_tokens_field")
+    return field, ""
+
+
+def normalize_model_limits(
+    value: object, language: UiLanguage = "zh"
+) -> tuple[dict[str, dict[str, int]], str]:
+    """按模型的覆盖表归一化：只保留 window / max_output 两项有效值。
+
+    空对象是合法输入（语义＝清空覆盖）；逐项校验，任一项非法即整体拒绝，
+    避免写进去一半的配置让人无法判断生效范围。
+    """
+    if value is None:
+        return {}, ""
+    if not isinstance(value, dict):
+        return {}, translate(language, "ui.validation.model_limits_type")
+    limits: dict[str, dict[str, int]] = {}
+    for raw_model, raw_item in value.items():
+        model = str(raw_model).strip()
+        if not model:
+            return {}, translate(language, "ui.validation.model_limits_model")
+        if raw_item is None:
+            continue
+        if not isinstance(raw_item, dict):
+            return {}, translate(language, "ui.validation.model_limits_item", model=model)
+        item: dict[str, int] = {}
+        pairs = (("window", validate_context_window), ("max_output", validate_max_output_tokens))
+        for key, validator in pairs:
+            raw_number = raw_item.get(key)
+            if raw_number is None or raw_number == "":
+                continue
+            number, error = validator(raw_number, language)
+            if error:
+                return {}, f"{model}.{key}: {error}"
+            item[key] = number
+        if item:
+            limits[model] = item
+    return limits, ""
 
 
 class ProviderConfigService:
@@ -101,6 +189,10 @@ class ProviderConfigService:
                     "has_key": configured,
                     "is_base": name == active,
                     "layer": self.manager.provider_layer(name) or "user",
+                    "context_window": provider.context_window,
+                    "model_limits": {m: dict(v) for m, v in provider.model_limits.items()},
+                    "max_output_tokens": provider.max_output_tokens,
+                    "max_tokens_field": provider.max_tokens_field,
                 }
             )
         return rows
@@ -122,6 +214,10 @@ class ProviderConfigService:
             "has_key": configured,
             "is_base": name == self._active_provider(),
             "layer": self.manager.provider_layer(name) or "user",
+            "context_window": provider.context_window,
+            "model_limits": {m: dict(v) for m, v in provider.model_limits.items()},
+            "max_output_tokens": provider.max_output_tokens,
+            "max_tokens_field": provider.max_tokens_field,
         }
 
     def referenced_by(self, name: str) -> list[str]:
@@ -138,16 +234,30 @@ class ProviderConfigService:
         default_model: str,
         display_name: str | None = None,
         api_key: str | None = None,
+        *,
+        context_window: object | None = None,
+        max_output_tokens: object | None = None,
+        max_tokens_field: object | None = None,
+        model_limits: object | None = None,
     ) -> OpResult:
         if self.manager.resolve_provider(name) is not None:
             return OpResult(False, self._t("ui.provider.exists", name=name) + "（J4）" if self.language == "zh" else self._t("ui.provider.exists", name=name) + " (J4)")
         err = self._validate_fields(api_base, default_model)
         if err:
             return OpResult(False, err)
+        capability, error = self._capability_fields(
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            max_tokens_field=max_tokens_field,
+            model_limits=model_limits,
+        )
+        if error:
+            return OpResult(False, error)
         fields = {
             "api_base": api_base.strip(),
             "default_model": default_model.strip(),
             "display_name": display_name.strip() if display_name else None,
+            **capability,
         }
         layer = self.manager.upsert_provider(name, fields)
         out = self._t("ui.provider.added", name=name, layer=layer)
@@ -181,6 +291,16 @@ class ProviderConfigService:
             normalized["display_name"] = (
                 str(fields["display_name"]).strip() if fields["display_name"] or fields["display_name"] == "" else None
             )
+        # 能力字段：窗口 / 输出上限 / 字段名 / 按模型覆盖（空对象＝清空覆盖表）
+        capability, error = self._capability_fields(
+            context_window=fields.get("context_window"),
+            max_output_tokens=fields.get("max_output_tokens"),
+            max_tokens_field=fields.get("max_tokens_field"),
+            model_limits=fields.get("model_limits"),
+        )
+        if error:
+            return OpResult(False, error)
+        normalized.update(capability)
         layer = self.manager.upsert_provider(name, normalized)
         return OpResult(True, self._t("ui.provider.updated", name=name, layer=layer))
 
@@ -272,3 +392,39 @@ class ProviderConfigService:
         if not str(default_model).strip():
             return "default_model is required and cannot be empty (J7)" if self.language == "en" else "default_model 必填，不能为空（J7）"
         return None
+
+    def _capability_fields(
+        self,
+        *,
+        context_window: object | None = None,
+        max_output_tokens: object | None = None,
+        max_tokens_field: object | None = None,
+        model_limits: object | None = None,
+    ) -> tuple[dict[str, object], str]:
+        """校验并归一化能力字段（窗口 / 输出上限 / 字段名 / 按模型覆盖）。
+
+        `None` 表示「本次不改这一项」，保持部分更新语义；显式给值（含空字符串、
+        空对象）才会落盘——空对象即清空覆盖表。
+        """
+        fields: dict[str, object] = {}
+        if context_window is not None:
+            value, error = validate_context_window(context_window, self.language)
+            if error:
+                return {}, error
+            fields["context_window"] = value
+        if max_output_tokens is not None:
+            value, error = validate_max_output_tokens(max_output_tokens, self.language)
+            if error:
+                return {}, error
+            fields["max_output_tokens"] = value
+        if max_tokens_field is not None:
+            value, error = validate_max_tokens_field(max_tokens_field, self.language)
+            if error:
+                return {}, error
+            fields["max_tokens_field"] = value
+        if model_limits is not None:
+            value, error = normalize_model_limits(model_limits, self.language)
+            if error:
+                return {}, error
+            fields["model_limits"] = value
+        return fields, ""

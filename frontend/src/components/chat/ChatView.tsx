@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { RouterState, Session } from '../../api/types'
+import type { ContextPayload, RouterState, Session } from '../../api/types'
 import { useSessionTimeline } from '../../state/sessionTimeline'
 import type { ConnState } from '../../ws/sessionSocket'
 import { Empty } from '../common/Empty'
@@ -36,6 +36,7 @@ interface ChatViewProps {
   onSessionUpdate: (session: Session) => void
   onHitlChange: (hitl: string | null) => void
   onRouterChange: (router: RouterState | null) => void
+  onContextChange: (context: ContextPayload | null) => void
   onConnectionChange: (state: ConnState) => void
 }
 
@@ -54,6 +55,7 @@ export function ChatView({
   onSessionUpdate,
   onHitlChange,
   onRouterChange,
+  onContextChange,
   onConnectionChange,
 }: ChatViewProps) {
   const timeline = useSessionTimeline(projectId, session?.id ?? null, session, onSessionUpdate)
@@ -99,6 +101,12 @@ export function ChatView({
   useEffect(() => {
     onRouterChange(timeline.router)
   }, [timeline.router, onRouterChange])
+
+  // 当前模型的窗口 / 输出上限同步给顶栏与侧栏：换模型、SmartRouter 换档都会变，
+  // 顶栏的使用率分母必须跟着走（不再用构建期常量）。
+  useEffect(() => {
+    onContextChange(timeline.context)
+  }, [timeline.context, onContextChange])
 
   const handleSubmit = useCallback(
     (mode: ComposerMode) => {
@@ -194,6 +202,7 @@ export function ChatView({
         hitl={timeline.hitl}
         router={timeline.router}
         contextWindow={contextWindow}
+        context={timeline.context}
       />
     </section>
   )

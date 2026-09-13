@@ -14,10 +14,35 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+from routivus.config.providers import DEFAULT_MAX_TOKENS_FIELD, MAX_TOKENS_FIELDS
 from routivus.llm.client import LlmClient, LlmError
 from routivus.llm.types import Message, StreamEvent, ToolCall, Usage
 
 DEFAULT_TIMEOUT = 120.0
+
+# 网关不认输出上限字段时出现的字样（用于给出可操作提示）
+_OUTPUT_LIMIT_MARKERS = ("max_tokens", "max_completion_tokens")
+
+
+def _output_limit_hint(status: int, body: str, field: str, limit: int) -> str:
+    """网关拒绝输出上限字段时返回一段可操作提示；否则返回空串。
+
+    只影响错误文案，**不改请求、不重试**：自动删掉字段虽然能让请求跑通，
+    但会让"限制输出"静默失效，比报错更难发现（见 plans/enhancement/06 §4.6）。
+    识别条件也刻意保守——识别失败只是少一句提示，不会产生错误行为。
+    """
+    if status not in (400, 422) or limit <= 0 or not field:
+        return ""
+    lowered = body.lower()
+    if not any(marker in lowered for marker in _OUTPUT_LIMIT_MARKERS):
+        return ""
+    alternative = "max_completion_tokens" if field != "max_completion_tokens" else "max_tokens"
+    return (
+        f"该网关似乎不接受 {field} 参数。\n"
+        "怎么修（二选一）：\n"
+        f"  ① 配置 → 该 provider → 编辑 → 「输出上限字段」改为 {alternative}\n"
+        "  ② 若该网关不支持限制输出长度，把「输出上限字段」选为「不发送」"
+    )
 
 
 def _looks_like_html_error(content_type: str = "", body: str = "") -> bool:
@@ -85,6 +110,8 @@ class OpenAICompatClient(LlmClient):
         retry_jitter: float = 0.25,
         retry_total_timeout: float = 30.0,
         respect_retry_after: bool = True,
+        max_tokens: int = 0,
+        max_tokens_field: str = DEFAULT_MAX_TOKENS_FIELD,
     ) -> None:
         # F5：允许以空配置构造（启动不阻断），真正调用时再拦截并给出引导。
         self.api_base = (api_base or "").rstrip("/")
@@ -98,6 +125,11 @@ class OpenAICompatClient(LlmClient):
         self.retry_jitter = max(0.0, min(1.0, retry_jitter))
         self.retry_total_timeout = max(0.0, retry_total_timeout)
         self.respect_retry_after = respect_retry_after
+        # 单次输出上限：0 或字段名为空都表示「不下发」，与升级前行为一致
+        self.max_tokens = max(0, int(max_tokens or 0))
+        self.max_tokens_field = (
+            max_tokens_field if max_tokens_field in MAX_TOKENS_FIELDS else DEFAULT_MAX_TOKENS_FIELD
+        )
 
     def stream_chat(
         self, messages: list[Message], tools: list[dict] | None = None
@@ -169,6 +201,10 @@ class OpenAICompatClient(LlmClient):
             payload["tools"] = [
                 {"type": "function", "function": t} for t in tools
             ]
+        # 输出上限：仅当显式配置且字段名非空时下发（方案 §4.6）。
+        # 默认绝不能带 `max_tokens: 0`——部分网关会理解成「最多输出 0 token」直接报错。
+        if self.max_tokens > 0 and self.max_tokens_field:
+            payload[self.max_tokens_field] = self.max_tokens
 
         url = f"{self.api_base}/chat/completions"
         headers = {
@@ -188,8 +224,14 @@ class OpenAICompatClient(LlmClient):
                             content_type=resp.headers.get("Content-Type", ""),
                             body=body,
                         )
+                        message = f"API 返回 {status}: {body[:500]}"
+                        hint = _output_limit_hint(
+                            status, body, self.max_tokens_field, self.max_tokens
+                        )
+                        if hint:
+                            message = f"{message}\n\n{hint}"
                         raise LlmError(
-                            f"API 返回 {status}: {body[:500]}",
+                            message,
                             status_code=status,
                             category=category,
                             retryable=retryable,

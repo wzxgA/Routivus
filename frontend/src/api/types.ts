@@ -84,6 +84,15 @@ export interface NoteStats {
 
 // ---- Web Console 配置接口 ----
 
+/** 单个模型的能力覆盖（config.json 的 `model_limits.<model>`）。 */
+export interface ModelLimit {
+  window?: number | null
+  max_output?: number | null
+}
+
+/** 输出上限的请求字段名；空串表示该 provider 不发送该字段。 */
+export type MaxTokensField = 'max_tokens' | 'max_completion_tokens' | ''
+
 export interface ProviderView {
   name: string
   display_name: string | null
@@ -94,6 +103,30 @@ export interface ProviderView {
   api_key_masked: string
   is_base: boolean
   layer: string
+  /** provider 默认窗口（token）；按模型的覆盖在 model_limits 里。 */
+  context_window: number
+  /** 按模型的覆盖表：只写例外，没配的模型走 provider 默认。 */
+  model_limits: Record<string, ModelLimit>
+  /** 单次输出上限；0 = 不限制（不下发 max_tokens）。 */
+  max_output_tokens: number
+  max_tokens_field: MaxTokensField | string
+}
+
+/**
+ * 会话当前模型的能力上限（快照 `context` 段 / `context.updated` 事件）。
+ *
+ * 三个数同源、同时变：`window` 是使用率分母，`max_output` 是下发的输出上限，
+ * `output_field` 是实际发出去的字段名（给用户对照网关文档自检用）。换模型或
+ * SmartRouter 换档都会让它变化——**不是会话常量**。
+ */
+export interface ContextPayload {
+  window: number
+  max_output: number
+  output_field: string
+  provider: string
+  model: string
+  /** 窗口来自哪一层：env / model（模型覆盖）/ provider / default。 */
+  source: string
 }
 
 export interface TierView {
@@ -112,6 +145,10 @@ export interface ConfigSnapshot {
   user_dir: string
   legacy_user_dir: string | null
   desktop: boolean
+  /** 当前生效（已按 active_model 解析）的能力上限：取代前端构建期常量。 */
+  context_window: number
+  max_output_tokens: number
+  max_tokens_field: MaxTokensField | string
 }
 
 export interface DesktopInfo {
@@ -168,6 +205,8 @@ export interface SessionSnapshot {
   session: Session
   messages: Message[]
   memory: MemoryPayload
+  /** 当前模型的能力上限（重连即可见，不必等下一轮对话）。 */
+  context?: ContextPayload
   safety: { project_id: string; hitl: string; status: string }
   router?: RouterState
   audit: { tool_calls: number; tool_failures: number; approvals: number }

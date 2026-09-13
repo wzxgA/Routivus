@@ -7,8 +7,10 @@ import type {
   FileContent,
   FileListing,
   FileWriteResult,
+  MaxTokensField,
   MemoryPayload,
   Message,
+  ModelLimit,
   Note,
   NoteStats,
   Project,
@@ -206,6 +208,14 @@ const providerPath = (name: string) => `/config/providers/${encodeURIComponent(n
 export const getConfig = (signal?: AbortSignal) =>
   request<ConfigSnapshot>('/config', { signal })
 
+/** 能力上限字段（创建 / 更新共用）；省略＝不改，model_limits 空对象＝清空覆盖。 */
+export interface ProviderCapabilityPayload {
+  context_window?: number | null
+  max_output_tokens?: number | null
+  max_tokens_field?: MaxTokensField | null
+  model_limits?: Record<string, ModelLimit> | null
+}
+
 export const createProvider = (payload: {
   name: string
   api_base: string
@@ -213,11 +223,16 @@ export const createProvider = (payload: {
   display_name?: string | null
   api_key?: string | null
   set_base?: boolean
-}) => request<ProviderView>('/config/providers', { method: 'POST', body: payload })
+} & ProviderCapabilityPayload) =>
+  request<ProviderView>('/config/providers', { method: 'POST', body: payload })
 
 export const updateProvider = (
   name: string,
-  payload: { api_base?: string; default_model?: string; display_name?: string | null },
+  payload: {
+    api_base?: string
+    default_model?: string
+    display_name?: string | null
+  } & ProviderCapabilityPayload,
 ) => request<ProviderView>(providerPath(name), { method: 'PATCH', body: payload })
 
 export const deleteProvider = (name: string) =>

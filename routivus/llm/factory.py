@@ -6,6 +6,7 @@ URL 与 Key 的解析（环境变量、配置合并）由 ConfigManager 负责�
 
 from __future__ import annotations
 
+from routivus.config.providers import DEFAULT_MAX_TOKENS_FIELD
 from routivus.llm.client import LlmClient
 from routivus.llm.openai_compat import OpenAICompatClient
 
@@ -24,6 +25,8 @@ def create_client(
     retry_jitter: float = 0.25,
     retry_total_timeout: float = 30.0,
     respect_retry_after: bool = True,
+    max_tokens: int = 0,
+    max_tokens_field: str = DEFAULT_MAX_TOKENS_FIELD,
 ) -> LlmClient:
     return OpenAICompatClient(
         api_base=api_base,
@@ -37,4 +40,6 @@ def create_client(
         retry_jitter=retry_jitter,
         retry_total_timeout=retry_total_timeout,
         respect_retry_after=respect_retry_after,
+        max_tokens=max_tokens,
+        max_tokens_field=max_tokens_field,
     )

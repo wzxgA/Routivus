@@ -3,12 +3,18 @@
 provider 不内置预设，全部由用户在配置（config.json 的 ``providers`` 节）
 中自定义 name / api_base / default_model / api_key 等；API Key 与 provider
 的一切配置都写入 config.json，不再走 ``.env``。能力参数（window / cache /
-vision）为可选预设值。
+vision / 输出上限）为可选预设值，其中窗口与输出上限支持按模型覆盖。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+# 输出上限允许的请求字段名。不同网关叫法不一（OpenAI 新推理模型要求
+# max_completion_tokens），且没有任何可靠方式自动探测，因此由用户显式选择；
+# "" 表示该 provider 干脆不发送该字段（见 plans/enhancement/06 §4.6）。
+MAX_TOKENS_FIELDS: tuple[str, ...] = ("max_tokens", "max_completion_tokens", "")
+DEFAULT_MAX_TOKENS_FIELD = "max_tokens"
 
 
 @dataclass(frozen=True)
@@ -21,6 +27,12 @@ class Provider:
     api_key: str = ""         # API Key（明文存于 config.json 的 providers.<name>.api_key）
     api_key_env: str = ""     # 兼容保留项：旧「环境变量读取」模式，现已不使用
     context_window: int = 0   # 上下文窗口（token），用于预算控制
+    # 按模型覆盖的能力上限：{model: {"window": int, "max_output": int}}
+    model_limits: dict[str, dict[str, int]] = field(default_factory=dict)
+    # 单次输出上限（token）；0 = 不限制（不下发），与升级前行为一致
+    max_output_tokens: int = 0
+    # 输出上限用哪个请求字段名发送；取值见 MAX_TOKENS_FIELDS
+    max_tokens_field: str = DEFAULT_MAX_TOKENS_FIELD
     supports_cache: bool = False   # 是否支持 prompt cache（预留）
     supports_vision: bool = False  # 是否支持图片输入（预留）
 

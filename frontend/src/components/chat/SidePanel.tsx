@@ -1,5 +1,11 @@
 import { useEffect, useState } from 'react'
-import type { MemoryPayload, PlanPayload, RouterState, Session } from '../../api/types'
+import type {
+  ContextPayload,
+  MemoryPayload,
+  PlanPayload,
+  RouterState,
+  Session,
+} from '../../api/types'
 import type { AuditTotals, UsageTotals } from '../../state/sessionTimeline'
 import type { ConnState } from '../../ws/sessionSocket'
 import { formatDateTime, formatNumber } from '../../utils/format'
@@ -16,6 +22,14 @@ const STATUS_TEXT: Record<string, string> = {
   cancelled: '已取消',
 }
 
+/** 窗口来自哪一层（与后端 resolve_window_detail 的 source 对应）。 */
+const WINDOW_SOURCE_TEXT: Record<string, string> = {
+  env: '环境变量覆盖',
+  model: '模型覆盖',
+  provider: 'provider 默认',
+  default: '默认值',
+}
+
 interface SidePanelProps {
   session: Session | null
   usage: UsageTotals
@@ -30,6 +44,8 @@ interface SidePanelProps {
   hitl: string | null
   router: RouterState | null
   contextWindow: number
+  /** 会话当前模型的能力上限；换模型 / 路由换档后会变（见 plans/enhancement/06）。 */
+  context: ContextPayload | null
 }
 
 export function SidePanel({
@@ -46,10 +62,15 @@ export function SidePanel({
   hitl,
   router,
   contextWindow,
+  context,
 }: SidePanelProps) {
   const [tab, setTab] = useState<TabName>('Session')
   const usedTokens = session?.total_tokens ?? 0
-  const ratio = contextWindow > 0 ? Math.min(1, usedTokens / contextWindow) : 0
+  // 窗口以会话实时值为准（换模型、SmartRouter 换档都会变）；prop 只是还没连上
+  // 会话时的基线，不再是构建期写死的常量。
+  const effectiveWindow = context?.window ?? contextWindow
+  const outputLimit = Math.max(0, context?.max_output ?? 0)
+  const ratio = effectiveWindow > 0 ? Math.min(1, usedTokens / effectiveWindow) : 0
   const memoryItems = memory?.items ?? []
   const memoryEmptyHint =
     memory?.status === 'unavailable'
@@ -125,8 +146,17 @@ export function SidePanel({
             <div className="sec-title">CONTEXT</div>
             <div className="kv">
               <span>窗口</span>
-              <span className="num">{formatNumber(contextWindow)} tk</span>
+              <span className="num">{formatNumber(effectiveWindow)} tk</span>
             </div>
+            {context ? (
+              <div className="kv">
+                <span>当前模型</span>
+                <span className="mono">
+                  {context.model || '—'}
+                  {context.source ? ` · ${WINDOW_SOURCE_TEXT[context.source] ?? context.source}` : ''}
+                </span>
+              </div>
+            ) : null}
             <div className="kv">
               <span>使用率</span>
               <span className="num">{(ratio * 100).toFixed(1)}%</span>
@@ -139,7 +169,23 @@ export function SidePanel({
               <span className="num">{formatNumber(session?.total_tokens ?? 0)} tk</span>
             </div>
             <div className="kv">
-              <span>来源</span>
+              <span>最大输出</span>
+              <span className="num">
+                {outputLimit > 0
+                  ? `${formatNumber(outputLimit)} tk · 发送 ${context?.output_field || '（未发送）'}`
+                  : '不限制（不发送）'}
+              </span>
+            </div>
+            <div className="kv">
+              <span>最大输入</span>
+              <span className="num">{formatNumber(Math.max(0, effectiveWindow - outputLimit))} tk</span>
+            </div>
+            <div className="hint">
+              最大输入是推导值（窗口 − 最大输出），不可单独配置。窗口与输出上限按「当前模型」
+              计算，换模型或智能路由换档后都会变化。
+            </div>
+            <div className="kv">
+              <span>已用来源</span>
               <span>会话快照 + usage 事件累计</span>
             </div>
 

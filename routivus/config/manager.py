@@ -14,7 +14,12 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from routivus.config.providers import Provider, ProviderRegistry
+from routivus.config.providers import (
+    DEFAULT_MAX_TOKENS_FIELD,
+    MAX_TOKENS_FIELDS,
+    Provider,
+    ProviderRegistry,
+)
 
 USER_CONFIG = "config.json"
 DEFAULT_CONTEXT_WINDOW = 128_000
@@ -41,6 +46,10 @@ class ActiveConfig:
     api_base: str
     api_key: str
     context_window: int
+    # 单次输出上限（token）；0 = 不限制（不下发），见 plans/enhancement/06
+    max_output_tokens: int = 0
+    # 输出上限的请求字段名；"" 表示该 provider 不发送
+    max_tokens_field: str = DEFAULT_MAX_TOKENS_FIELD
     supports_cache: bool = False
     supports_vision: bool = False
 
@@ -74,6 +83,30 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = value
     return result
+
+
+def _coerce_positive_int(value: Any) -> int:
+    """把配置值转成正整数；0 / 负数 / 非数字 / bool 一律视为「未设置」。
+
+    配置是用户手写的，一条写错不该让整份配置失效——统一按"没配"处理。
+    """
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return number if number > 0 else 0
+
+
+def _model_limit(provider: Provider, model: str | None, key: str) -> int:
+    """取某模型的能力覆盖值（window / max_output）；未配或非法返回 0。"""
+    if not model:
+        return 0
+    limits = provider.model_limits.get(model)
+    if not isinstance(limits, dict):
+        return 0
+    return _coerce_positive_int(limits.get(key))
 
 
 def _find_env_file() -> Path | None:
@@ -183,6 +216,35 @@ class ConfigManager:
             models = [str(m).strip() for m in raw if str(m).strip()]
             return tuple(dict.fromkeys(models))  # 去重保序
 
+        def _extract_model_limits(cfg_dict: dict | None) -> dict[str, dict[str, int]]:
+            """解析按模型的覆盖表 {model: {"window": int, "max_output": int}}。
+
+            逐项容错：某一条写错只跳过那一条，不丢整张表（配置是用户手写的）。
+            """
+            raw = (cfg_dict or {}).get("model_limits")
+            if not isinstance(raw, dict):
+                return {}
+            limits: dict[str, dict[str, int]] = {}
+            for model, value in raw.items():
+                name_key = str(model).strip()
+                if not name_key or not isinstance(value, dict):
+                    continue
+                item: dict[str, int] = {}
+                for key in ("window", "max_output"):
+                    number = _coerce_positive_int(value.get(key))
+                    if number:
+                        item[key] = number
+                if item:
+                    limits[name_key] = item
+            return limits
+
+        def _extract_max_tokens_field(cfg_dict: dict | None, fallback: str) -> str:
+            """输出上限的请求字段名；非法值回落 fallback，避免拼错导致静默不生效。"""
+            if not cfg_dict or "max_tokens_field" not in cfg_dict:
+                return fallback
+            value = str(cfg_dict.get("max_tokens_field") or "").strip()
+            return value if value in MAX_TOKENS_FIELDS else fallback
+
         if base is None:
             required = ("api_base", "default_model")
             if not cfg or not all(cfg.get(k) for k in required):
@@ -196,6 +258,9 @@ class ConfigManager:
                 models=_extract_models(cfg),
                 api_key=api_key,
                 context_window=int(cfg.get("context_window", DEFAULT_CONTEXT_WINDOW)),
+                model_limits=_extract_model_limits(cfg),
+                max_output_tokens=_coerce_positive_int(cfg.get("max_output_tokens")),
+                max_tokens_field=_extract_max_tokens_field(cfg, DEFAULT_MAX_TOKENS_FIELD),
                 supports_cache=bool(cfg.get("supports_cache", False)),
                 supports_vision=bool(cfg.get("supports_vision", False)),
             )
@@ -209,6 +274,11 @@ class ConfigManager:
             models=_extract_models(cfg) or base.models,
             api_key=api_key,
             context_window=int((cfg or {}).get("context_window", base.context_window)),
+            model_limits=_extract_model_limits(cfg) or base.model_limits,
+            max_output_tokens=_coerce_positive_int(
+                (cfg or {}).get("max_output_tokens")
+            ) or base.max_output_tokens,
+            max_tokens_field=_extract_max_tokens_field(cfg, base.max_tokens_field),
             supports_cache=base.supports_cache,
             supports_vision=base.supports_vision,
         )
@@ -227,13 +297,49 @@ class ConfigManager:
         """
         return provider.api_key if not _is_placeholder(provider.api_key) else ""
 
-    def resolve_window(self, provider: Provider) -> int:
-        """上下文窗口：ROUTIVUS_CONTEXT_WINDOW 环境变量 > provider 能力。"""
+    def resolve_window_detail(
+        self, provider: Provider, model: str | None = None
+    ) -> tuple[int, str]:
+        """（窗口, 来源）；来源 ∈ {env, model, provider, default}。
+
+        用于界面回答「这个数从哪来」（方案 §4.4）。env 保持最高：它是文档化的
+        逃生阀，也是唯一能一次性压住全部 provider 的开关。
+        """
         raw = self.env.get("ROUTIVUS_CONTEXT_WINDOW", "")
-        try:
-            return int(raw) if raw else provider.context_window
-        except ValueError:
-            return provider.context_window
+        if raw:
+            try:
+                return int(raw), "env"
+            except ValueError:
+                pass
+        override = _model_limit(provider, model, "window")
+        if override:
+            return override, "model"
+        if provider.context_window > 0:
+            return provider.context_window, "provider"
+        return DEFAULT_CONTEXT_WINDOW, "default"
+
+    def resolve_window(self, provider: Provider, model: str | None = None) -> int:
+        """上下文窗口：env > 模型覆盖 > provider 能力 > 默认 128k。"""
+        return self.resolve_window_detail(provider, model)[0]
+
+    def resolve_output_limit(self, provider: Provider, model: str | None = None) -> int:
+        """单次输出上限（token）：模型覆盖 > provider 默认 > 0（不限制）。
+
+        结果夹在窗口内：`prompt + max_tokens > window` 是必然失败的请求，
+        在配置层面就拦掉，避免用户配出一个必然 400 的组合（方案 §4.2）。
+        """
+        value = _model_limit(provider, model, "max_output") or max(
+            0, provider.max_output_tokens
+        )
+        if value <= 0:
+            return 0
+        window = self.resolve_window(provider, model)
+        return min(value, max(1, window))
+
+    def resolve_output_field(self, provider: Provider) -> str:
+        """输出上限的请求字段名；"" 表示该 provider 不发送。"""
+        field = provider.max_tokens_field
+        return field if field in MAX_TOKENS_FIELDS else DEFAULT_MAX_TOKENS_FIELD
 
     # ---------- 生效配置 ----------
 
@@ -263,7 +369,9 @@ class ConfigManager:
             model=model,
             api_base=api_base,
             api_key=self.resolve_api_key(provider),
-            context_window=self.resolve_window(provider),
+            context_window=self.resolve_window(provider, model),
+            max_output_tokens=self.resolve_output_limit(provider, model),
+            max_tokens_field=self.resolve_output_field(provider),
             supports_cache=provider.supports_cache,
             supports_vision=provider.supports_vision,
         )

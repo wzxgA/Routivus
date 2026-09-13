@@ -7,6 +7,33 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from routivus.config.provider_service import (
+    DEFAULT_MAX_TOKENS_FIELD,
+    MAX_CONTEXT_WINDOW,
+    MAX_OUTPUT_TOKENS,
+    MIN_CONTEXT_WINDOW,
+)
+
+# 输出上限的请求字段名；与 routivus.config.providers.MAX_TOKENS_FIELDS 一致
+# （Literal 必须写字面量，改那边时记得同步这里）
+MaxTokensField = Literal["max_tokens", "max_completion_tokens", ""]
+
+
+class ModelLimitUpdate(BaseModel):
+    """按模型的能力覆盖（写入用）；两项都可选，都空则该模型不产生覆盖。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    window: int | None = Field(default=None, ge=MIN_CONTEXT_WINDOW, le=MAX_CONTEXT_WINDOW)
+    max_output: int | None = Field(default=None, ge=0, le=MAX_OUTPUT_TOKENS)
+
+
+class ModelLimitView(BaseModel):
+    """按模型的能力覆盖（读取用）。"""
+
+    window: int | None = None
+    max_output: int | None = None
+
 
 class ProjectCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -222,6 +249,11 @@ class ProviderView(BaseModel):
     api_key_masked: str = ""
     is_base: bool
     layer: str
+    # 能力上限（见 plans/enhancement/06）：窗口是 provider 默认，model_limits 按模型覆盖
+    context_window: int = 0
+    model_limits: dict[str, ModelLimitView] = Field(default_factory=dict)
+    max_output_tokens: int = 0
+    max_tokens_field: str = DEFAULT_MAX_TOKENS_FIELD
 
 
 class TierView(BaseModel):
@@ -240,6 +272,10 @@ class ConfigSnapshot(BaseModel):
     user_dir: str
     legacy_user_dir: str | None = None
     desktop: bool = False
+    # 当前生效（已按 active_model 解析）的能力上限：界面用它取代构建期常量
+    context_window: int = 128_000
+    max_output_tokens: int = 0
+    max_tokens_field: str = DEFAULT_MAX_TOKENS_FIELD
 
 
 class ProviderCreateRequest(BaseModel):
@@ -251,6 +287,12 @@ class ProviderCreateRequest(BaseModel):
     display_name: str | None = Field(default=None, max_length=100)
     api_key: str | None = Field(default=None, max_length=4096)
     set_base: bool = False
+    context_window: int | None = Field(
+        default=None, ge=MIN_CONTEXT_WINDOW, le=MAX_CONTEXT_WINDOW
+    )
+    max_output_tokens: int | None = Field(default=None, ge=0, le=MAX_OUTPUT_TOKENS)
+    max_tokens_field: MaxTokensField | None = None
+    model_limits: dict[str, ModelLimitUpdate] | None = None
 
 
 class ProviderUpdateRequest(BaseModel):
@@ -259,6 +301,13 @@ class ProviderUpdateRequest(BaseModel):
     api_base: str | None = Field(default=None, min_length=1, max_length=2048)
     default_model: str | None = Field(default=None, min_length=1, max_length=200)
     display_name: str | None = Field(default=None, max_length=100)
+    context_window: int | None = Field(
+        default=None, ge=MIN_CONTEXT_WINDOW, le=MAX_CONTEXT_WINDOW
+    )
+    max_output_tokens: int | None = Field(default=None, ge=0, le=MAX_OUTPUT_TOKENS)
+    max_tokens_field: MaxTokensField | None = None
+    # 整表覆盖语义：省略＝不改，空对象＝清空
+    model_limits: dict[str, ModelLimitUpdate] | None = None
 
 
 class ProviderKeyRequest(BaseModel):

@@ -316,8 +316,12 @@ def _attach_model(
     key = manager.resolve_api_key(provider)
     if not key:
         return (f"Missing {provider.name} api_key configuration; use /provider key {provider.name} <KEY> to write config.json." if normalize_language(settings.ui_language) == "en" else f"缺少 {provider.name} 的 api_key 配置，无法使用。请用 /provider key {provider.name} <KEY> 写入 config.json。")
+    output_limit = manager.resolve_output_limit(provider, model)
+    output_field = manager.resolve_output_field(provider)
     agent.llm = create_client(
         manager.resolve_api_base(provider), key, model,
+        max_tokens=output_limit,
+        max_tokens_field=output_field,
         retry_enabled=settings.llm_retry_enabled,
         max_retries=settings.llm_max_retries,
         retry_base_delay=settings.llm_retry_base_delay,
@@ -330,7 +334,10 @@ def _attach_model(
     settings.model = model
     settings.api_base = manager.resolve_api_base(provider)
     settings.api_key = key
-    settings.context_window = manager.resolve_window(provider)
+    # 能力上限按「模型」解析：同一 provider 换模型时这两个值可能变化（方案 §4.2）
+    settings.context_window = manager.resolve_window(provider, model)
+    settings.max_output_tokens = output_limit
+    settings.max_tokens_field = output_field
     return None
 
 
@@ -370,13 +377,19 @@ def _switch(
     model = model or provider.default_model
 
     api_base = manager.resolve_api_base(provider)
+    output_limit = manager.resolve_output_limit(provider, model)
+    output_field = manager.resolve_output_field(provider)
     settings.provider = provider.name
     settings.model = model
     settings.api_base = api_base
     settings.api_key = key
-    settings.context_window = manager.resolve_window(provider)
+    settings.context_window = manager.resolve_window(provider, model)
+    settings.max_output_tokens = output_limit
+    settings.max_tokens_field = output_field
     agent.llm = create_client(
         api_base, key, model,
+        max_tokens=output_limit,
+        max_tokens_field=output_field,
         retry_enabled=settings.llm_retry_enabled,
         max_retries=settings.llm_max_retries,
         retry_base_delay=settings.llm_retry_base_delay,

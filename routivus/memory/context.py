@@ -107,9 +107,20 @@ class ConversationContext:
             )
         return total
 
+    def _response_reserve(self, window: int) -> int:
+        """给输出留的空间：配了 max_output_tokens 就用它，否则回落 15% 公式。
+
+        配了输出上限时按它算预算才与实际请求一致（方案 §4.6）；同时夹在窗口的
+        50% 以内，避免一个巨大的输出上限把输入空间挤干（输入侧仍受 budget_ratio 约束）。
+        """
+        configured = max(0, int(getattr(self.settings, "max_output_tokens", 0) or 0))
+        if configured:
+            return max(1, min(configured, max(1, window // 2)))
+        return min(max(int(window * 0.15), 2_048), 16_384)
+
     def _budget_values(self) -> tuple[int, int, int]:
         window = max(1, int(self.settings.context_window))
-        response_reserve = min(max(int(window * 0.15), 2_048), 16_384)
+        response_reserve = self._response_reserve(window)
         safety_buffer = min(max(int(window * 0.05), 1_024), 8_192)
         summary_reserve = min(
             max(int(window * 0.05), 512),
