@@ -365,6 +365,7 @@ export function useSessionTimeline(
                   kind: 'ask',
                   approval_id: String(data.approval_id ?? ''),
                   ask,
+                  timeout: Number(data.timeout ?? 0),
                   request_id: String(data.request_id ?? ''),
                 }
               : {

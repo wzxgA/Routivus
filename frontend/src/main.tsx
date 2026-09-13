@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
+import { ErrorBoundary } from './components/common/ErrorBoundary'
 import { WorkspaceProvider } from './state/workspace'
 import './styles/app.css'
 import { applyTheme, readStoredTheme } from './theme'
@@ -13,6 +14,9 @@ if (!container) throw new Error('找不到 #root 挂载点')
 // WebSocket 连接被重复触发，干扰真实的幂等 / 重连行为验证。
 createRoot(container).render(
   <WorkspaceProvider>
-    <App />
+    {/* 最后一级兜底：任何渲染异常都降级为错误卡，而不是卸载整棵树留一张纯底色页 */}
+    <ErrorBoundary label="应用">
+      <App />
+    </ErrorBoundary>
   </WorkspaceProvider>,
 )

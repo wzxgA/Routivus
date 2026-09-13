@@ -424,18 +424,39 @@ export interface PlanReviewRequest {
   timeout?: number
 }
 
-export interface AskField {
-  name?: string
-  label?: string
-  type?: string
-  required?: boolean
-  options?: string[]
-  placeholder?: string
+/** 可选中的一项（对应 routivus/ask/models.py 的 AskOption）。 */
+export interface AskOption {
+  label: string
+  /** 回灌给模型的取值；服务端构造时已兜底为非空（缺省等于 label）。 */
+  value: string
 }
 
+/**
+ * 一个待收集的问题字段（对应 routivus/ask/models.py 的 AskField）。
+ *
+ * 契约曾在 Web 端错位（前端按 name/label/options: string[] 渲染）：选项对象被
+ * 当成 React 子节点直接把整棵组件树打崩，字段标签退化成 field_0。改字段名时
+ * 两端必须同步。
+ */
+export interface AskField {
+  /** 答案的键：提交时按它回填，模型按它取值。 */
+  key: string
+  question: string
+  options: AskOption[]
+  /** 允许在下拉之外手填自定义值。 */
+  allow_custom: boolean
+  /** 默认值：恰好等于某选项取值时预选，否则作为自定义输入的初稿。 */
+  default: string
+  required: boolean
+}
+
+/** 一次 ask_user（对应 routivus/ask/models.py 的 AskRequest）。 */
 export interface AskRequest {
-  question?: string
+  id?: string
+  /** 问题原文：问答卡的标题。 */
+  prompt?: string
   fields?: AskField[]
+  origin?: string
   [key: string]: unknown
 }
 

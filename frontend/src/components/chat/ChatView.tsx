@@ -3,6 +3,7 @@ import type { ContextPayload, RouterState, Session } from '../../api/types'
 import { useSessionTimeline } from '../../state/sessionTimeline'
 import type { ConnState } from '../../ws/sessionSocket'
 import { Empty } from '../common/Empty'
+import { ErrorBoundary } from '../common/ErrorBoundary'
 import { FilesDrawer } from '../files/FilesDrawer'
 import { TerminalDrawer } from '../terminal/TerminalDrawer'
 import { Composer, type ComposerMode } from './Composer'
@@ -149,14 +150,16 @@ export function ChatView({
               }
             />
           ) : (
-            <MessageList
-              items={timeline.items}
-              approval={timeline.approval}
-              planReview={timeline.planReview}
-              onResolveApproval={timeline.resolveApproval}
-              onAnswerAsk={timeline.answerAsk}
-              onDecideReview={timeline.resolvePlanReview}
-            />
+            <ErrorBoundary label="消息流">
+              <MessageList
+                items={timeline.items}
+                approval={timeline.approval}
+                planReview={timeline.planReview}
+                onResolveApproval={timeline.resolveApproval}
+                onAnswerAsk={timeline.answerAsk}
+                onDecideReview={timeline.resolvePlanReview}
+              />
+            </ErrorBoundary>
           )}
         </div>
 
