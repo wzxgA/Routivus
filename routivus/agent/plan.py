@@ -493,12 +493,19 @@ class PlanExecutor:
 
         gather_task = asyncio.gather(*(runner(tid) for tid in pending), return_exceptions=True)
         completed = 0
-        while completed < len(pending):
-            item = await queue.get()
-            if item is None:
-                completed += 1
-                continue
-            yield item
+        try:
+            while completed < len(pending):
+                item = await queue.get()
+                if item is None:
+                    completed += 1
+                    continue
+                yield item
+        except BaseException:
+            # 消费方被中断（用户停止 / 取消轮次 / 断线）：子任务是独立 task，必须一并
+            # 取消。否则它们会在后台继续跑、继续弹审批，而事件再也没人消费——用户看到
+            # 的是"批准了但什么都没发生"的幽灵子任务（且会一直占用 provider 额度）。
+            gather_task.cancel()
+            raise
         # gather 仅用于收集异常（runner 内部已兜底，这里防御性回灌）
         for result in await gather_task:
             if isinstance(result, Exception):

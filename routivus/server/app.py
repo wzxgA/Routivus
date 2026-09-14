@@ -395,22 +395,42 @@ _REPLAY_EVENT_TYPES = (
     "command.executed",
 )
 
+# router.updated 是状态类事件：回放里只保留最后一条（见 _replay_card_events）。
+_ROUTER_EVENT_TYPE = "router.updated"
+
+# 卡片回放窗口：按类型过滤后取最近 N 条。事件表里 message.delta 占绝对多数
+# （每个 token 一行），全量窗口会被流式增量挤占，长会话重连会丢最新卡片（07 §4.6b）。
+_REPLAY_CARD_LIMIT = 1000
+
+# 思考段落库上限（字符）：超出截断并标注。只影响展示，不进 agent 上下文（07 §4.9）。
+MAX_THINKING_SEGMENT_CHARS = 20_000
+_THINKING_TRUNCATED_SUFFIX = "…（思考过长已截断）"
+
 
 def _replay_card_events(events: list[EventRecord]) -> list[dict[str, Any]]:
-    """从历史事件里筛出卡片类事件，供快照恢复卡片渲染。
+    """把卡片类历史事件整理成快照回放列表。
 
-    刻意排除 `message.*` / `session.*` / `error` / `approval.*`：文本由快照的
-    messages 承载（回放消息事件会让前端重复插入），待决交互由 `pending` 字段
-    承载（走内存桥的可应答态，比回放历史事件更准确）。`router.updated` 是状态
-    类事件，只保留最后一条。
+    调用方现已用 `storage.list_card_events` 按类型取"最近 N 条"，这里仍保留过滤
+    （router.updated 只留最后一条），并对每条补 `occurred_at`：前端按时间戳把
+    messages 与 replay 归并成一条时间线（方案 07 §4.6a）。
     """
     replay: list[dict[str, Any]] = []
     last_router: dict[str, Any] | None = None
     for item in events:
         if item.event_type in _REPLAY_EVENT_TYPES:
-            replay.append({"type": item.event_type, "sequence": item.sequence, "data": item.data})
-        elif item.event_type == "router.updated":
-            last_router = {"type": item.event_type, "sequence": item.sequence, "data": item.data}
+            replay.append({
+                "type": item.event_type,
+                "sequence": item.sequence,
+                "occurred_at": item.occurred_at,
+                "data": item.data,
+            })
+        elif item.event_type == _ROUTER_EVENT_TYPE:
+            last_router = {
+                "type": item.event_type,
+                "sequence": item.sequence,
+                "occurred_at": item.occurred_at,
+                "data": item.data,
+            }
     if last_router is not None:
         replay.append(last_router)
     return replay
@@ -1788,7 +1808,10 @@ def create_app(
             self.websocket = websocket
             self.session = session
             self.request_id = request_id
-            self.assistant_parts: list[str] = []
+            # 段缓冲按来源分桶（07 §4.2）：/team 的同一批 worker 是并发执行的
+            # （agent/team.py 的 create_task + 信号量），delta 会交替到达；单一缓冲
+            # 会把不同 worker 的文字黏成一段。主 ReAct 轮的来源是 ""。
+            self.segments: dict[str, dict[str, Any]] = {}
             self.failed = False
             self.tool_started: dict[str, float] = {}
             self.tool_calls = 0
@@ -1796,6 +1819,39 @@ def create_app(
 
         async def emit(self, event_type: str, data: dict[str, Any]) -> None:
             await send_event(self.websocket, event_type, self.session, {**data, "request_id": self.request_id})
+
+        async def _flush_segment(self, source: str) -> None:
+            """把某来源的当前段收尾：落库 + 广播 message.segment（先落库、后发事件）。
+
+            "先落库"保证消息的 created_at ≤ 事件 occurred_at，前端按时间戳归并时
+            段落在先（方案 07 §4.6a 的硬性约定）。
+
+            空白段（多数 provider 会在段边界吐空白）不落库，但**仍要通知前端**：
+            否则前端那条活跃段永远收不掉，界面上会永久留一个空块（形似一条横线）。
+            """
+            segment = self.segments.pop(source, None)
+            if not segment:
+                return
+            text = "".join(segment["parts"])
+            if not text.strip():
+                await self.emit("message.segment", {"message": None, "source": source})
+                return
+            if segment["kind"] == "thinking" and len(text) > MAX_THINKING_SEGMENT_CHARS:
+                text = text[:MAX_THINKING_SEGMENT_CHARS] + _THINKING_TRUNCATED_SUFFIX
+            role = "thinking" if segment["kind"] == "thinking" else "assistant"
+            message = workspace_store.add_message(self.session.id, role, text)
+            await self.emit("message.segment", {
+                "message": _record_payload(_message_response(message)),
+                "source": source,
+            })
+
+        async def _append_text(self, source: str, kind: str, text: str) -> None:
+            segment = self.segments.get(source)
+            if segment is None or segment["kind"] != kind:
+                await self._flush_segment(source)
+                self.segments[source] = {"kind": kind, "parts": [text]}
+            else:
+                segment["parts"].append(text)
 
         def apply_usage(self, usage: Any) -> None:
             updated = workspace_store.update_session(
@@ -1807,15 +1863,20 @@ def create_app(
             if updated is not None:
                 self.session = updated
 
-        async def forward(self, item: Any) -> None:
-            """把一个 AgentEvent 映射为会话事件。"""
+        async def forward(self, item: Any, *, source: str = "") -> None:
+            """把一个 AgentEvent 映射为会话事件。
+
+            `source` 标注事件来源（""=主 ReAct 轮，task:<id>=/plan 子任务，
+            agent:<id>=/team worker），用于段缓冲分桶与前端来源标注（07 §4.2/§4.10）。
+            """
             kind = getattr(item, "kind", "")
             text = str(getattr(item, "text", "") or "")
             if kind in {"content", "thinking"} and text:
-                if kind == "content":
-                    self.assistant_parts.append(text)
-                await self.emit("message.delta", {"kind": kind, "text": text})
+                await self._append_text(source, kind, text)
+                await self.emit("message.delta", {"kind": kind, "text": text, "source": source})
             elif kind == "tool_call":
+                # 工具卡必须插在"它之前的正文"后面：先收尾该来源的段，再发 tool.started
+                await self._flush_segment(source)
                 call = getattr(item, "tool_call", None)
                 call_id = str(getattr(call, "id", ""))
                 self.tool_started[call_id] = time.perf_counter()
@@ -1824,6 +1885,7 @@ def create_app(
                     "tool_call_id": call_id,
                     "name": getattr(call, "name", ""),
                     "arguments": getattr(call, "arguments", ""),
+                    "source": source,
                 })
             elif kind == "tool_result":
                 result = getattr(item, "tool_result", None)
@@ -1840,6 +1902,7 @@ def create_app(
                     "output": output,
                     "error": error,
                     "duration_ms": round((time.perf_counter() - self.tool_started.pop(result_id, time.perf_counter())) * 1000),
+                    "source": source,
                 })
                 workspace_store.add_message(
                     self.session.id, "tool", output or error or "",
@@ -1882,10 +1945,14 @@ def create_app(
                     await self.emit("session.usage", _record_payload(usage))
 
         async def finish(self) -> None:
-            """一轮正常结束：落库 assistant 正文并收敛会话状态。"""
-            if self.assistant_parts:
-                message = workspace_store.add_message(self.session.id, "assistant", "".join(self.assistant_parts))
-                await self.emit("message.completed", {"message": _record_payload(_message_response(message))})
+            """一轮正常结束：收尾所有来源的段落并收敛会话状态。
+
+            正文 / 思考已由 `message.segment` 逐段落库，这里只发"本轮结束"信号；
+            `message.completed` 不再携带整段正文（语义收窄，方案 07 §4.3）。
+            """
+            for source in list(self.segments):
+                await self._flush_segment(source)
+            await self.emit("message.completed", {})
             updated = workspace_store.update_session(self.session.id, status="failed" if self.failed else "completed")
             if updated:
                 self.session = updated
@@ -1910,7 +1977,17 @@ def create_app(
         await forwarder.emit(event_type, _task_card_payload(item, mode=mode))
         inner = getattr(item, "agent_event", None)
         if inner is not None:
-            await forwarder.forward(inner)
+            # 段缓冲按来源分桶（07 §4.2）：/team 并行 worker 用 agent:<id>，
+            # /plan 子任务用 task:<id>，避免不同来源的文字黏成一段。
+            agent_id = str(getattr(item, "agent_id", "") or "")
+            task_id = str(getattr(getattr(item, "task", None), "id", "") or "")
+            if agent_id:
+                source = f"agent:{agent_id}"
+            elif task_id:
+                source = f"task:{task_id}"
+            else:
+                source = "subtask"
+            await forwarder.forward(inner, source=source)
         usage = getattr(item, "usage", None)
         if usage is not None:
             forwarder.apply_usage(usage)
@@ -2291,7 +2368,9 @@ def create_app(
                 # 当前模型的能力上限（窗口 / 输出上限 / 发送字段名）：界面据此显示
                 # 使用率分母与实际下发的限制，不再依赖构建期常量。
                 "context": context_payload(session),
-                "messages": [_record_payload(_message_response(item)) for item in workspace_store.list_messages(session.id)],
+                # 最近 500 条消息（正序）：段落落库后消息条数翻数倍，取最旧窗口
+                # 会最先截掉最新消息（方案 07 §4.7）。
+                "messages": [_record_payload(_message_response(item)) for item in workspace_store.list_recent_messages(session.id)],
                 # 项目级长期记忆条目：重连即可见（此前是写死的空数组）。
                 "memory": memory_snapshot(session, project),
                 "safety": {
@@ -2308,12 +2387,19 @@ def create_app(
                 },
                 "last_sequence": 0,
             }
-            prior_events = workspace_store.list_events(session.id, after_sequence=0, limit=1000)
-            snapshot["last_sequence"] = prior_events[-1].sequence if prior_events else 0
             # 卡片恢复（plans/enhancement 的重连方案）：
             # 1) replay = 历史里的卡片类事件，前端按序喂给同一套 reducer；
             # 2) pending = 内存桥里仍挂起的审批 / 计划审阅，恢复成"可继续应答"的卡片。
-            replay_events = _replay_card_events(prior_events)
+            # 回放窗口按类型取"最近 N 张卡片"：事件表里 message.delta 占绝对多数，
+            # 全量窗口会被流式增量挤占，长会话重连会丢最新卡片（方案 07 §4.6b）。
+            snapshot["last_sequence"] = workspace_store.latest_event_sequence(session.id)
+            replay_events = _replay_card_events(
+                workspace_store.list_card_events(
+                    session.id,
+                    (*_REPLAY_EVENT_TYPES, _ROUTER_EVENT_TYPE),
+                    limit=_REPLAY_CARD_LIMIT,
+                )
+            )
             approval_bridge = session_approvals.get(session.id)
             pending_payload = getattr(approval_bridge, "pending_payload", None)
             review_bridge = session_reviews.get(session.id)
@@ -2349,10 +2435,14 @@ def create_app(
                     )
             snapshot["replay"] = replay_events
             snapshot["pending"] = pending
+            # 审计计数改用全量 SQL COUNT：不再受回放窗口影响（方案 07 §4.6b）。
             snapshot["audit"] = {
-                "tool_calls": sum(item.event_type == "tool.started" for item in prior_events),
-                "tool_failures": sum(item.event_type == "tool.completed" and not bool(item.data.get("ok", False)) for item in prior_events),
-                "approvals": sum(item.event_type in {"approval.requested", "approval.resolved"} for item in prior_events),
+                "tool_calls": workspace_store.count_events(session.id, "tool.started"),
+                "tool_failures": workspace_store.count_tool_failures(session.id),
+                "approvals": (
+                    workspace_store.count_events(session.id, "approval.requested")
+                    + workspace_store.count_events(session.id, "approval.resolved")
+                ),
             }
             snapshot_event = workspace_store.append_event(session.id, session.project_id, "session.snapshot", snapshot)
             snapshot["last_sequence"] = snapshot_event.sequence

@@ -13,12 +13,19 @@
 export const STREAM_FLUSH_MS = 60
 
 export interface StreamDelta {
-  content: string
-  thinking: string
+  /**
+   * 事件来源：主 ReAct 轮为 ""，/plan 子任务为 task:<id>，/team worker 为
+   * agent:<id>（与后端段缓冲的分桶一致，方案 07 §4.2）。
+   */
+  source: string
+  kind: 'content' | 'thinking'
+  text: string
 }
 
 export class StreamBatcher {
-  private pending: StreamDelta = { content: '', thinking: '' }
+  private pendingSource = ''
+  private pendingKind: 'content' | 'thinking' | null = null
+  private pendingText = ''
   private handle: number | null = null
 
   constructor(
@@ -26,11 +33,21 @@ export class StreamBatcher {
     private readonly intervalMs: number = STREAM_FLUSH_MS,
   ) {}
 
-  /** 收下一个 delta；首个 delta 会启动定时器，之后的都在攒批窗口内合并。 */
-  push(kind: string, text: string): void {
+  /**
+   * 收下一个 delta；首个 delta 会启动定时器，之后的都在攒批窗口内合并。
+   *
+   * 来源或 kind 变化时立即 flush：不同来源（并行 worker）、不同种类（思考 / 正文）
+   * 的文本不允许黏进同一段——服务端的段边界就是按这两个维度划分的（方案 07 §4.8）。
+   */
+  push(source: string, kind: string, text: string): void {
     if (!text) return
-    if (kind === 'thinking') this.pending.thinking += text
-    else this.pending.content += text
+    const normalized: 'content' | 'thinking' = kind === 'thinking' ? 'thinking' : 'content'
+    if (this.pendingKind !== null && (this.pendingSource !== source || this.pendingKind !== normalized)) {
+      this.flush()
+    }
+    this.pendingSource = source
+    this.pendingKind = normalized
+    this.pendingText += text
     if (this.handle === null) {
       this.handle = window.setTimeout(() => this.flush(), this.intervalMs)
     }
@@ -39,21 +56,36 @@ export class StreamBatcher {
   /** 立即刷出攒下的内容；没有内容则什么也不做。 */
   flush(): void {
     this.clearTimer()
-    const { content, thinking } = this.pending
-    if (!content && !thinking) return
-    this.pending = { content: '', thinking: '' }
-    this.flushTo({ content, thinking })
+    if (this.pendingKind === null || !this.pendingText) {
+      this.pendingSource = ''
+      this.pendingKind = null
+      this.pendingText = ''
+      return
+    }
+    const delta: StreamDelta = {
+      source: this.pendingSource,
+      kind: this.pendingKind,
+      text: this.pendingText,
+    }
+    this.pendingSource = ''
+    this.pendingKind = null
+    this.pendingText = ''
+    this.flushTo(delta)
   }
 
   /**
    * 丢弃攒下的内容并取消定时器。
    *
-   * 用于"本轮完整内容已经由别的通道送达"（`message.completed`）或切换会话的场合：
-   * 此时若还留着尾巴，等定时器到点就会把旧内容补到新会话里。
+   * 带 source 时只丢弃**该来源**的尾巴（并行 worker 的另一路不受影响）；
+   * 不带 source 时全部丢弃（切换会话 / 本轮结束的场合）。
    */
-  reset(): void {
-    this.clearTimer()
-    this.pending = { content: '', thinking: '' }
+  reset(source?: string): void {
+    if (source === undefined || this.pendingSource === source) {
+      this.clearTimer()
+      this.pendingSource = ''
+      this.pendingKind = null
+      this.pendingText = ''
+    }
   }
 
   private clearTimer(): void {

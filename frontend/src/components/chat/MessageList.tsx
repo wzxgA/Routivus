@@ -4,7 +4,9 @@ import { Markdown } from '../../utils/markdown'
 import { ApprovalCard } from './ApprovalCard'
 import { PlanCard } from './PlanCard'
 import { PlanReviewCard } from './PlanReviewCard'
+import { SourceTag } from './SourceTag'
 import { TeamCard } from './TeamCard'
+import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCard } from './ToolCard'
 import type { ApprovalRequestedData, PlanReviewRequest } from '../../api/types'
 
@@ -104,8 +106,12 @@ const ChatRow = memo(function ChatRow({ item }: { item: TimelineItem }) {
     case 'user':
       return <div className="msg-user">{item.content}</div>
     case 'agent':
+      // 空白正文（provider 的空白 delta、段边界残留）不渲染：否则页面上会留下
+      // 一个没有内容的空盒子，看起来就是一条横线。
+      if (!item.content.trim()) return null
       return (
         <div className="msg-agent">
+          {item.source ? <SourceTag source={item.source} /> : null}
           <div className={`body${item.streaming ? ' streaming-caret' : ''}`}>
             <Markdown text={item.content} streaming={Boolean(item.streaming)} />
           </div>
@@ -128,7 +134,9 @@ const ChatRow = memo(function ChatRow({ item }: { item: TimelineItem }) {
         </div>
       )
     case 'thinking':
-      return <div className="thinking">{item.content}</div>
+      // 同上：空思考块没有信息量，别留一条空壳
+      if (!item.content.trim()) return null
+      return <ThinkingBlock item={item} />
     case 'tool':
       return <ToolCard item={item} />
     case 'system':

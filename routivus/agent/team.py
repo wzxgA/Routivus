@@ -1121,12 +1121,20 @@ class TeamExecutor:
 
         jobs = [asyncio.create_task(limited_runner(task_id)) for task_id in pending]
         completed = 0
-        while completed < len(jobs):
-            item = await queue.get()
-            if item is None:
-                completed += 1
-            else:
-                yield item
+        try:
+            while completed < len(jobs):
+                item = await queue.get()
+                if item is None:
+                    completed += 1
+                else:
+                    yield item
+        except BaseException:
+            # 消费方被中断（用户停止 / 取消轮次 / 断线）：worker 是独立 task，必须一并
+            # 取消。否则它们会在后台继续跑、继续弹审批，而事件再也没人消费——用户看到
+            # 的是"批准了但什么都没发生"的幽灵 worker（且会一直占用 provider 额度）。
+            for job in jobs:
+                job.cancel()
+            raise
         await asyncio.gather(*jobs, return_exceptions=True)
 
     @staticmethod

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -13,7 +14,8 @@ from uuid import uuid4
 
 
 SessionStatus = Literal["idle", "running", "waiting_approval", "completed", "failed", "cancelled"]
-MessageRole = Literal["user", "assistant", "tool", "system"]
+# thinking：模型推理段（仅展示用，方案 07 §4.1；不参与 agent 上下文重建）
+MessageRole = Literal["user", "assistant", "tool", "system", "thinking"]
 _MISSING = object()
 
 
@@ -327,7 +329,7 @@ class WorkspaceStore:
         tool_args: dict | None = None,
         tool_result: str | None = None,
     ) -> MessageRecord:
-        if role not in {"user", "assistant", "tool", "system"}:
+        if role not in {"user", "assistant", "tool", "system", "thinking"}:
             raise ValueError("消息角色无效")
         if len(content) > 1_000_000:
             raise ValueError("消息内容过大")
@@ -362,7 +364,69 @@ class WorkspaceStore:
             ).fetchall()
         return [self._message(row) for row in rows]
 
-    def delete_session(self, session_id: str) -> bool:
+    def list_recent_messages(self, session_id: str, limit: int = 500) -> list[MessageRecord]:
+        """最近 limit 条消息，按时间正序返回。
+
+        与 list_messages（正序取最旧 N 条）互补：快照必须"宁可少旧的、不能丢新的"，
+        段落落库后消息条数翻数倍，旧窗口会最先截掉最新消息（方案 07 §4.7）。
+        """
+        limit = max(1, min(int(limit), 500))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM messages WHERE session_id = ?
+                ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+                (session_id, limit),
+            ).fetchall()
+        records = [self._message(row) for row in rows]
+        records.reverse()
+        return records
+
+    def list_card_events(
+        self, session_id: str, event_types: Sequence[str], limit: int = 1000
+    ) -> list[EventRecord]:
+        """最近 limit 条指定类型的卡片事件，按 sequence 正序返回。
+
+        事件表里 message.delta 占绝对多数（每个 token 一行），按类型过滤后再取
+        "最近 N 条"，回放窗口才不会被流式增量挤占——否则长会话重连后丢最新卡片
+        （方案 07 §4.6b）。无匹配类型时返回空表。
+        """
+        types = tuple(dict.fromkeys(str(item) for item in event_types if str(item)))
+        if not types:
+            return []
+        limit = max(1, min(int(limit), 1000))
+        placeholders = ",".join("?" for _ in types)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""SELECT * FROM events WHERE session_id = ? AND event_type IN ({placeholders})
+                ORDER BY sequence DESC LIMIT ?""",
+                (session_id, *types, limit),
+            ).fetchall()
+        records = [self._event(row) for row in rows]
+        records.reverse()
+        return records
+
+    def count_events(self, session_id: str, event_type: str) -> int:
+        """某类事件的全量计数（审计展示用，不受回放窗口影响）。"""
+        with self._lock, self._connect() as conn:
+            return int(conn.execute(
+                "SELECT count(*) FROM events WHERE session_id = ? AND event_type = ?",
+                (session_id, event_type),
+            ).fetchone()[0])
+
+    def count_tool_failures(self, session_id: str) -> int:
+        """tool.completed 且 ok=false 的全量计数；json1 不可用时退回 Python 扫描。"""
+        with self._lock, self._connect() as conn:
+            try:
+                row = conn.execute(
+                    """SELECT count(*) FROM events
+                    WHERE session_id = ? AND event_type = 'tool.completed'
+                    AND COALESCE(json_extract(data_json, '$.ok'), 1) = 0""",
+                    (session_id,),
+                ).fetchone()
+                return int(row[0])
+            except sqlite3.OperationalError:
+                records = self.list_card_events(session_id, ("tool.completed",), limit=1000)
+                return sum(1 for item in records if not bool(item.data.get("ok", False)))
         with self._lock, self._connect() as conn:
             return conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,)).rowcount > 0
 

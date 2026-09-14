@@ -11,6 +11,7 @@ from typing import AsyncIterator
 import pytest
 
 from routivus.agent.plan import (
+    Plan,
     PlanError,
     PlanEvent,
     PlanExecutor,
@@ -686,3 +687,42 @@ class TestExecutorResume:
         t1_request = llm.requests[-1]
         user = next(m.content for m in t1_request if m.role == "user")
         assert "改用 uv 安装依赖" in user
+
+
+class TestBatchCancellation:
+    """消费方中断（用户停止 / 取消轮次）时必须把子任务任务一并取消。
+
+    回归背景：子任务是 `asyncio.gather` 起的独立 task，消费方被取消时不会自动
+    取消它们 —— 结果是后台继续跑、继续弹审批，而事件再没人消费：用户看到的是
+    「批准了但什么都没发生」，且一直占用 provider 额度（幽灵子任务）。
+    """
+
+    async def test_consumer_cancel_cancels_subtasks(self, settings) -> None:
+        llm = PlanScriptedClient(plan_script=[VALID_PLAN], subtask_script={})
+        ex = make_executor(llm, settings, reviewer=review_execute)
+        plan = Plan(goal="g", tasks=[_task("t1")], batches=[["t1"]])
+        state = {"cancelled": False}
+
+        async def hanging_run_one(plan_, batch, tid, queue, instruction=""):
+            queue.put_nowait(PlanEvent(
+                kind="subtask_started", plan=plan_, batch=batch, task=plan_.task_by_id(tid),
+            ))
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                state["cancelled"] = True
+                raise
+
+        ex._run_one = hanging_run_one  # type: ignore[method-assign]
+
+        async def consume() -> None:
+            async for _event in ex._run_batch(plan, ["t1"]):
+                pass
+
+        consumer = asyncio.create_task(consume())
+        await asyncio.sleep(0.05)
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+        await asyncio.sleep(0.05)
+        assert state["cancelled"], "消费方中断后子任务仍在后台运行（幽灵子任务）"

@@ -9,13 +9,14 @@ import type {
   Message,
   PlanPayload,
   PlanReviewRequest,
+  ReplayEvent,
   RouterState,
   Session,
   SessionSnapshot,
   TeamPayload,
   WsEnvelope,
 } from '../api/types'
-import { StreamBatcher } from '../utils/streamBatch'
+import { StreamBatcher, type StreamDelta } from '../utils/streamBatch'
 import { SessionSocket, type ConnState } from '../ws/sessionSocket'
 
 export interface ToolItem {
@@ -28,6 +29,8 @@ export interface ToolItem {
   error: string
   durationMs: number | null
   at: string
+  /** 子任务来源（task:<id> / agent:<id>）；主会话条目无（方案 07 §4.10）。 */
+  source?: string
 }
 
 export interface PlanItem {
@@ -44,13 +47,16 @@ export interface TeamItem {
 
 export type TimelineItem =
   | { kind: 'user'; id: string; content: string; at: string }
-  | { kind: 'agent'; id: string; content: string; at: string; streaming?: boolean }
-  | { kind: 'thinking'; id: string; content: string }
+  | { kind: 'agent'; id: string; content: string; at: string; streaming?: boolean; source?: string }
+  | { kind: 'thinking'; id: string; content: string; streaming?: boolean; source?: string }
   | { kind: 'system'; id: string; content: string; at: string }
   | { kind: 'command'; id: string; command: string; content: string; ok: boolean; at: string }
   | ToolItem
   | PlanItem
   | TeamItem
+
+export type ThinkingItem = Extract<TimelineItem, { kind: 'thinking' }>
+export type AgentItem = Extract<TimelineItem, { kind: 'agent' }>
 
 export interface UsageTotals {
   prompt: number
@@ -64,9 +70,17 @@ export interface AuditTotals {
   approvals: number
 }
 
+/**
+ * 流式中的"活跃段"（按来源分桶，方案 07 §4.2/§4.8）。
+ *
+ * 后端在段边界（kind 切换 / 工具调用 / 轮次结束）落库并广播 `message.segment`，
+ * 前端保持同样的分界：kind 切换即视为段边界，避免两套逻辑漂移。
+ * 键为来源（"" = 主 ReAct 轮，task:<id> / agent:<id> = 子任务）。
+ */
+type StreamSegment = { kind: 'content' | 'thinking'; text: string }
+
 export interface SessionTimelineValue {
   items: TimelineItem[]
-  stream: { content: string; thinking: string }
   connection: ConnState
   audit: AuditTotals
   usage: UsageTotals
@@ -100,12 +114,17 @@ export interface SessionTimelineValue {
 const STREAM_AGENT_ID = 'stream-agent'
 const STREAM_THINK_ID = 'stream-thinking'
 
-function messageToItem(message: Message): TimelineItem | null {
+function messageToItem(message: Message, source?: string): TimelineItem | null {
+  const withSource = source ? { source } : {}
   switch (message.role) {
     case 'user':
       return { kind: 'user', id: message.id, content: message.content, at: message.created_at }
     case 'assistant':
-      return { kind: 'agent', id: message.id, content: message.content, at: message.created_at }
+      return { kind: 'agent', id: message.id, content: message.content, at: message.created_at, ...withSource }
+    case 'thinking':
+      // 思考段落库为独立消息：回看默认折叠（ThinkingBlock 的组件内初值），
+      // 刷新 / 重连后不再刷屏。来源随 message.segment 在线携带，重连后不可得。
+      return { kind: 'thinking', id: message.id, content: message.content, ...withSource }
     case 'tool':
       // 工具卡不再从消息表重建（消息里没有参数/成败/耗时，只能画出残缺卡），
       // 统一由快照 replay 的 tool.started/tool.completed 事件还原，避免重复卡片。
@@ -117,14 +136,101 @@ function messageToItem(message: Message): TimelineItem | null {
   }
 }
 
+// ---- 条目归约的纯函数（在线事件与快照回放共用，避免两套逻辑漂移）----------------
+
+function withMessage(items: TimelineItem[], message: Message): TimelineItem[] {
+  const item = messageToItem(message)
+  if (!item) return items
+  return [...items, item]
+}
+
+function withCommand(items: TimelineItem[], data: Record<string, unknown>): TimelineItem[] {
+  // 把回执条目标记为命令结果（ok 决定成败配色）。优先按 message_id
+  // 精确定位——回放时"最近一条 agent"的启发式不再可靠。
+  const command = String(data.command ?? '')
+  const ok = Boolean(data.ok)
+  const messageId = String(data.message_id ?? '')
+  let index = -1
+  if (messageId) {
+    index = items.findIndex((item) => item.id === messageId)
+  } else {
+    for (let cursor = items.length - 1; cursor >= 0; cursor -= 1) {
+      if (items[cursor]?.kind === 'agent') {
+        index = cursor
+        break
+      }
+    }
+  }
+  const item = index >= 0 ? items[index] : undefined
+  if (!item || item.kind !== 'agent') return items
+  const next = [...items]
+  next[index] = { kind: 'command', id: item.id, command, content: item.content, ok, at: item.at }
+  return next
+}
+
+function withToolStarted(items: TimelineItem[], data: Record<string, unknown>): TimelineItem[] {
+  const toolCallId = String(data.tool_call_id ?? '')
+  const source = String(data.source ?? '')
+  return [
+    ...items,
+    {
+      kind: 'tool',
+      id: toolCallId || `tool-${items.length}`,
+      name: String(data.name ?? 'tool'),
+      args: String(data.arguments ?? ''),
+      ok: null,
+      output: '',
+      error: '',
+      durationMs: null,
+      at: new Date().toISOString(),
+      ...(source ? { source } : {}),
+    },
+  ]
+}
+
+function withToolCompleted(items: TimelineItem[], data: Record<string, unknown>): TimelineItem[] {
+  const toolCallId = String(data.tool_call_id ?? '')
+  return items.map((item) =>
+    item.kind === 'tool' && item.id === toolCallId
+      ? {
+          ...item,
+          name: String(data.name ?? item.name),
+          ok: Boolean(data.ok),
+          output: String(data.output ?? ''),
+          error: String(data.error ?? ''),
+          durationMs: Number(data.duration_ms ?? 0),
+        }
+      : item,
+  )
+}
+
+/** 卡片类事件对 items 的归约；快照回放与在线事件共用。 */
+function withCardEvent(items: TimelineItem[], type: string, data: Record<string, unknown>): TimelineItem[] {
+  switch (type) {
+    case 'tool.started':
+      return withToolStarted(items, data)
+    case 'tool.completed':
+      return withToolCompleted(items, data)
+    case 'plan.updated':
+      return upsertTaskCard(items, 'plan', data as unknown as PlanPayload)
+    case 'team.updated':
+      return upsertTaskCard(items, 'team', data as unknown as TeamPayload)
+    case 'command.executed':
+      return withCommand(items, data)
+    default:
+      return items
+  }
+}
+
 /**
  * 会话事件流：把 WebSocket 事件归约为可渲染的时间线。
  *
  * 断线恢复策略：每次（重）连服务端都会推送完整 `session.snapshot`，前端以快照
- * 为准重建——消息来自 `snapshot.messages`，卡片（命令 / 工具 / 计划 / 团队）
- * 由 `snapshot.replay` 的历史事件按序回放给同一个 reducer 重建，仍挂起的交互
- * 由 `snapshot.pending` 恢复成可继续应答的卡片；此后按 `sequence` 严格递增
- * 应用增量事件。工具卡只认事件（消息表里的 tool 角色缺少参数/成败/耗时）。
+ * 为准重建——文本条目来自 `snapshot.messages`，卡片来自 `snapshot.replay` 的
+ * 历史事件，两者按 `created_at` / `occurred_at`（同源时钟）**归并成一条时间线**
+ * 后依次回放给同一套 reducer（方案 07 §4.6a：重连后的顺序 = 在线顺序）。
+ * 仍挂起的交互由 `snapshot.pending` 恢复成可继续应答的卡片；此后按 `sequence`
+ * 严格递增应用增量事件。工具卡只认事件（消息表里的 tool 角色缺少参数/成败/耗时）。
  */
 export function useSessionTimeline(
   projectId: string | null,
@@ -133,7 +239,7 @@ export function useSessionTimeline(
   onSessionUpdate: (session: Session) => void,
 ): SessionTimelineValue {
   const [items, setItems] = useState<TimelineItem[]>([])
-  const [stream, setStream] = useState({ content: '', thinking: '' })
+  const [segments, setSegments] = useState<Record<string, StreamSegment>>({})
   const [connection, setConnection] = useState<ConnState>('connecting')
   const [audit, setAudit] = useState<AuditTotals>({
     tool_calls: 0,
@@ -192,22 +298,24 @@ export function useSessionTimeline(
     // 流式文本先攒批再刷出：模型逐 token 吐字，每个 token 都触发一次重型渲染
     // （Markdown 解析成本随正文长度线性增长），攒批把渲染次数封顶。
     // 局限：只减少次数、不降低单次成本，见 utils/streamBatch.ts 与方案 §11。
-    const batch = new StreamBatcher((delta) => {
-      setStream((current) => ({
-        content: current.content + delta.content,
-        thinking: current.thinking + delta.thinking,
-      }))
+    const batch = new StreamBatcher((delta: StreamDelta) => {
+      setSegments((current) => {
+        const previous = current[delta.source]
+        // 来源相同且 kind 相同才续写；否则从头开段（旧段已由 message.segment 收走）
+        const base = previous && previous.kind === delta.kind ? previous.text : ''
+        return { ...current, [delta.source]: { kind: delta.kind, text: base + delta.text } }
+      })
     })
 
-    /** 清空流式区：连同攒批里的尾巴一起丢掉（否则定时器到点会把旧内容补回来）。 */
-    const resetStream = () => {
+    /** 清空全部活跃段：连同攒批里的尾巴一起丢掉（否则定时器到点会把旧内容补回来）。 */
+    const clearSegments = () => {
       batch.reset()
-      setStream({ content: '', thinking: '' })
+      setSegments({})
     }
 
     // 切换会话：清空上一会话的时间线，避免串数据。
     setItems([])
-    resetStream()
+    clearSegments()
     setApproval(null)
     setPlanReview(null)
     setRouter(null)
@@ -222,11 +330,40 @@ export function useSessionTimeline(
         switch (event.type) {
           case 'session.snapshot': {
             const snapshot = data as unknown as SessionSnapshot
-            const restored = (snapshot.messages ?? [])
-              .map(messageToItem)
-              .filter((item): item is TimelineItem => item !== null)
+            // 时间戳归并（方案 07 §4.6a）：messages 与 replay 同源时钟
+            // （storage._now()），合一条按时间排序的序列后依次重建。
+            // 同一时间戳时消息在前（段落先落库、后发事件），order 作次级键保证稳定。
+            const messages = snapshot.messages ?? []
+            type RestoreEntry = { at: string; order: number; item?: TimelineItem; event?: WsEnvelope }
+            const entries: RestoreEntry[] = []
+            messages.forEach((message, index) => {
+              const item = messageToItem(message)
+              if (item) entries.push({ at: message.created_at, order: index, item })
+            })
+            ;(snapshot.replay ?? []).forEach((replayed: ReplayEvent, index) => {
+              entries.push({
+                at: String(replayed.occurred_at ?? ''),
+                order: messages.length + index,
+                event: { type: replayed.type, sequence: replayed.sequence, data: replayed.data } as WsEnvelope,
+              })
+            })
+            entries.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.order - b.order))
+            let restored: TimelineItem[] = []
+            for (const entry of entries) {
+              if (entry.item) {
+                restored = [...restored, entry.item]
+              } else if (entry.event) {
+                restored = withCardEvent(
+                  restored,
+                  entry.event.type,
+                  (entry.event.data ?? {}) as Record<string, unknown>,
+                )
+                // 非条目类副作用（router 状态）照旧走 applyEvent
+                if (entry.event.type === 'router.updated') applyEvent(entry.event)
+              }
+            }
             setItems(restored)
-            resetStream()
+            clearSegments()
             setAudit(snapshot.audit ?? { tool_calls: 0, tool_failures: 0, approvals: 0 })
             setHitl(snapshot.safety?.hitl ?? null)
             setRouter(snapshot.router ?? null)
@@ -249,15 +386,6 @@ export function useSessionTimeline(
             // （不恢复的话，重连后审批卡消失，用户只能干等超时 fail closed）。
             setApproval(snapshot.pending?.approval ?? null)
             setPlanReview(snapshot.pending?.plan_review ?? null)
-            // 卡片类历史事件回放：结构化状态不落消息表，用快照带回的事件重建
-            // （命令卡 / 工具卡 / 计划卡 / 团队卡），喂给同一个 reducer。
-            for (const replayed of snapshot.replay ?? []) {
-              applyEvent({
-                type: replayed.type,
-                sequence: replayed.sequence,
-                data: replayed.data,
-              } as WsEnvelope)
-            }
             return
           }
           case 'message.created': {
@@ -265,89 +393,46 @@ export function useSessionTimeline(
             if (!message) return
             // 命令回执也是 assistant 消息（run_command_turn 落库后广播），
             // 不能再像用户输入那样渲染成右侧气泡。
-            if (message.role === 'user') {
-              setItems((current) => [...current, { kind: 'user', id: message.id, content: message.content, at: message.created_at }])
-            } else {
-              setItems((current) => [...current, { kind: 'agent', id: message.id, content: message.content, at: message.created_at }])
+            setItems((current) => withMessage(current, message))
+            return
+          }
+          case 'message.segment': {
+            const message = data.message as Message | undefined
+            const source = String(data.source ?? '')
+            // 段落已完整落库：丢掉该来源攒批里的尾巴，避免重复补上。
+            batch.reset(source)
+            setSegments((current) => {
+              if (!(source in current)) return current
+              const next = { ...current }
+              delete next[source]
+              return next
+            })
+            if (message) {
+              const item = messageToItem(message, source || undefined)
+              if (item) setItems((current) => [...current, item])
             }
             return
           }
           case 'command.executed': {
-            // 把回执条目标记为命令结果（ok 决定成败配色）。优先按 message_id
-            // 精确定位——回放时"最近一条 agent"的启发式不再可靠。
-            const command = String(data.command ?? '')
-            const ok = Boolean(data.ok)
-            const messageId = String(data.message_id ?? '')
-            setItems((current) => {
-              let index = -1
-              if (messageId) {
-                index = current.findIndex((item) => item.id === messageId)
-              } else {
-                for (let cursor = current.length - 1; cursor >= 0; cursor -= 1) {
-                  if (current[cursor]?.kind === 'agent') {
-                    index = cursor
-                    break
-                  }
-                }
-              }
-              const item = index >= 0 ? current[index] : undefined
-              if (!item || item.kind !== 'agent') return current
-              const next = [...current]
-              next[index] = { kind: 'command', id: item.id, command, content: item.content, ok, at: item.at }
-              return next
-            })
+            setItems((current) => withCommand(current, data))
             return
           }
           case 'message.delta': {
-            batch.push(String(data.kind ?? 'content'), String(data.text ?? ''))
+            batch.push(String(data.source ?? ''), String(data.kind ?? 'content'), String(data.text ?? ''))
             return
           }
           case 'message.completed': {
-            const message = data.message as Message | undefined
-            // 完整正文由这条消息接管，攒批里的尾巴直接丢弃（避免重复补上）。
-            resetStream()
-            if (message) {
-              setItems((current) => [
-                ...current,
-                { kind: 'agent', id: message.id, content: message.content, at: message.created_at },
-              ])
-            }
+            // 正文 / 思考已由 message.segment 逐段接管（方案 07 §4.3）：
+            // 这条事件只表示"本轮结束"，负责清掉活跃段。
+            clearSegments()
             return
           }
           case 'tool.started': {
-            const toolCallId = String(data.tool_call_id ?? '')
-            setItems((current) => [
-              ...current,
-              {
-                kind: 'tool',
-                id: toolCallId || `tool-${current.length}`,
-                name: String(data.name ?? 'tool'),
-                args: String(data.arguments ?? ''),
-                ok: null,
-                output: '',
-                error: '',
-                durationMs: null,
-                at: new Date().toISOString(),
-              },
-            ])
+            setItems((current) => withToolStarted(current, data))
             return
           }
           case 'tool.completed': {
-            const toolCallId = String(data.tool_call_id ?? '')
-            setItems((current) =>
-              current.map((item) =>
-                item.kind === 'tool' && item.id === toolCallId
-                  ? {
-                      ...item,
-                      name: String(data.name ?? item.name),
-                      ok: Boolean(data.ok),
-                      output: String(data.output ?? ''),
-                      error: String(data.error ?? ''),
-                      durationMs: Number(data.duration_ms ?? 0),
-                    }
-                  : item,
-              ),
-            )
+            setItems((current) => withToolCompleted(current, data))
             return
           }
           case 'audit.updated': {
@@ -397,6 +482,12 @@ export function useSessionTimeline(
               setSession(next)
               sessionRef.current = next
               updateRef.current(next)
+            }
+            // 轮次以完成 / 失败 / 取消 / 空闲收尾时，不会再有任何 message.segment 或
+            // message.completed 来收活跃段——这里兜底清掉，否则取消后界面会永久
+            // 留一个空的流式块（看起来就是一条横线，且像卡住不动）。
+            if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'idle') {
+              clearSegments()
             }
             if (status && status !== 'waiting_approval') setApproval(null)
             // 计划审阅只在运行期间有效：轮次结束（完成 / 失败 / 取消）后必须清掉，
@@ -578,20 +669,25 @@ export function useSessionTimeline(
 
   const clearError = useCallback(() => setError(null), [])
 
+  // 活跃段始终是末尾元素：已完成段都在 items 里且按时序 push，末尾追加即正确顺序。
+  // 性能约定：段完成即变成 items 里不动的对象，ChatRow 的 memo 继续冻结历史行。
   const visibleItems = useMemo<TimelineItem[]>(() => {
     const extra: TimelineItem[] = []
-    if (stream.thinking) {
-      extra.push({ kind: 'thinking', id: STREAM_THINK_ID, content: stream.thinking })
-    }
-    if (stream.content) {
-      extra.push({ kind: 'agent', id: STREAM_AGENT_ID, content: stream.content, at: '', streaming: true })
+    for (const [source, segment] of Object.entries(segments)) {
+      if (!segment.text) continue
+      const suffix = source || 'main'
+      const withSource = source ? { source } : {}
+      extra.push(
+        segment.kind === 'thinking'
+          ? { kind: 'thinking', id: `${STREAM_THINK_ID}-${suffix}`, content: segment.text, streaming: true, ...withSource }
+          : { kind: 'agent', id: `${STREAM_AGENT_ID}-${suffix}`, content: segment.text, at: '', streaming: true, ...withSource },
+      )
     }
     return extra.length ? [...items, ...extra] : items
-  }, [items, stream])
+  }, [items, segments])
 
   return {
     items: visibleItems,
-    stream,
     connection,
     audit,
     usage,

@@ -311,9 +311,11 @@ def test_plan_turn_card_shape_and_review_roundtrip(tmp_path: Path) -> None:
     # 子任务内部事件复用 AgentEvent 映射 → 用户能看到实际进展
     deltas = _cards(tail, "message.delta")
     assert any(item["text"] == "正在拆分配置…" for item in deltas)
-    # 子任务产出的正文会被落库为 assistant 消息
-    completed = _cards(tail, "message.completed")
-    assert completed and completed[0]["message"]["content"] == "正在拆分配置…"
+    # 子任务产出的正文按段落落库为 assistant 消息，由 message.segment 下发（方案 07 §4.1）
+    segments = _cards(tail, "message.segment")
+    assert segments and segments[0]["message"]["content"] == "正在拆分配置…"
+    assert segments[0]["message"]["role"] == "assistant"
+    assert segments[0]["source"] == "task:t1"
 
 
 def test_plan_review_cancel_skips_execution(tmp_path: Path) -> None:

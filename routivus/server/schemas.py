@@ -131,7 +131,8 @@ class SessionResponse(BaseModel):
 class MessageResponse(BaseModel):
     id: str
     session_id: str
-    role: Literal["user", "assistant", "tool", "system"]
+    # thinking：模型推理段（仅展示用，方案 07 §4.1；不参与 agent 上下文重建）
+    role: Literal["user", "assistant", "tool", "system", "thinking"]
     content: str
     tool_name: str | None
     tool_args: dict | None

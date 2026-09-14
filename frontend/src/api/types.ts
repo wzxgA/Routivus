@@ -11,7 +11,8 @@ export type SessionStatus =
   | 'failed'
   | 'cancelled'
 
-export type MessageRole = 'user' | 'assistant' | 'tool' | 'system'
+/** thinking：模型推理段（仅展示用，方案 07 §4.1；不参与 agent 上下文重建）。 */
+export type MessageRole = 'user' | 'assistant' | 'tool' | 'system' | 'thinking'
 
 export interface ProjectStats {
   sessions: number
@@ -226,7 +227,17 @@ export interface SessionSnapshot {
 export interface ReplayEvent {
   type: string
   sequence: number
+  /** 事件发生时间：前端按它把 messages 与 replay 归并成一条时间线（07 §4.6a）。 */
+  occurred_at?: string
   data: Record<string, unknown>
+}
+
+/** message.segment 事件载荷：一个段落落库完成（与 message.created 同构 + source）。 */
+export interface MessageSegmentData {
+  message: Message
+  /** 事件来源："" = 主 ReAct 轮，task:<id> = /plan 子任务，agent:<id> = /team worker。 */
+  source?: string
+  request_id?: string
 }
 
 /**
@@ -348,6 +359,8 @@ export interface ToolStartedData {
   tool_call_id: string
   name: string
   arguments: string
+  /** 事件来源（子任务标注用，07 §4.10）；主会话为空。 */
+  source?: string
   request_id?: string
 }
 
@@ -358,12 +371,14 @@ export interface ToolCompletedData {
   output: string
   error: string
   duration_ms: number
+  source?: string
   request_id?: string
 }
 
 export interface MessageDeltaData {
   kind: 'content' | 'thinking' | string
   text: string
+  source?: string
   request_id?: string
 }
 

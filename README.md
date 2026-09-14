@@ -213,7 +213,7 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 - **两级导航**：全局态（首页 / 笔记 / 配置）与项目态（会话 / 笔记）由 hash 路由驱动，刷新后按 URL 恢复项目、会话与视图；项目内无会话时自动创建首个会话。
 - **首页**：项目卡（会话 / 笔记 / 今日调用统计）+ 全部项目活动热力图（52 周 × 7 天，未来日期不渲染）+ 新建项目；项目卡支持**重命名**（只改显示名，根目录不变）与**移除**——移除只摘 `projects.json` 注册，不删除磁盘文件与会话 / 笔记数据（重新添加同一路径即可恢复可见），仍有运行中会话的项目会被拒绝移除（`409 project_busy`）。
 - **笔记**：全局入口显示全部笔记及项目归属，项目入口只显示当前项目笔记；搜索、新建、编辑、标签、置顶、删除均走服务端；版本冲突返回 409 时提示「用当前内容覆盖」，不静默丢失。
-- **会话视图**：WebSocket 事件流渲染消息、工具卡、计划 / 团队任务卡、审批与提问卡；`/plan <任务>` 与 `/team <任务>` 在会话内直接可用（生成计划后弹出审阅卡：批准执行 / 重新规划 / 取消），`/team resume [task_id] --write-scope <路径>` 用于 `needs_input` 恢复；四页签信息侧栏（Session / Plan / Memory / Safety）；Composer 支持 `Enter` 发送、`↑↓` 历史、`Tab` 应用命令补全、运行中停止。
+- **会话视图**：WebSocket 事件流渲染消息、思考块、工具卡、计划 / 团队任务卡、审批与提问卡。**思考块**：provider 返回推理内容（reasoning）时按段落独立显示——流式期间展开，段收尾自动折叠成「思考 · N 字」一行，点击展开；刷新 / 重连后仍在（默认折叠）。**时间线顺序**：思考 / 正文 / 工具卡严格按事件时序交错显示（正文按段落落库，角色 `thinking` 仅用于展示、不参与模型上下文）；重连后按时间戳归并重建，顺序与在线一致。`/team` 并行 worker 的输出按来源分桶并带短标签（如 `a1b2c3d4`），不会互相黏连。`/plan <任务>` 与 `/team <任务>` 在会话内直接可用（生成计划后弹出审阅卡：批准执行 / 重新规划 / 取消），`/team resume [task_id] --write-scope <路径>` 用于 `needs_input` 恢复；四页签信息侧栏（Session / Plan / Memory / Safety）；Composer 支持 `Enter` 发送、`↑↓` 历史、`Tab` 应用命令补全、运行中停止。
 
 - **命令执行与补全**：会话内可直接执行 slash 命令——`/help`、`/model`、`/smartrouter`、`/tier`、`/provider`、`/config`、`/hitl`、`/memory`、`/save`、`/lang`、`/clear`、`/skill`（复用 TUI 的 `CommandService`，回执以消息落库；`/cancel` 等价取消按钮；`/exit` 已移除，按未知命令处理）。命令切模型 / 开关智能路由会实时同步顶栏与配置页，`/save`、`/memory` 改完长期记忆会刷新侧栏 Memory 页签。补全浮层覆盖上述全部命令（`↑↓` 选择、`Tab` 应用、`Esc` 关闭），`/model model <前缀>` 提示真实模型名，`/skill load <前缀>` 提示 Skill 名，`/team resume … --write-scope <路径>` 提示工作区路径。运行中的会话不接受命令（先停止或取消）。
 - **Skill（任务规范）**：独立管理页（导航「技能」，路由 `#/skills`）——顶部项目选择器切换「全局（内置 + 用户级）/ 某项目」，支持列表、正文预览、新建与编辑（写入 `SKILL.md`）、启用/禁用；会话内也可用 `/skill list|load|enable|disable`，两者共用同一份配置。规范放 `<用户目录>/skills/<名称>/SKILL.md` 或项目 `.routivus/skills/` 下即被自动发现；索引注入 system prompt（开关变更后下一轮生效），正文由模型按需调用 `load_skill` 加载，参考资料受路径白名单与字数上限约束。
@@ -225,7 +225,7 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 
 已知限制：
 
-- 会话断线重连以服务端 `session.snapshot` 重建：消息来自 messages 表，**卡片（命令 / 工具 / 计划 / 团队）来自快照带回的 `replay` 事件回放**；仍挂起的审批 / 计划审阅由 `pending` 字段恢复，重连后可直接继续应答。限制：回放窗口为最近 1000 条事件（超长会话的早期卡片会缺失）；服务进程重启后内存桥不再存在，待决交互无法恢复（与 `/team resume` 的限制同源）。
+- 会话断线重连以服务端 `session.snapshot` 重建：文本（含思考段）来自 messages 表（**最近 500 条**，更早的需要翻 REST 分页），**卡片（命令 / 工具 / 计划 / 团队）来自快照带回的 `replay` 事件回放**（按类型取最近 1000 张卡片，流式增量不占窗口），两者按时间戳归并，顺序与在线一致；仍挂起的审批 / 计划审阅由 `pending` 字段恢复，重连后可直接继续应答。**行为变更**：`message.completed` 自 07 起只作"本轮结束"信号，不再携带整段正文（正文由 `message.segment` 逐段下发）；消费消息流的脚本需按此适配。服务进程重启后内存桥不再存在，待决交互无法恢复（与 `/team resume` 的限制同源）。
 - 配置页可编辑（Provider 增删改 / Key / 模型列表 / 四档 / SmartRouter 开关，走 `/api/config`）；Skill 有独立页面（走 `/api/skills`，可切换全局 / 项目上下文并新建、编辑、启停）；Memory 条目在会话侧栏 Memory 页展示（走 `/api/sessions/{id}/memory`）。
 - `/plan`、`/team` 在会话内**可用**，但审阅是**阻塞式**的：等待决策期间不接受新指令，客户端需用 `plan_decision`（`action` = `execute` / `cancel` / `replan`）应答；超时按取消落地（`ROUTIVUS_APPROVAL_TIMEOUT`，默认 300s）。协议级测试见 `tests/test_server_plan_team.py`。
 - `/team resume` 只能恢复**本会话最近一次** `/team` 的执行器，且写入范围必须显式声明（`--write-scope`，fail closed）；服务重启后执行器不保留，无法恢复。
