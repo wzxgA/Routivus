@@ -3,8 +3,10 @@ import type { ConfigSnapshot, Project, RouterState, Session } from '../../api/ty
 import type { Route } from '../../router'
 import { describeError } from '../../state/errors'
 import type { ThemeName } from '../../theme'
+import { routerChipLabel } from '../../utils/routerNotes'
 import type { ConnState } from '../../ws/sessionSocket'
 import { ThemeToggle } from '../common/ThemeToggle'
+import { RouterPopover } from './RouterPopover'
 
 interface TopBarProps {
   route: Route
@@ -76,8 +78,10 @@ export function TopBar({
   onGoProjectFiles,
 }: TopBarProps) {
   const [modelOpen, setModelOpen] = useState(false)
+  const [routerOpen, setRouterOpen] = useState(false)
   const [switchError, setSwitchError] = useState<string | null>(null)
   const modelRef = useRef<HTMLDivElement | null>(null)
+  const routerRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     if (!modelOpen) return
@@ -87,6 +91,15 @@ export function TopBar({
     window.addEventListener('mousedown', handler)
     return () => window.removeEventListener('mousedown', handler)
   }, [modelOpen])
+
+  useEffect(() => {
+    if (!routerOpen) return
+    const handler = (event: MouseEvent) => {
+      if (routerRef.current && !routerRef.current.contains(event.target as Node)) setRouterOpen(false)
+    }
+    window.addEventListener('mousedown', handler)
+    return () => window.removeEventListener('mousedown', handler)
+  }, [routerOpen])
 
   const inProject = route.kind === 'project'
   const usageRatio =
@@ -181,17 +194,24 @@ export function TopBar({
               {hitl ? 'HITL ON' : 'HITL —'}
             </span>
             {router?.enabled ? (
-              <span
-                className={`chip router${router.error ? ' warn' : ''}`}
-                title={
-                  router.error ||
-                  `智能路由：普通对话轮按复杂度自动换档${
-                    router.tier ? `，本轮 ${router.tier}` : ''
-                  }${router.configured ? '' : '（该档未显式配置，回落 active 模型）'}`
-                }
-              >
-                SmartRouter {router.error ? '!' : router.tier || 'ON'}
-              </span>
+              <div className="router-chip-wrap" ref={routerRef}>
+                <button
+                  type="button"
+                  className={`chip router${router.error ? ' warn' : ''}`}
+                  onClick={() => setRouterOpen((open) => !open)}
+                  title={
+                    router.error ||
+                    `智能路由：普通对话轮按复杂度自动换档${
+                      router.tier ? `，本轮 ${router.tier}` : ''
+                    }${router.configured === false ? '（该档未显式配置，回落 active 模型）' : ''} — 点击查看依据`
+                  }
+                >
+                  {routerChipLabel(router)}
+                </button>
+                {routerOpen ? (
+                  <RouterPopover router={router} tiers={config?.tiers ?? []} />
+                ) : null}
+              </div>
             ) : null}
           </div>
           <ConnectionBadge state={connection} />

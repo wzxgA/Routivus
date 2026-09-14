@@ -99,10 +99,17 @@ def hit(text: str, cat: str) -> bool:
     return any(k in t for k in KEYWORDS[cat])
 
 
+def _note(notes: list[str] | None, text: str) -> None:
+    """把一条判定依据记进收集器；`None` 表示调用方不关心（纯记录，不影响判断）。"""
+    if notes is not None:
+        notes.append(text)
+
+
 def postprocess(tier_idx: int, text: str, f: dict,
                 prev_tier: int | None = None, prev_ts: float | None = None,
                 ts: float = 0.0, context_tokens: int = 0,
-                learned_rules=None, hysteresis=None) -> int:
+                learned_rules=None, hysteresis=None,
+                notes: list[str] | None = None) -> int:
     """按顺序应用规则，返回最终档位索引 0..3。
 
     ``learned_rules``（adaptive.LearnedRules，可选）在 6 条规则之后、且仅
@@ -111,12 +118,16 @@ def postprocess(tier_idx: int, text: str, f: dict,
     ``hysteresis``（Hysteresis，可选，phase-04 A2）作为最后一道闸应用：
     session 内窗口变化超阈值即冻结当前档，直到窗口过期或命中硬规则才解冻；
     不传即 A1 之前行为，与其它机制完全向后兼容。
+    ``notes``（可选，方案 08 §4.1）把"哪条规则改了档"记录下来供界面解释：
+    只记录**真的改变了档位**的规则，避免噪音；传 None 时行为与以前完全一致。
     """
     t = tier_idx
     forced = False  # 是否已被某条硬规则强制锁定（learned_rules 不再覆盖）
 
     # 1) 风险旗标 → 强制 >= Superior
     if hit(text, "risk"):
+        if max(t, 2) != t:
+            _note(notes, "rule:risk")
         t = max(t, 2)
         forced = True
 
@@ -125,35 +136,49 @@ def postprocess(tier_idx: int, text: str, f: dict,
     if (len(text) > 6000
             or (blocks and max(len(b) for b in blocks) > 1500)
             or context_tokens > 2000):
+        if max(t, 2) != t:
+            _note(notes, "rule:long_context")
         t = max(t, 2)
         forced = True
 
     # 3) 架构旗标 → 升一档
     if hit(text, "arch"):
+        if min(t + 1, 3) != t:
+            _note(notes, "rule:arch")
         t = min(t + 1, 3)
 
     # 4) 调试旗标 → 升一档
     if hit(text, "debug"):
+        if min(t + 1, 3) != t:
+            _note(notes, "rule:debug")
         t = min(t + 1, 3)
 
     # 5) 简短闲聊旗标 → 强制 <= Basic
     if (hit(text, "chatty") and f["num_code_blocks"] == 0
             and not hit(text, "teach") and not hit(text, "arch")
             and not hit(text, "risk") and not hit(text, "planning")):
+        if t != 0:
+            _note(notes, "rule:chatty")
         t = 0
         forced = True
 
     # 6) 防降级：同会话 600s 内，档位最多比上一轮低 1 档
     if prev_tier is not None and prev_ts is not None and ts - prev_ts < ANTI_DOWNGRADE_WINDOW:
-        t = max(t, prev_tier - 1)
+        floor = prev_tier - 1
+        if floor > t:
+            _note(notes, f"anti_downgrade:{TIER[prev_tier]}→{TIER[floor]}")
+            t = floor
 
     # 7) learned_rules 局部规则：仅未被硬规则强制时 ±1 档微调
+    #    `match()` 用于解释命中来源（兼容只有 apply 的替身实现）。
     if not forced and learned_rules is not None:
+        matched = learned_rules.match(f) if hasattr(learned_rules, "match") else None
         action = learned_rules.apply(f)
-        if action > 0:
-            t = min(t + 1, 3)
-        elif action < 0:
-            t = max(t - 1, 0)
+        target = min(t + 1, 3) if action > 0 else max(t - 1, 0) if action < 0 else t
+        if target != t and matched is not None:
+            predicate = f"{matched.feature}{matched.op}{matched.value:g}"
+            _note(notes, f"learned:{target - t:+d}:{predicate}")
+        t = target
 
     # 8) 迟滞稳定层：最后一道闸，压制所有后续变化。
     #    防降级在前、迟滞在后；冻结时连 learned_rules 的微调也一并压住。
@@ -162,6 +187,9 @@ def postprocess(tier_idx: int, text: str, f: dict,
         if hysteresis.prev_tier is None and prev_tier is not None:
             hysteresis.prev_tier = prev_tier
             hysteresis.prev_ts = prev_ts if prev_ts is not None else ts
-        t = hysteresis.step(t, forced, ts)
+        stepped = hysteresis.step(t, forced, ts)
+        if stepped != t and not forced:
+            _note(notes, f"hysteresis:frozen:{TIER[stepped]}")
+        t = stepped
 
     return t

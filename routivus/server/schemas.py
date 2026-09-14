@@ -262,6 +262,10 @@ class TierView(BaseModel):
     provider: str
     model: str
     configured: bool
+    # 实际会用到的目标（未显式配置时即回落 active）：配置页据此显示
+    # "回落 active → 实际 base·m-base"（方案 08 §4.3）
+    resolved_provider: str = ""
+    resolved_model: str = ""
 
 
 class ConfigSnapshot(BaseModel):

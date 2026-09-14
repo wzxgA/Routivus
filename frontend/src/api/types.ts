@@ -135,6 +135,12 @@ export interface TierView {
   provider: string
   model: string
   configured: boolean
+  /**
+   * 该档**实际会用**的 provider / model（未显式配置时即回落 active）。
+   * 配置页据此显示"回落 active → 实际 base·m-base"（方案 08 §4.3）。
+   */
+  resolved_provider?: string
+  resolved_model?: string
 }
 
 export interface ConfigSnapshot {
@@ -257,6 +263,19 @@ export interface RouterState {
   confidence?: number
   hard_rule?: boolean
   error?: string
+  /** 规则加权总分（方案 08）。 */
+  score?: number
+  /**
+   * 判定依据链（方案 08 §4.1）：`hard_rule:*` / `score:*` / `ml:*` / `calibration:*` /
+   * `rule:*` / `learned:*` / `anti_downgrade:*` / `hysteresis:*`。
+   * 文案渲染统一走 `utils/routerNotes.ts`（后端只给结构化枚举）。
+   */
+  notes?: string[]
+  /** 本轮是否**真的切换了模型**（目标与当前一致时为 false）。 */
+  switched?: boolean
+  /** 路由耗时（毫秒）；load_ms 是首次加载 ML/语义模型的耗时。 */
+  elapsed_ms?: number
+  load_ms?: number
 }
 
 /** Skill 元数据（GET /api/skills）；正文由会话内 load_skill 工具按需加载。 */

@@ -329,3 +329,22 @@ def test_replay_card_events_carry_occurred_at() -> None:
         "occurred_at": "2026-01-01T00:00:00+00:00",
         "data": {"ok": True},
     }]
+
+
+def test_replay_keeps_every_router_update() -> None:
+    """`router.updated` 全量保留（方案 08 §4.4）。
+
+    只留最后一条时，刷新后"换档提示"会集中挤到末尾甚至消失；每轮只 1 条事件，
+    全量保留的体积可忽略，换来的回看一致性更重要。
+    """
+    records = [
+        EventRecord("e1", 1, "s1", "p1", "router.updated", {"tier": "Basic"}, "2026-01-01T00:00:01+00:00"),
+        EventRecord("e2", 2, "s1", "p1", "tool.started", {"tool_call_id": "c1"}, "2026-01-01T00:00:02+00:00"),
+        EventRecord("e3", 3, "s1", "p1", "router.updated", {"tier": "Superior"}, "2026-01-01T00:00:03+00:00"),
+    ]
+    replay = _replay_card_events(records)
+    assert [item["type"] for item in replay] == ["router.updated", "tool.started", "router.updated"]
+    assert [item["data"]["tier"] for item in replay if item["type"] == "router.updated"] == [
+        "Basic",
+        "Superior",
+    ]

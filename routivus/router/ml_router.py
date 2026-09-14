@@ -149,6 +149,7 @@ class MLRouter:
         text: str,
         features: dict | None = None,
         calibration=None,
+        notes: list[str] | None = None,
     ) -> int | None:
         """精判入口：置信门 + 校准偏置后返回档位；不采用返回 None。
 
@@ -157,19 +158,33 @@ class MLRouter:
           返回 None，由 route() 保留规则档位；
         - 否则对最高档应用 apply_calibration（偏强档降/偏弱档升，最多一档）。
         硬规则档位由 route() 在调用方排除（decision.hard_rule 时不走精判）。
+
+        ``notes``（可选，方案 08 §4.1）记录"精判是否被采用/为何没采用"，
+        纯记录，不参与判断。
         """
         if not self.available:
+            if notes is not None:
+                notes.append("ml:unavailable")
             return None
         pred = self.predict(text, features)
         if pred is None:
+            if notes is not None:
+                notes.append("ml:error")
             return None
         gate = CONFIDENCE_BASE + (
             calibration.threshold_adjust if calibration is not None else 0.0
         )
         if pred.prob < gate:
+            if notes is not None:
+                notes.append(f"ml:skipped:low_conf(p={pred.prob:.2f})")
             return None
+        if notes is not None:
+            notes.append(f"ml:idx={pred.tier},p={pred.prob:.2f}")
         if calibration is not None:
-            return apply_calibration(pred.tier, pred.prob, False, calibration)
+            calibrated = apply_calibration(pred.tier, pred.prob, False, calibration)
+            if calibrated != pred.tier and notes is not None:
+                notes.append(f"calibration:{calibrated - pred.tier:+d}")
+            return calibrated
         return pred.tier
 
 

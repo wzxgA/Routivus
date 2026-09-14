@@ -656,6 +656,144 @@ button {
 .chip.router.warn {
   color: var(--danger);
 }
+
+/* ---- SmartRouter 显示（方案 08）----
+   顶栏 chip 三态 + 可点开浮层（四档 / 依据链 / 耗时）、侧栏「本轮实际」分组。 */
+.chip.router {
+  cursor: pointer;
+  font-family: var(--sans);
+}
+.router-chip-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.router-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: 380px;
+  max-width: 92vw;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+  text-align: left;
+}
+.router-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.router-pop-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.router-pop-meta {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.router-pop-error {
+  margin: 6px 0 2px;
+  font-size: 11.5px;
+  color: var(--danger);
+}
+.router-tiers {
+  width: 100%;
+  margin: 8px 0 4px;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+.router-tiers th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 10.5px;
+  color: var(--faint);
+  padding: 3px 6px 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.router-tiers td {
+  padding: 4px 6px 4px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.router-tiers tr.active td {
+  background: var(--beige);
+  font-weight: 600;
+}
+.router-tier-mark {
+  color: var(--accent);
+}
+.router-pop-section {
+  margin-top: 8px;
+}
+.router-notes {
+  margin: 5px 0 0;
+  padding-left: 16px;
+  font-size: 11.5px;
+  color: var(--text);
+}
+.router-notes li {
+  margin: 2px 0;
+}
+.router-notes li.muted {
+  color: var(--muted);
+}
+.router-pop-foot {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* 侧栏「本轮实际」：档位徽标 + 依据 + 耗时 */
+.router-block {
+  margin: 2px 0 4px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+.router-block-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  margin-bottom: 5px;
+}
+.router-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--beige);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.router-badge.warn {
+  color: var(--danger);
+}
+.router-tag {
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+.router-reason {
+  font-size: 11.5px;
+  color: var(--text);
+}
+.dim {
+  color: var(--faint);
+}
 @keyframes breath {
   0%,
   100% {

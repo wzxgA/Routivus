@@ -207,6 +207,7 @@ export function App() {
             loading={configState.loading}
             error={configState.error}
             onReload={configState.reload}
+            router={router}
           />
         )
       case 'project': {
@@ -292,6 +293,7 @@ export function App() {
     handleNotesMutated,
     configState,
     contextWindow,
+    router,
   ])
 
   const inProject = route.kind === 'project'

@@ -5,6 +5,7 @@ import type {
   MaxTokensField,
   ModelLimit,
   ProviderView,
+  RouterState,
 } from '../../api/types'
 import { describeError } from '../../state/errors'
 import { formatNumber } from '../../utils/format'
@@ -58,6 +59,8 @@ interface ConfigViewProps {
   loading: boolean
   error: string | null
   onReload: () => Promise<ConfigSnapshot | null>
+  /** 会话里的路由状态（`App` 已有）：用来在四档表里标出"当前生效"（方案 08 §4.3）。 */
+  router?: RouterState | null
 }
 
 type ModalState =
@@ -68,7 +71,7 @@ type ModalState =
   | { kind: 'delete-provider'; provider: ProviderView }
   | { kind: 'tier'; tier: string }
 
-export function ConfigView({ config, loading, error, onReload }: ConfigViewProps) {
+export function ConfigView({ config, loading, error, onReload, router = null }: ConfigViewProps) {
   const [modal, setModal] = useState<ModalState>({ kind: 'none' })
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -238,7 +241,10 @@ export function ConfigView({ config, loading, error, onReload }: ConfigViewProps
             />
           </label>
         </div>
-        <div className="card-desc">按任务复杂度自动选择档位模型；未配置的档位回落到当前 base provider。</div>
+        <div className="card-desc">
+          按任务复杂度自动选择档位模型；未配置的档位回落到当前 base provider。
+          「当前生效」取自会话里最近一轮的路由结果。
+        </div>
         <table className="table">
           <thead>
             <tr>
@@ -246,42 +252,79 @@ export function ConfigView({ config, loading, error, onReload }: ConfigViewProps
               <th>Provider</th>
               <th>模型</th>
               <th>状态</th>
+              <th>当前生效</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
-            {tiers.map((tier) => (
-              <tr key={tier.name}>
-                <td>{tier.name}</td>
-                <td className="mono">{tier.provider || '—'}</td>
-                <td className="mono">{tier.model || '—'}</td>
-                <td>{tier.configured ? <span className="pill-ok">已配置</span> : '回落 active'}</td>
-                <td>
-                  <span className="task-acts">
-                    <button
-                      type="button"
-                      className="btn tiny"
-                      disabled={providerNames.length === 0}
-                      onClick={() => setModal({ kind: 'tier', tier: tier.name })}
-                    >
-                      设置
-                    </button>
-                    <button
-                      type="button"
-                      className="btn tiny"
-                      disabled={busy || !tier.configured}
-                      onClick={() => void run(() => api.clearTier(tier.name))}
-                    >
-                      清除
-                    </button>
-                  </span>
-                </td>
-              </tr>
-            ))}
+            {tiers.map((tier) => {
+              const isActive = Boolean(router?.tier) && router?.tier === tier.name
+              const resolvedProvider = tier.resolved_provider || ''
+              const resolvedModel = tier.resolved_model || ''
+              // "实际会用"与"显式配置"不一致 = 会回落：未配置，或该 provider 缺 API Key
+              // （两种情况后端都会整档回落到 active）
+              const fallsBack =
+                Boolean(resolvedProvider || resolvedModel) &&
+                (resolvedProvider !== tier.provider || resolvedModel !== tier.model)
+              const fallback = fallsBack
+                ? `实际 → ${resolvedProvider || '—'} · ${resolvedModel || '—'}`
+                : ''
+              return (
+                <tr key={tier.name}>
+                  <td>{tier.name}</td>
+                  <td className="mono">{tier.provider || '—'}</td>
+                  <td className="mono">{tier.model || '—'}</td>
+                  <td>
+                    {tier.configured ? (
+                      fallsBack ? (
+                        <span className="dim">已配置 · 实际回落</span>
+                      ) : (
+                        <span className="pill-ok">已配置</span>
+                      )
+                    ) : (
+                      '回落 active'
+                    )}
+                  </td>
+                  <td>
+                    {isActive ? <span className="pill-ok">本轮生效</span> : null}
+                    {fallback ? (
+                      <span className="dim mono">
+                        {isActive ? ' ' : ''}
+                        {fallback}
+                      </span>
+                    ) : null}
+                    {!isActive && !fallback ? '—' : null}
+                  </td>
+                  <td>
+                    <span className="task-acts">
+                      <button
+                        type="button"
+                        className="btn tiny"
+                        disabled={providerNames.length === 0}
+                        onClick={() => setModal({ kind: 'tier', tier: tier.name })}
+                      >
+                        设置
+                      </button>
+                      <button
+                        type="button"
+                        className="btn tiny"
+                        disabled={busy || !tier.configured}
+                        onClick={() => void run(() => api.clearTier(tier.name))}
+                      >
+                        清除
+                      </button>
+                    </span>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
         {providerNames.length === 0 ? (
           <div className="hint">先添加 provider，才能配置档位。</div>
+        ) : null}
+        {config?.smart_router_enabled && !router?.tier ? (
+          <div className="hint">先在会话里发一轮消息，「当前生效」列就会标出本轮用的是哪一档。</div>
         ) : null}
       </div>
 

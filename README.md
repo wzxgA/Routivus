@@ -338,7 +338,14 @@ python -c "from routivus.config.manager import ConfigManager; from routivus.cli.
 
 SmartRouter 按任务复杂度动态选择四档模型（Basic / Enhanced / Superior / Ultimate）。
 
-**在 Web Console 会话里怎么生效**：普通对话轮在执行前先路由，再按结果切换本轮实际使用的模型 —— 顶栏与信息侧栏会显示 `SmartRouter <档位>` 与本轮模型（`router.updated` 事件 / 会话快照的 `router` 字段）。开关与四档在**配置页**维护（`/api/config/smart-router`、`/api/config/tiers/{tier}`），配置档位会自动打开总闸。
+**在 Web Console 会话里怎么生效**：普通对话轮在执行前先路由，再按结果切换本轮实际使用的模型（`router.updated` 事件 / 会话快照的 `router` 字段）。界面分四层：
+
+- **顶栏 chip**：`⚡ Superior`（本轮档位）/ `⚡ 待路由`（开关开着但还没路由过）/ `⚡ 路由失败`；**点击展开浮层** —— 四档列表（当前生效高亮，未配置或该 provider 缺 Key 时标出"回落 → 实际模型"）+ **本轮判定依据** + 实际使用的模型 + 路由耗时。
+- **信息侧栏 Session**：拆成「会话默认」（手动配置的 provider/model）与「本轮实际」（档位徽标 + 依据 + 是否真的换了模型 + 耗时），不再让同一个 key 一会儿是配置、一会儿是结果。
+- **对话流提示**：只在**档位变化 / 回落 / 失败**时插一条轻提示，例如 `⚡ 档位上调 Enhanced → Superior · 架构词命中（分数 6.5）`、`⚡ 本轮沿用 Superior（迟滞窗口内换档过多，已冻结）`、`⚠ 路由失败，本轮沿用当前模型（…）`；刷新 / 重连后仍在原来的轮次位置。
+- **配置页四档表**：新增「当前生效」列，并给出每档"实际会用哪个模型"（未配置、或该 provider 缺 Key 时都会整档回落，界面标为"已配置 · 实际回落"）。
+
+判定依据（载荷里的 `notes`）是**结构化枚举**：`hard_rule:arch`、`score:6.5`、`ml:idx=2,p=0.71` / `ml:skipped:low_conf(p=…)`、`calibration:+1`、`rule:debug`、`learned:+1:num_bugfix_kw>=1`、`anti_downgrade:Ultimate→Superior`、`hysteresis:frozen:Superior`。中文文案统一由前端 `utils/routerNotes.ts` 渲染（后端只记录、不参与任何判定）。开关与四档在**配置页**维护（`/api/config/smart-router`、`/api/config/tiers/{tier}`），配置档位会自动打开总闸。
 
 边界：
 
@@ -346,7 +353,7 @@ SmartRouter 按任务复杂度动态选择四档模型（Basic / Enhanced / Supe
 - **路由在工作线程里执行**：校准 / 自学习 / ML 精判（含 23.9 MB 语义 ONNX 会话）是同步重活，首次加载可能数秒；服务端把它丢到工作线程并带超时（`ROUTIVUS_ROUTER_TIMEOUT`），所以**不会阻塞事件循环**（否则表现为「一对话就卡住」、心跳与其它 HTTP 全部停响应）。重资产是进程级单例，只加载一次，后续会话零成本。加载或路由偏慢时会打 WARNING 日志（含耗时），便于排查。
 - 路由结果**只改内存**中的 provider/model，不写回 `active_provider` / `active_model`；重连后档位可从会话快照回显，**服务重启后不保留**。
 - **手动优先**：在顶栏显式切换模型会关闭智能路由（与 `/model` 的行为一致），避免下一轮路由立刻覆盖刚选的模型。
-- 档位未显式配置时回落 active 模型；换模型失败（缺 API Key 等）只会**沿用当前模型**并回报错误，不阻断对话。
+- 档位未显式配置、或该 provider 缺 API Key 时会回落 active 模型（界面会标出"实际回落 → 具体模型"）；换模型失败只会**沿用当前模型**并回报错误，不阻断对话。
 
 档位的 provider/model 用 `/tier` 配置，总开关用 `/smartRouter`（以下命令经 `handle_service_command` 程序化分发，Web Console 请走配置页）：
 

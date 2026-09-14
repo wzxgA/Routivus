@@ -42,21 +42,54 @@ class SmartRouterConfigService:
         return self._t("ui.tier.configured") if configured else self._t("ui.tier.fallback")
 
     def list_tiers(self) -> list[dict]:
-        """按固定四档顺序返回每档 {name, provider, model, configured}。"""
+        """按固定四档顺序返回每档的配置与**实际解析结果**。
+
+        `provider/model` 是用户**显式配置**（未配置时为空串）；`resolved_provider/
+        resolved_model` 是 `router.resolve_tier` 解析出的"实际会用哪个模型"——未
+        显式配置时即回落 active。配置页据此显示"回落 active → 实际 base·m-base"
+        （方案 08 §4.3）。解析失败只留空串，不影响列表本身。
+        """
+        from routivus.router import resolve as resolve_tier
+
         cfg = self.get()
         tiers = cfg.get("tiers") or {}
+        fallback_provider, fallback_model = self._fallback_target()
         rows: list[dict] = []
-        for name in _SMART_ROUTER_TIERS:
+        for idx, name in enumerate(_SMART_ROUTER_TIERS):
             entry = tiers.get(name) or {}
             provider = str(entry.get("provider", "") or "")
             model = str(entry.get("model", "") or "")
-            rows.append({
+            row = {
                 "name": name,
                 "provider": provider,
                 "model": model,
                 "configured": bool(provider and model),
-            })
+                "resolved_provider": "",
+                "resolved_model": "",
+            }
+            try:
+                target = resolve_tier(idx, fallback_provider, fallback_model, tiers, self.manager)
+                row["resolved_provider"] = str(getattr(target, "provider", "") or "")
+                row["resolved_model"] = str(getattr(target, "model", "") or "")
+            except Exception:  # pragma: no cover - 解析异常不该挡住配置页
+                pass
+            rows.append(row)
         return rows
+
+    def _fallback_target(self) -> tuple[str, str]:
+        """回落的 (provider, model)：优先用运行态 Settings，其次读配置的 active。"""
+        provider = str(getattr(self._settings, "provider", "") or "")
+        model = str(getattr(self._settings, "model", "") or "")
+        if provider and model:
+            return provider, model
+        try:
+            active = self.manager.active()
+        except Exception:  # pragma: no cover - 初始未配置任何 provider 是正常状态
+            return provider, model
+        return (
+            str(getattr(active, "provider_name", "") or provider),
+            str(getattr(active, "model", "") or model),
+        )
 
     def get_tier(self, tier: str) -> tuple[OpResult, dict | None]:
         """查看单个档位。"""

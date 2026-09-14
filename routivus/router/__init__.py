@@ -28,6 +28,13 @@ class RouteResult:
     score: float               # 规则加权总分
     hard_rule: bool            # 是否由硬规则直接决定
     features: dict = field(default_factory=dict)  # 特征快照（测试/调试/后续反馈采集用）
+    # 判定依据（方案 08 §4.1）：**只用于解释展示，任何逻辑都不读它**。示例：
+    #   "hard_rule:arch" / "score:6.5"
+    #   "ml:idx=2,p=0.71" / "ml:skipped:low_conf(p=0.52)" / "ml:unavailable"
+    #   "calibration:+1" / "rule:debug" / "rule:long_context"
+    #   "learned:+1:num_bugfix_kw>=1"
+    #   "anti_downgrade:Ultimate→Superior" / "hysteresis:frozen:Superior"
+    notes: tuple[str, ...] = ()
 
 
 def _tier_index(prev_tier: str | int | None) -> int | None:
@@ -68,22 +75,33 @@ def route(text: str, *,
     规则打分后参与精判（概率最高档 + 置信门 + 校准偏置），不可用/信心不足时
     静默回落规则档位；硬规则决策不参与精判；不传即纯规则行为。
     """
+    notes: list[str] = []   # 判定依据（只记录，不参与判断，方案 08 §4.1）
     f = extract(text)
     decision: RuleDecision = rule_route(f)
     tier_idx = decision.tier_idx
     hard_rule = decision.hard_rule
+    if hard_rule:
+        notes.append(f"hard_rule:{decision.hard_reason or 'unknown'}")
+    else:
+        notes.append(f"score:{decision.score:g}")
     from routivus.adaptive.calibrate import apply_calibration
 
     # 优先：ML 精判（仅软规则决策、且产物可用时）→ 置信门 + 校准偏置
     if ml_router is not None and not hard_rule and ml_router.available:
-        ml_tier = ml_router.decide(text, f, calibration)
+        ml_tier = ml_router.decide(text, f, calibration, notes=notes)
         if ml_tier is not None:
             tier_idx = ml_tier
     else:
+        if ml_router is not None and not hard_rule:
+            # 配置了 ML 精判但产物不可用：留一条依据，避免"为什么没走 ML"无从解释
+            notes.append("ml:unavailable")
         if calibration is not None:
-            tier_idx = apply_calibration(
+            calibrated = apply_calibration(
                 tier_idx, confidence(decision), hard_rule, calibration,
             )
+            if calibrated != tier_idx:
+                notes.append(f"calibration:{calibrated - tier_idx:+d}")
+            tier_idx = calibrated
     final_idx = postprocess(
         tier_idx, text, f,
         prev_tier=_tier_index(prev_tier), prev_ts=prev_ts,
@@ -91,6 +109,7 @@ def route(text: str, *,
         context_tokens=context_tokens,
         learned_rules=learned_rules,
         hysteresis=hysteresis,
+        notes=notes,
     )
     target: TierTarget = resolve(final_idx, fallback_provider, fallback_model,
                                  tiers_config, manager)
@@ -104,6 +123,7 @@ def route(text: str, *,
         score=decision.score,
         hard_rule=decision.hard_rule,
         features=f,
+        notes=tuple(notes),
     )
 
 

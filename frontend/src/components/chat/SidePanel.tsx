@@ -9,6 +9,7 @@ import type {
 import type { AuditTotals, UsageTotals } from '../../state/sessionTimeline'
 import type { ConnState } from '../../ws/sessionSocket'
 import { formatDateTime, formatNumber } from '../../utils/format'
+import { reasonSummary } from '../../utils/routerNotes'
 
 const TABS = ['Session', 'Plan', 'Memory', 'Safety'] as const
 type TabName = (typeof TABS)[number]
@@ -102,35 +103,66 @@ export function SidePanel({
         {tab === 'Session' ? (
           <>
             <div className="sec-title">SESSION</div>
+            {/* 会话默认：手动配置的 provider/model。智能路由开启时它们**不等于**
+                本轮实际在跑的模型，所以另起一组「本轮实际」，避免同名 key 造成歧义
+                （方案 08 §0/§4.3）。 */}
             <div className="kv">
               <span>Provider</span>
-              <span className="mono">
-                {router?.enabled && router.provider ? router.provider : session?.active_provider || '—'}
-              </span>
+              <span className="mono">{session?.active_provider || '—'}</span>
             </div>
             <div className="kv">
               <span>Model</span>
-              <span className="mono">
-                {router?.enabled && router.model ? router.model : session?.active_model || '—'}
-                {router?.enabled && router.model ? ' （路由）' : ''}
-              </span>
+              <span className="mono">{session?.active_model || '—'}</span>
             </div>
             {router?.enabled ? (
-              <div className="kv">
-                <span>智能路由</span>
-                <span className="mono">
-                  {router.tier || '—'}
-                  {router.configured === false ? '（回落 active）' : ''}
-                  {typeof router.confidence === 'number' && router.tier
-                    ? ` · 置信 ${(router.confidence * 100).toFixed(0)}%`
-                    : ''}
-                </span>
-              </div>
-            ) : null}
-            {router?.error ? (
-              <div className="hint" style={{ marginTop: 2 }}>
-                {router.error}
-              </div>
+              <>
+                <div className="sec-title" style={{ marginTop: 10 }}>
+                  本轮实际
+                </div>
+                <div className="router-block">
+                  <div className="router-block-head">
+                    <span className={`router-badge${router.error ? ' warn' : ''}`}>
+                      {router.error ? '路由失败' : router.tier || '待路由'}
+                    </span>
+                    {router.configured === false ? <span className="router-tag">回落 active</span> : null}
+                    {typeof router.confidence === 'number' && router.tier ? (
+                      <span className="router-tag">置信 {(router.confidence * 100).toFixed(0)}%</span>
+                    ) : null}
+                    {typeof router.elapsed_ms === 'number' ? (
+                      <span className="router-tag">{router.elapsed_ms} ms</span>
+                    ) : null}
+                  </div>
+                  <div className="kv">
+                    <span>Provider</span>
+                    <span className="mono">{router.provider || '—'}</span>
+                  </div>
+                  <div className="kv">
+                    <span>Model</span>
+                    <span className="mono">{router.model || '—'}</span>
+                  </div>
+                  {router.tier ? (
+                    <div className="kv">
+                      <span>依据</span>
+                      <span className="router-reason">
+                        {reasonSummary(router.notes)}
+                        {(router.notes?.length ?? 0) > 1 ? (
+                          <span className="dim"> · 另 {router.notes!.length - 1} 条见顶栏 ⚡</span>
+                        ) : null}
+                      </span>
+                    </div>
+                  ) : null}
+                  {router.switched === false && router.model ? (
+                    <div className="hint" style={{ marginTop: 2 }}>
+                      目标与当前模型一致，本轮未切换。
+                    </div>
+                  ) : null}
+                  {router.error ? (
+                    <div className="hint" style={{ marginTop: 2 }}>
+                      {router.error}
+                    </div>
+                  ) : null}
+                </div>
+              </>
             ) : null}
             <div className="kv">
               <span>Status</span>

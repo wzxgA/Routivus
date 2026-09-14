@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from routivus.router import (
     TIER_NAMES,
     extract,
@@ -14,9 +16,12 @@ from routivus.router import (
     rule_route,
     rule_score,
 )
+from routivus.adaptive.calibrate import Calibration
+from routivus.adaptive.learned_rules import LearnedRule, LearnedRules
 from routivus.router.features import code_blocks
 from routivus.router.keywords import KEYWORDS
-from routivus.router.postprocess import hit
+from routivus.router.ml_router import MLPrediction, MLRouter
+from routivus.router.postprocess import Hysteresis, hit
 from routivus.router.rule_router import confidence
 
 from tests.conftest import seed_config
@@ -348,3 +353,91 @@ class TestRoute:
     def test_features_snapshot_in_result(self):
         r = route("写个二分查找")
         assert r.features["num_impl_kw"] == 1
+
+
+class TestRouteNotes:
+    """方案 08 §4.1：判定依据链（`RouteResult.notes`）。
+
+    这些 notes **只用于解释展示**，任何判定都不读它——所以本类的每个用例都同时
+    断言"档位与不带 notes 时一致"（`test_notes_do_not_change_decision` 是总闸）。
+    """
+
+    def test_hard_rule_reason_risk(self):
+        text = f"帮我{KEYWORDS['risk'][0]}一下"
+        r = route(text, fallback_provider="p", fallback_model="m")
+        assert r.hard_rule is True
+        assert "hard_rule:risk" in r.notes
+
+    def test_hard_rule_reason_arch(self):
+        text = " ".join(KEYWORDS["arch"][:2])          # 强架构词 >= 2 触发硬规则
+        r = route(text, fallback_provider="p", fallback_model="m")
+        assert r.hard_rule is True
+        assert "hard_rule:arch" in r.notes
+
+    def test_hard_rule_reason_chatty(self):
+        r = route("你好", fallback_provider="p", fallback_model="m")
+        assert r.hard_rule is True
+        assert "hard_rule:chatty" in r.notes
+
+    def test_soft_rule_records_score(self):
+        r = route("写个二分查找")
+        assert r.hard_rule is False
+        assert r.notes[0].startswith("score:")          # 首条即"分档依据"
+
+    def test_postprocess_rule_note(self):
+        # 调试旗标在后处理里升一档 → 记录 rule:debug
+        r = route("为什么报错了")
+        assert "rule:debug" in r.notes
+
+    def test_anti_downgrade_note(self):
+        r = route("你好", prev_tier="Ultimate", prev_ts=100.0, ts=200.0)
+        assert any(note.startswith("anti_downgrade:") for note in r.notes)
+        assert r.tier_idx == 2                          # 最多降一档
+
+    def test_hysteresis_frozen_note(self):
+        h = Hysteresis()
+        route("你好", hysteresis=h)                      # 首轮 Basic
+        route("写个二分查找", hysteresis=h)               # 换档 1 次（窗口内上限）
+        r = route("设计日活千万的推荐系统架构", hysteresis=h)  # 再换 → 冻结
+        assert any(note.startswith("hysteresis:frozen:") for note in r.notes)
+
+    def test_calibration_note(self):
+        # 该档偏弱（bias<0）且置信不足 → 升一档
+        cal = Calibration(bias=(0.0, -0.15, 0.0, 0.0))
+        r = route("写个二分查找", calibration=cal)
+        assert "calibration:+1" in r.notes
+        assert r.tier_idx == 2
+
+    def test_learned_rule_note(self):
+        rule = LearnedRule(
+            feature="num_impl_kw", op=">=", value=1.0, action=1, confidence=0.9, support=30.0,
+        )
+        r = route("写个二分查找", learned_rules=LearnedRules(rules=(rule,)))
+        assert any(note.startswith("learned:+1:num_impl_kw") for note in r.notes)
+        assert r.tier_idx == 2
+
+    def test_ml_adopted_and_rejected_notes(self, monkeypatch, tmp_path):
+        # 用真实 MLRouter，只把 predict 换成固定预测（产物路径不存在 → 不碰数据目录）
+        router = MLRouter(artifact_path=tmp_path / "absent.lgb")
+        router._model = object()                        # available = True
+
+        monkeypatch.setattr(router, "predict", lambda text, features=None: MLPrediction(tier=2, prob=0.71))
+        notes: list[str] = []
+        assert router.decide("x", {}, None, notes=notes) == 2
+        assert notes == ["ml:idx=2,p=0.71"]
+
+        monkeypatch.setattr(router, "predict", lambda text, features=None: MLPrediction(tier=3, prob=0.10))
+        low: list[str] = []
+        assert router.decide("x", {}, None, notes=low) is None
+        assert low == ["ml:skipped:low_conf(p=0.10)"]
+
+    def test_ml_unavailable_note(self):
+        r = route("写个二分查找", ml_router=MLRouter(artifact_path=Path("absent.lgb")))
+        assert "ml:unavailable" in r.notes
+
+    def test_notes_do_not_change_decision(self):
+        """总闸：notes 是纯记录，档位与既有断言完全一致。"""
+        assert route("你好").tier == "Basic"
+        assert route("写个二分查找").tier == "Enhanced"
+        assert route("设计日活千万的推荐系统架构").tier == "Ultimate"
+        assert route("你好", prev_tier="Superior", prev_ts=100.0, ts=200.0).tier == "Enhanced"

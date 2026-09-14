@@ -192,6 +192,8 @@ class SessionRouter:
         self.feedback = FeedbackRecorder(session=session_key)
         # 最近一次路由结果，供会话快照回显
         self.last: Any = None
+        # 最近一次路由的运行态补充（是否真的换了模型 / 路由与加载耗时，方案 08 §4.2）
+        self.last_meta: dict[str, Any] = {}
 
     def apply(self, text: str, *, settings: Any, manager: Any, agent: Any) -> tuple[Any, str]:
         """对一轮输入做路由，并按结果切换 `agent.llm`。
@@ -236,11 +238,18 @@ class SessionRouter:
         self.feedback.flush()
 
         error = ""
-        if (result.provider, result.model) != (settings.provider, settings.model):
+        before = (settings.provider, settings.model)
+        if (result.provider, result.model) != before:
             error = _attach_model(settings, manager, agent, result.provider, result.model) or ""
         if not error:
             self.prev_tier, self.prev_ts = result.tier, now
         self.last = result
+        # 运行态补充：界面据此区分"路由生效且已换模型 / 目标与当前一致无需切换 / 切换失败"
+        self.last_meta = {
+            "switched": bool(not error and (result.provider, result.model) != before),
+            "elapsed_ms": max(0, round(route_seconds * 1000)),
+            "load_ms": max(0, round(float(getattr(assets, "load_seconds", 0.0) or 0.0) * 1000)),
+        }
         log = logger.warning if route_seconds >= _SLOW_ROUTE_SECONDS else logger.info
         log(
             "smart router: tier=%s model=%s load=%.2fs route=%.2fs%s",
@@ -253,8 +262,14 @@ class SessionRouter:
         return result, error
 
 
-def router_payload(result: Any, error: str = "") -> dict[str, Any]:
-    """`RouteResult` → 下行事件载荷（前端展示「本轮用了哪一档」）。"""
+def router_payload(
+    result: Any, error: str = "", meta: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """`RouteResult` → 下行事件载荷（前端展示「本轮用了哪一档、为什么」）。
+
+    `meta` 为 `SessionRouter.last_meta`（switched / elapsed_ms / load_ms）：
+    可选，缺省时不下发这三个键，保持与旧前端兼容（方案 08 §4.2）。
+    """
     if result is None:
         payload: dict[str, Any] = {"enabled": True, "tier": "", "provider": "", "model": ""}
     else:
@@ -267,7 +282,14 @@ def router_payload(result: Any, error: str = "") -> dict[str, Any]:
             "configured": bool(getattr(result, "configured", False)),
             "confidence": float(getattr(result, "confidence", 0.0)),
             "hard_rule": bool(getattr(result, "hard_rule", False)),
+            # 方案 08 新增：规则加权总分与判定依据链（仅用于解释展示）
+            "score": float(getattr(result, "score", 0.0)),
+            "notes": [str(item) for item in (getattr(result, "notes", ()) or ())],
         }
     if error:
         payload["error"] = error
+    if meta:
+        for key in ("switched", "elapsed_ms", "load_ms"):
+            if key in meta:
+                payload[key] = meta[key]
     return payload

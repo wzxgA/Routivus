@@ -16,6 +16,7 @@ import type {
   TeamPayload,
   WsEnvelope,
 } from '../api/types'
+import { routerNotice } from '../utils/routerNotes'
 import { StreamBatcher, type StreamDelta } from '../utils/streamBatch'
 import { SessionSocket, type ConnState } from '../ws/sessionSocket'
 
@@ -260,6 +261,9 @@ export function useSessionTimeline(
   const socketRef = useRef<SessionSocket | null>(null)
   const sessionRef = useRef<Session | null>(initialSession)
   const updateRef = useRef(onSessionUpdate)
+  // 上一轮路由状态：用于判断"档位是否变化"（方案 08 §4.4 的换档提示）。
+  // 放在 ref 里而不是依赖 state，避免在 setState 的 updater 里做副作用。
+  const routerRef = useRef<RouterState | null>(null)
 
   /** 重拉项目长期记忆条目（快照已带一份，这里用于命令改动后刷新）。 */
   const refreshMemory = useCallback(() => {
@@ -319,6 +323,8 @@ export function useSessionTimeline(
     setApproval(null)
     setPlanReview(null)
     setRouter(null)
+    routerRef.current = null
+    let routerNoticeSeq = 0
     setMemory(null)
     setContext(null)
     setMemoryNotice(null)
@@ -367,6 +373,8 @@ export function useSessionTimeline(
             setAudit(snapshot.audit ?? { tool_calls: 0, tool_failures: 0, approvals: 0 })
             setHitl(snapshot.safety?.hitl ?? null)
             setRouter(snapshot.router ?? null)
+            // 同步"上一轮档位"：重连后的第一条 router.updated 不该被当成首轮提示
+            routerRef.current = snapshot.router ?? null
             // 项目长期记忆条目随快照下发，重连/切会话即可见。
             setMemory(snapshot.memory ?? null)
             // 当前模型的窗口 / 输出上限：重连即可见，不必等下一轮对话刷新。
@@ -552,8 +560,10 @@ export function useSessionTimeline(
             return
           }
           case 'router.updated': {
-            // 普通对话轮在开关开启时按复杂度换档，这里回显本轮实际使用的档位
-            setRouter({
+            // 普通对话轮在开关开启时按复杂度换档，这里回显本轮实际使用的档位。
+            // 方案 08：带上判定依据（notes）与运行态（是否真换了模型 / 耗时），并在
+            // **变化 / 回落 / 失败 / 被稳定层拦住**时往时间线插一条轻提示。
+            const next: RouterState = {
               enabled: Boolean(data.enabled),
               tier: String(data.tier ?? ''),
               tier_idx: Number(data.tier_idx ?? 0),
@@ -562,8 +572,22 @@ export function useSessionTimeline(
               configured: Boolean(data.configured),
               confidence: Number(data.confidence ?? 0),
               hard_rule: Boolean(data.hard_rule),
+              score: typeof data.score === 'number' ? Number(data.score) : undefined,
+              notes: Array.isArray(data.notes) ? (data.notes as unknown[]).map(String) : undefined,
+              switched: typeof data.switched === 'boolean' ? Boolean(data.switched) : undefined,
+              elapsed_ms: typeof data.elapsed_ms === 'number' ? Number(data.elapsed_ms) : undefined,
+              load_ms: typeof data.load_ms === 'number' ? Number(data.load_ms) : undefined,
               ...(data.error ? { error: String(data.error) } : {}),
-            })
+            }
+            // 用 ref 记上一轮：不能放在 setRouter 的 updater 里算（StrictMode 会
+            // 重复调用 updater，导致提示插入两次）。
+            const notice = routerNotice(routerRef.current, next)
+            routerRef.current = next
+            setRouter(next)
+            if (notice) {
+              const id = `router-${event.sequence ?? `local-${(routerNoticeSeq += 1)}`}`
+              setItems((current) => [...current, { kind: 'system', id, content: notice, at: '' }])
+            }
             return
           }
           case 'plan.review': {

@@ -109,6 +109,7 @@ def _route_result(
     provider: str = "base",
     model: str = "m-superior",
     configured: bool = True,
+    notes: tuple[str, ...] = (),
 ) -> RouteResult:
     return RouteResult(
         tier=tier,
@@ -120,6 +121,7 @@ def _route_result(
         score=3.1,
         hard_rule=False,
         features={"len_chars": 12},
+        notes=notes,
     )
 
 
@@ -617,6 +619,45 @@ def test_blocking_prewarm_runs_on_calling_thread(
 
     assert routing_module.prewarm_shared_assets(blocking=True) is True
     assert seen["thread"] == threading.current_thread().name
+
+
+def test_router_updated_carries_notes_and_runtime_meta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """方案 08 §4.2：`router.updated` 下发判定依据与运行态（是否真换模型 / 耗时）。"""
+    result = _route_result(notes=("hard_rule:arch", "score:6.5", "ml:idx=2,p=0.71"))
+    _install_route(monkeypatch, result)
+    _install_attach(monkeypatch)
+    settings = Settings(provider="base", model="m-basic", smart_router_enabled=True)
+    client, _ = _client(tmp_path, settings=settings)
+    project = _project(client)
+    session = _session(client, project)
+
+    payloads = _routers(_chat(client, project, session, "设计一个高可用的检索架构"))
+
+    assert payloads, "开启路由后必须下发 router.updated"
+    payload = payloads[-1]
+    assert payload["tier"] == "Superior"
+    assert payload["notes"] == ["hard_rule:arch", "score:6.5", "ml:idx=2,p=0.71"]
+    assert payload["score"] == 3.1
+    assert payload["switched"] is True                 # base·m-basic → base·m-superior
+    assert isinstance(payload["elapsed_ms"], int) and payload["elapsed_ms"] >= 0
+    assert "load_ms" in payload
+
+
+def test_router_payload_without_meta_keeps_legacy_shape() -> None:
+    """旧调用方（不传 meta）：既有字段不变，也不伪造 switched/耗时。"""
+    from routivus.server.routing import router_payload
+
+    result = _route_result(notes=("score:6.5",))
+    plain = router_payload(result)
+    assert plain["tier"] == "Superior"
+    assert plain["score"] == 3.1
+    assert plain["notes"] == ["score:6.5"]
+    assert "switched" not in plain and "elapsed_ms" not in plain
+
+    with_meta = router_payload(result, meta={"switched": False, "elapsed_ms": 180})
+    assert with_meta["switched"] is False and with_meta["elapsed_ms"] == 180
 
 
 def test_prewarm_if_enabled_follows_switch(

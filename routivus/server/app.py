@@ -410,29 +410,23 @@ _THINKING_TRUNCATED_SUFFIX = "…（思考过长已截断）"
 def _replay_card_events(events: list[EventRecord]) -> list[dict[str, Any]]:
     """把卡片类历史事件整理成快照回放列表。
 
-    调用方现已用 `storage.list_card_events` 按类型取"最近 N 条"，这里仍保留过滤
-    （router.updated 只留最后一条），并对每条补 `occurred_at`：前端按时间戳把
-    messages 与 replay 归并成一条时间线（方案 07 §4.6a）。
+    调用方现已用 `storage.list_card_events` 按类型取"最近 N 条"，并对每条补
+    `occurred_at`：前端按时间戳把 messages 与 replay 归并成一条时间线
+    （方案 07 §4.6a）。
+
+    `router.updated` **全量保留**（不再只留最后一条）：每轮路由才 1 条事件，
+    量可忽略；保留后"换档提示"刷新后仍在原位，也顺带支持档位历史（方案 08 §4.4）。
+    前端对该事件是纯状态更新（后到覆盖），全量回放无副作用。
     """
     replay: list[dict[str, Any]] = []
-    last_router: dict[str, Any] | None = None
     for item in events:
-        if item.event_type in _REPLAY_EVENT_TYPES:
+        if item.event_type in _REPLAY_EVENT_TYPES or item.event_type == _ROUTER_EVENT_TYPE:
             replay.append({
                 "type": item.event_type,
                 "sequence": item.sequence,
                 "occurred_at": item.occurred_at,
                 "data": item.data,
             })
-        elif item.event_type == _ROUTER_EVENT_TYPE:
-            last_router = {
-                "type": item.event_type,
-                "sequence": item.sequence,
-                "occurred_at": item.occurred_at,
-                "data": item.data,
-            }
-    if last_router is not None:
-        replay.append(last_router)
     return replay
 
 
@@ -1631,9 +1625,10 @@ def create_app(
 
     def router_snapshot(session_id: str) -> dict[str, Any]:
         """会话快照里的路由状态：优先用最近一次路由结果，否则回落到开关状态。"""
-        result = getattr(session_routers.get(session_id), "last", None)
+        session_router = session_routers.get(session_id)
+        result = getattr(session_router, "last", None)
         if result is not None:
-            return router_payload(result)
+            return router_payload(result, meta=getattr(session_router, "last_meta", None))
         enabled = False
         try:
             enabled = bool(tier_service.get().get("enabled"))
@@ -1792,7 +1787,10 @@ def create_app(
                 "error": f"路由失败，本轮沿用当前模型：{exc}",
             })
             return
-        await forwarder.emit("router.updated", router_payload(result, error))
+        await forwarder.emit(
+            "router.updated",
+            router_payload(result, error, meta=getattr(router, "last_meta", None)),
+        )
         # 路由换档可能连 provider 一起换掉：窗口与输出上限跟着变，必须同步给界面，
         # 否则「使用率」会一直按上一档的分母算（方案 §4.4 最容易漏的一处）。
         await forwarder.emit("context.updated", context_payload(session, agent))

@@ -98,3 +98,59 @@ def test_set_enabled(tmp_path: Path):
     service, manager = svc(tmp_path)
     assert service.set_enabled(True).ok is True
     assert manager.smart_router_config()["enabled"] is True
+
+
+def test_list_tiers_reports_resolved_target(tmp_path: Path):
+    """方案 08 §4.3：列表同时给出"显式配置（provider/model/configured）"与
+    "实际会用（resolved_*）"。
+
+    `configured` 表示**是否显式配置**；`resolved_*` 是经 `resolve_tier` 校验后的
+    真实目标——未配置、或 provider 缺 API Key 时都会整档回落 active，界面据此
+    显示"回落 → deepseek · deepseek-chat"，而不是只有一句"回落 active"。
+    """
+    manager = make_manager(
+        tmp_path,
+        env={},
+        user_cfg={
+            "active_provider": "deepseek",
+            "active_model": "deepseek-chat",
+            "providers": {"deepseek": {"api_key": "sk-test"}, "glm": {"api_key": "gk"}},
+            "smart_router": {
+                "enabled": True,
+                "tiers": {"Superior": {"provider": "glm", "model": "glm-4-plus"}},
+            },
+        },
+    )
+    rows = {row["name"]: row for row in SmartRouterConfigService(manager).list_tiers()}
+
+    assert rows["Superior"]["configured"] is True
+    assert rows["Superior"]["resolved_provider"] == "glm"
+    assert rows["Superior"]["resolved_model"] == "glm-4-plus"
+
+    assert rows["Basic"]["configured"] is False
+    assert rows["Basic"]["provider"] == ""                    # 显式配置为空
+    assert rows["Basic"]["resolved_provider"] == "deepseek"   # 实际回落目标
+    assert rows["Basic"]["resolved_model"] == "deepseek-chat"
+
+
+def test_list_tiers_resolved_falls_back_without_key(tmp_path: Path):
+    """配了档位但该 provider 缺 API Key：`configured` 仍为 True，但实际会回落 active。"""
+    manager = make_manager(
+        tmp_path,
+        env={},
+        user_cfg={
+            "active_provider": "deepseek",
+            "active_model": "deepseek-chat",
+            "providers": {"deepseek": {"api_key": "sk-test"}},   # glm 无 Key
+            "smart_router": {
+                "enabled": True,
+                "tiers": {"Superior": {"provider": "glm", "model": "glm-4-plus"}},
+            },
+        },
+    )
+    row = {item["name"]: item for item in SmartRouterConfigService(manager).list_tiers()}["Superior"]
+
+    assert row["configured"] is True                          # 用户确实配了
+    assert row["provider"] == "glm" and row["model"] == "glm-4-plus"
+    assert row["resolved_provider"] == "deepseek"             # 但实际回落
+    assert row["resolved_model"] == "deepseek-chat"

@@ -107,16 +107,25 @@ class LearnedRules:
     def count(self) -> int:
         return len(self.rules)
 
+    def match(self, f: dict) -> "LearnedRule | None":
+        """返回第一条命中的规则（support 降序），无命中返回 None。
+
+        供展示层解释"是哪条自学习规则改的档"（方案 08 §4.1）；判断口径与
+        `apply` 完全一致（同一条规则）。
+        """
+        for r in self.rules:
+            if r.matches(f):
+                return r
+        return None
+
     def apply(self, f: dict) -> int:
         """返回命中规则的 action（+1/-1/0=无命中）。只取第一条（最确信）。
 
         同一 features 可能命中多条规则，取 support 最高的一条，不叠加，
         保证单次最多偏移一档。
         """
-        for r in self.rules:
-            if r.matches(f):
-                return r.action
-        return 0
+        rule = self.match(f)
+        return rule.action if rule is not None else 0
 
     def to_dict(self) -> dict[str, Any]:
         return {"rules": [r.to_dict() for r in self.rules]}

@@ -23,6 +23,7 @@ class RuleDecision:
     tier_idx: int      # 0..3 = Basic..Ultimate
     score: float       # 加权总分（硬规则命中时为占位分数）
     hard_rule: bool    # 是否由硬规则直接决定（不参与分数竞争）
+    hard_reason: str = ""  # 命中的硬规则名（risk/arch/code/long/chatty）；仅用于展示（方案 08）
 
 
 def rule_score(f: dict) -> float:
@@ -44,17 +45,23 @@ def rule_score(f: dict) -> float:
 
 
 def rule_route(f: dict) -> RuleDecision:
-    """硬规则优先（不参与分数竞争），其余按总分映射分档。"""
+    """硬规则优先（不参与分数竞争），其余按总分映射分档。
+
+    `hard_reason` 只记录"哪条硬规则命中"，供界面解释依据（方案 08 §4.1）；
+    判定逻辑与放行顺序与以前完全一致。
+    """
     # 硬规则 1：有风险词 / 强架构 → 至少 Superior
     if f["num_risk_kw"] >= 1 or f["num_arch_kw"] >= 2:
-        return RuleDecision(2, rule_score(f), True)
+        reason = "risk" if f["num_risk_kw"] >= 1 else "arch"
+        return RuleDecision(2, rule_score(f), True, reason)
     # 硬规则 2：大量代码块 / 超长文本 → Ultimate
     if f["num_code_blocks"] >= 3 or f["len_chars"] > 12000:
-        return RuleDecision(3, rule_score(f), True)
+        reason = "code" if f["num_code_blocks"] >= 3 else "long"
+        return RuleDecision(3, rule_score(f), True, reason)
     # 硬规则 3：纯闲聊（无代码块、无教学/架构/风险词）→ Basic
     if (f["is_chatty"] and f["num_code_blocks"] == 0 and f["num_teach_kw"] == 0
             and f["num_arch_kw"] == 0 and f["num_risk_kw"] == 0):
-        return RuleDecision(0, rule_score(f), True)
+        return RuleDecision(0, rule_score(f), True, "chatty")
 
     # 软规则：按总分映射
     s = rule_score(f)
