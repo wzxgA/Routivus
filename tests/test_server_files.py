@@ -498,3 +498,117 @@ def test_existing_project_endpoints_still_work(tmp_path: Path) -> None:
     assert client.get(f"/api/projects/{project['id']}").status_code == 200
     response = client.post(f"/api/projects/{project['id']}/sessions", json={"title": "t"})
     assert response.status_code == 201
+
+
+# ==========================================================================
+# 11. 删除（不可逆，护栏比写入更严）
+# ==========================================================================
+
+
+def _delete(client: TestClient, project: dict, path: str, **params: object):
+    return client.delete(
+        f"/api/projects/{project['id']}/file", params={"path": path, **params}
+    )
+
+
+def test_delete_file_removes_it_and_writes_audit(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    target = _seed(project, "src/old.py", b"print(1)")
+
+    response = _delete(client, project, "src/old.py")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "path": "src/old.py",
+        "type": "file",
+        "deleted": True,
+        "recursive": False,
+    }
+    assert not target.exists()
+    # 父目录要留着：删文件不该顺手清目录
+    assert target.parent.is_dir()
+    audit = _root(project) / ".routivus" / "audit.log"
+    assert "file_delete" in audit.read_text(encoding="utf-8")
+
+
+def test_delete_empty_dir_needs_no_recursive_flag(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    ( _root(project) / "empty" ).mkdir()
+
+    response = _delete(client, project, "empty")
+
+    assert response.status_code == 200
+    assert not (_root(project) / "empty").exists()
+
+
+def test_delete_non_empty_dir_requires_recursive_flag(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    _seed(project, "pkg/deep/mod.py", b"x")
+
+    blocked = _delete(client, project, "pkg")
+    assert blocked.status_code == 409
+    assert _code(blocked) == "directory_not_empty"
+    assert (_root(project) / "pkg" / "deep" / "mod.py").exists()
+
+    forced = _delete(client, project, "pkg", recursive="true")
+    assert forced.status_code == 200
+    assert forced.json()["type"] == "dir"
+    assert forced.json()["recursive"] is True
+    assert not (_root(project) / "pkg").exists()
+
+
+def test_delete_rejects_root_ignored_protected_and_escape(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    _seed(project, "node_modules/pkg/index.js", b"x")
+    _seed(project, ".routivus/audit.log", b"{}\n")
+    _seed(project, "keep.txt", b"x")
+
+    root = _delete(client, project, "")
+    assert (root.status_code, _code(root)) == (422, "invalid_path")
+
+    ignored = _delete(client, project, "node_modules/pkg/index.js")
+    assert (ignored.status_code, _code(ignored)) == (422, "path_ignored")
+
+    protected = _delete(client, project, ".routivus/audit.log")
+    assert (protected.status_code, _code(protected)) == (422, "path_protected")
+
+    escape = _delete(client, project, "../outside.txt")
+    assert (escape.status_code, _code(escape)) == (422, "invalid_path")
+
+    missing = _delete(client, project, "nope.txt")
+    assert (missing.status_code, _code(missing)) == (404, "path_not_found")
+
+    assert (_root(project) / "keep.txt").exists()
+    assert (_root(project) / ".routivus" / "audit.log").exists()
+
+
+def test_delete_symlink_removes_link_only(tmp_path: Path) -> None:
+    """软链接只摘链接本身：按解析后的路径删会删掉目标、留下悬空链接。
+
+    目标故意用**目录**：Windows 无开发者模式时 `symlink_to` 起不来，而指向目录时
+    助手会退回 junction（不需要特权），这条用例才真的跑得起来。
+    """
+    client = _client(tmp_path)
+    project = _project(client)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("真实内容", encoding="utf-8")
+    link = _root(project) / "linked"
+    _symlink_or_skip(link, outside)
+
+    response = _delete(client, project, "linked")
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "link"
+    assert not link.is_symlink() and not link.exists()
+    # 目标目录与里面的文件必须原样还在
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "真实内容"
+
+
+def test_delete_unknown_project_is_404(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    assert client.delete("/api/projects/missing/file", params={"path": "a.txt"}).status_code == 404

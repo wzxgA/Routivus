@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import types
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -217,3 +218,76 @@ def test_websocket_token_authentication(tmp_path: Path) -> None:
         headers={"Authorization": "Bearer secret-token"},
     ) as socket:
         assert socket.receive_json()["type"] == "session.snapshot"
+
+
+# ==========================================================================
+# 会话删除
+# ==========================================================================
+
+
+def _new_session(client: TestClient, workspace: Path, title: str = "待删") -> tuple[dict, dict]:
+    """建一个项目 + 一个会话（每个用例各自一个 tmp_path，所以项目名可以固定）。"""
+    project = _project(client, workspace, "Alpha")
+    session = client.post(
+        f"/api/projects/{project['id']}/sessions", json={"title": title}
+    ).json()
+    return project, session
+
+
+def test_delete_session_cascades_messages_and_events(tmp_path: Path) -> None:
+    """删会话要把消息与事件一起清掉（外键级联），而不是留下孤儿数据。"""
+    client, workspace, _ = _app(tmp_path)
+    project, session = _new_session(client, workspace)
+    store = client.app.state.workspace_store
+    store.add_message(session["id"], "user", "hi")
+    store.append_event(session["id"], project["id"], "note.created", {"x": 1})
+    assert len(store.list_messages(session["id"])) == 1
+    assert store.count_events(session["id"], "note.created") == 1
+
+    response = client.delete(f"/api/sessions/{session['id']}")
+
+    assert response.status_code == 204
+    assert store.get_session(session["id"]) is None
+    assert store.list_messages(session["id"]) == []
+    assert store.count_events(session["id"], "note.created") == 0
+    assert store.list_sessions(project["id"]) == []
+    assert client.get(f"/api/sessions/{session['id']}").status_code == 404
+
+
+def test_delete_session_rejects_running_then_clears_memory_state(tmp_path: Path) -> None:
+    """运行中拒绝删除；删成功后顺手丢掉进程内状态（agent / 审批 / 审阅 / 路由器）。"""
+    client, workspace, _ = _app(tmp_path)
+    _, session = _new_session(client, workspace, "运行中")
+    app = client.app
+    app.state.running_tasks[session["id"]] = types.SimpleNamespace(done=lambda: False)
+
+    busy = client.delete(f"/api/sessions/{session['id']}")
+
+    assert busy.status_code == 409
+    assert busy.json()["error"]["code"] == "session_busy"
+    assert app.state.workspace_store.get_session(session["id"]) is not None
+
+    # 任务结束后可删；内存态也应当被清掉，否则这些字典会随删会话一直涨
+    app.state.running_tasks.pop(session["id"])
+    app.state.session_agents[session["id"]] = object()
+    app.state.session_approvals[session["id"]] = object()
+    app.state.session_reviews[session["id"]] = object()
+    app.state.session_resumable[session["id"]] = ("plan", object())
+    app.state.session_routers[session["id"]] = None
+
+    assert client.delete(f"/api/sessions/{session['id']}").status_code == 204
+    for store_name in (
+        "session_agents",
+        "session_approvals",
+        "session_reviews",
+        "session_resumable",
+        "session_routers",
+    ):
+        assert session["id"] not in getattr(app.state, store_name), store_name
+
+
+def test_delete_unknown_session_is_404(tmp_path: Path) -> None:
+    client, _, _ = _app(tmp_path)
+    response = client.delete("/api/sessions/missing")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "session_not_found"

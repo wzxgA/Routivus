@@ -80,6 +80,12 @@ export function useProjectWorkspace(
     }
   }, [projectId, loading, sessions, project])
 
+  // 列表里又有会话了就重新武装上面那个一次性守卫：否则"删掉最后一个会话"之后
+  // 它仍然是 true，会话视图会空着（连自动建首个会话的兜底都失效）。
+  useEffect(() => {
+    if (sessions.length > 0) autoCreated.current = false
+  }, [sessions])
+
   const refreshNotes = useCallback(
     async (query = '') => {
       if (!projectId) return
@@ -119,6 +125,9 @@ export function useProjectWorkspace(
       setSessions((current) => current.filter((s) => s.id !== targetId))
     } catch (err) {
       setError(describeError(err))
+      // 继续抛：删除不可逆，调用方（确认框）必须能把失败原因摆在用户眼前
+      // （例如 409 session_busy「会话正在运行」），不能只落在页面顶部的错误条里。
+      throw err
     }
   }, [])
 

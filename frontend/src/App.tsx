@@ -44,6 +44,7 @@ export function App() {
 
   const [renameTarget, setRenameTarget] = useState<Project | null>(null)
   const [removeTarget, setRemoveTarget] = useState<Project | null>(null)
+  const [sessionDeleteTarget, setSessionDeleteTarget] = useState<Session | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [filesOpen, setFilesOpen] = useState(false)
   const [hitl, setHitl] = useState<string | null>(null)
@@ -313,6 +314,7 @@ export function App() {
         onNewProject={() => setNewProjectOpen(true)}
         onSelectSession={handleSelectSession}
         onNewSession={() => void handleNewSession()}
+        onRequestDeleteSession={setSessionDeleteTarget}
         onSelectProjectNote={handleSelectProjectNote}
         onNewProjectNote={() => void handleNewProjectNote()}
         onGoHome={() => navigate(HOME)}
@@ -409,6 +411,24 @@ export function App() {
             await refresh()
             // 若当前正停留在被移除的项目里，退回首页，避免停留在悬空路由
             if (projectId === removedId) navigate(HOME)
+          }}
+        />
+      ) : null}
+
+      {sessionDeleteTarget ? (
+        <RemoveSessionModal
+          session={sessionDeleteTarget}
+          onClose={() => setSessionDeleteTarget(null)}
+          onConfirm={async () => {
+            const target = sessionDeleteTarget
+            await workspace.removeSession(target.id)
+            setSessionDeleteTarget(null)
+            // 删的正是地址栏里那个会话：换到列表里的下一个，别停在悬空路由上。
+            // 一个都不剩就置空 sessionId，由 App 的兜底（或 hook 的自动建首个会话）接管。
+            if (routeSessionId === target.id && projectId) {
+              const next = workspace.sessions.find((item) => item.id !== target.id)
+              navigate(projectRoute(projectId, 'chat', next?.id ?? null))
+            }
           }}
         />
       ) : null}
@@ -655,6 +675,72 @@ function RemoveProjectModal({
       <div className="ed-meta" style={{ marginTop: 6 }}>
         该项目的会话、消息与笔记仍保留在本地数据库中；重新添加同一路径即可恢复可见。
         若该项目仍有运行中的会话，服务端会拒绝移除（先停止会话）。
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * 删除会话的确认框（左侧会话列表右键触发）。
+ *
+ * 与「移除项目」的区别：那是摘注册、数据都留着；这里是**真删**——会话连同它的
+ * 消息与事件一起从 SQLite 里消失（外键级联），所以文案必须说清不可恢复。
+ */
+function RemoveSessionModal({
+  session,
+  onClose,
+  onConfirm,
+}: {
+  session: Session
+  onClose: () => void
+  onConfirm: () => Promise<void>
+}) {
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  async function submit() {
+    setError(null)
+    setSaving(true)
+    try {
+      await onConfirm()
+    } catch (err) {
+      setError(describeError(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      title={`删除会话：${session.title}`}
+      description="会话连同它的消息与事件一起从本地数据库删除，此操作不可撤销。"
+      onClose={onClose}
+      actions={
+        <>
+          <button type="button" className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="btn danger"
+            disabled={saving}
+            onClick={() => void submit()}
+          >
+            {saving ? '删除中…' : '删除'}
+          </button>
+        </>
+      }
+    >
+      {error ? (
+        <div className="banner error" style={{ margin: '0 0 10px' }}>
+          {error}
+        </div>
+      ) : null}
+      <div className="ed-meta">
+        状态：{session.status} · 累计 {session.total_tokens} tokens
+      </div>
+      <div className="ed-meta" style={{ marginTop: 6 }}>
+        正在运行的会话不能删除（服务端会拒绝），请先停止或取消当前任务。
       </div>
     </Modal>
   )

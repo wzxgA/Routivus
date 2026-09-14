@@ -1,15 +1,17 @@
-"""项目工作区文件的浏览与编辑（只读列举 + 受控写入）。
+"""项目工作区文件的浏览与编辑（只读列举 + 受控写入 + 受控删除）。
 
 完整设计与取舍见 plans/enhancement/04-workspace-files.md。这里的核心约束：
 
 - **路径**：一律 resolve 后校验落在项目根内，挡 `..` 与软链接逃逸——与
   `safety/guards.py` 同一标准，只是入口不同（REST 而非工具调用）
 - **忽略目录**：读复用 `tool/builtin.py` 的 `IGNORED_DIRS`；写额外一律拒绝
-  （往 node_modules / dist / .git 里写几乎总是误操作）
+  （往 node_modules / dist / .git 里写几乎总是误操作），删除同样拒绝
 - **三类护栏**：二进制不下发；有损解码（`lossy`）与截断（`truncated`）的文件
   **拒绝保存**——否则一次保存就把坏字节或半截内容写实了
 - **冲突**：内容 sha256 当版本号，不匹配就报冲突，绝不静默覆盖
 - **写入**：原子写（临时文件 + `os.replace`）、保留原换行符、落审计
+- **删除**：不可逆，所以另加三条——目录非空必须显式 `recursive`、软链接只摘链接
+  本身（不跟随删除目标）、`.routivus`（项目数据目录）整块保护（见 `delete_entry`）
 
 不引 FastAPI：本模块是纯函数 + 领域异常，由 `server/app.py` 负责翻译成 HTTP。
 """
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -476,3 +479,100 @@ def create_entry(root: Path, raw: str | None, kind: str) -> dict[str, Any]:
     if kind == "file":
         _audit(root, rel, b"", created=True, forced=False)
     return {"path": rel, "type": kind, "created": True}
+
+
+# ---------- 删除 ----------
+
+
+# 项目数据目录：删掉它等于把长期记忆（memory.db）、审计（audit.log）与项目级 Skill
+# 一起销毁。它不在 IGNORED_DIRS 里（列表要能看见它），所以删除时单独拦一道。
+PROTECTED_DIRS = {".routivus"}
+
+
+def _is_protected(rel: str) -> bool:
+    return any(part in PROTECTED_DIRS for part in rel.split("/") if part)
+
+
+def _unlink_link(path: Path) -> None:
+    """摘掉链接本身（不跟随目标）。
+
+    Windows 的 junction 只能用 `os.rmdir` 摘，普通软链接用 `os.unlink`；两者都只动
+    链接、不碰目标。Python 3.12 之前没有 `os.path.isjunction`，那时退化为 unlink，
+    失败会转成 403——宁可报错也不猜（猜错就是删到真东西）。
+    """
+    is_junction = getattr(os.path, "isjunction", None)
+    try:
+        if is_junction is not None and is_junction(path):
+            os.rmdir(path)
+        else:
+            os.unlink(path)
+    except OSError as exc:
+        raise WorkspaceFileError(403, "delete_failed", f"删除链接失败：{exc}") from exc
+
+
+def _audit_delete(root: Path, rel: str, kind: str, recursive: bool) -> None:
+    """删除不可逆，审计是唯一的痕迹：记路径、类型与是否递归。"""
+    AuditLogger(root / ".routivus" / "audit.log", session_id="ui-files").record(
+        "file_delete", path=rel, type=kind, recursive=recursive
+    )
+
+
+def delete_entry(root: Path, raw: str | None, *, recursive: bool = False) -> dict[str, Any]:
+    """删除项目内的文件或目录；不可逆，一律落审计。
+
+    与写入共用「路径必须落在根内」与「忽略目录」两道护栏，另有四条删除特有的：
+
+    1. **项目根不能删**（空路径直接拒）：否则一条请求就能把整个项目清空；
+    2. **`.routivus` 不能删**：那是本项目的数据目录（记忆 / 审计 / 项目级 Skill）；
+    3. **软链接只摘链接本身**：`resolve_in_root` 会把链接解析到目标，直接删会删掉
+       目标却留下悬空链接，所以这里只对**父目录**做解析校验，最后一段保持原样，
+       再按 `_is_link` 判定；
+    4. **目录要显式递归**：非空目录不给 `recursive` 就报 409，避免"点错一次删掉
+       整棵树"。
+    """
+    rel = normalize_rel(raw)
+    if not rel:
+        raise WorkspaceFileError(422, "invalid_path", "不能删除项目根")
+    _require_writable(rel)
+    if _is_protected(rel):
+        raise WorkspaceFileError(422, "path_protected", f"不允许删除项目数据目录（{rel}）")
+
+    parent_rel = rel.rsplit("/", 1)[0] if "/" in rel else ""
+    parent = resolve_in_root(root, parent_rel)  # 父目录照常校验（含软链接逃逸）
+    target = parent / rel.rsplit("/", 1)[-1]
+
+    link = _is_link(target)
+    if not link and not target.exists():
+        raise WorkspaceFileError(404, "path_not_found", "文件或目录不存在")
+
+    if link:
+        # 悬空链接也能删（exists() 为 False 时正是它最该被清掉）
+        _unlink_link(target)
+        kind = "link"
+    elif target.is_dir():
+        if not recursive:
+            try:
+                empty = next(target.iterdir(), None) is None
+            except OSError as exc:
+                raise WorkspaceFileError(403, "delete_failed", f"目录不可读：{exc}") from exc
+            if not empty:
+                raise WorkspaceFileError(
+                    409, "directory_not_empty", "目录非空，需要显式确认递归删除"
+                )
+        try:
+            # rmtree 不跟随软链接：树里的软链接是被摘掉，而不是删到它指向的东西
+            shutil.rmtree(target)
+        except OSError as exc:
+            raise WorkspaceFileError(403, "delete_failed", f"删除失败：{exc}") from exc
+        kind = "dir"
+    elif target.is_file():
+        try:
+            target.unlink()
+        except OSError as exc:
+            raise WorkspaceFileError(403, "delete_failed", f"删除失败：{exc}") from exc
+        kind = "file"
+    else:
+        raise WorkspaceFileError(422, "not_deletable", "只能删除文件或目录")
+
+    _audit_delete(root, rel, kind, recursive)
+    return {"path": rel, "type": kind, "deleted": True, "recursive": recursive}

@@ -2,6 +2,8 @@ import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'reac
 import * as api from '../../api'
 import type { FileEntry } from '../../api/types'
 import { describeError } from '../../state/errors'
+import { ContextMenu } from '../common/ContextMenu'
+import { useContextMenu } from '../common/useContextMenu'
 
 const ROOT = ''
 
@@ -14,6 +16,11 @@ interface FileTreeProps {
   refreshKey?: number
   /** 抽屉里用更紧凑的行高。 */
   compact?: boolean
+  /**
+   * 右键「删除」：由上层弹确认框后真正执行。**不传就没有右键菜单**——聊天页的
+   * 文件抽屉是只读设计，删除能力只给整页文件视图。
+   */
+  onRequestDelete?: (entry: FileEntry) => void
 }
 
 /**
@@ -28,12 +35,15 @@ export function FileTree({
   onOpenFile,
   refreshKey = 0,
   compact = false,
+  onRequestDelete,
 }: FileTreeProps) {
   const [children, setChildren] = useState<Record<string, FileEntry[]>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({ [ROOT]: true })
   const [loading, setLoading] = useState<Record<string, boolean>>({})
   const [error, setError] = useState<Record<string, string>>({})
   const [includeIgnored, setIncludeIgnored] = useState(false)
+  const entryMenu = useContextMenu<FileEntry>()
+  const openEntryMenu = entryMenu.menu
 
   const load = useCallback(
     async (path: string, withIgnored: boolean) => {
@@ -92,6 +102,9 @@ export function FileTree({
             style={{ paddingLeft: indent }}
             title={entry.path}
             onClick={() => (isDir ? toggle(entry) : onOpenFile(entry.path))}
+            onContextMenu={
+              onRequestDelete ? (event) => entryMenu.open(entry, event) : undefined
+            }
           >
             <span className="ft-caret">{isDir ? (open ? '▾' : '▸') : ''}</span>
             <span className="ft-name">{entry.name}</span>
@@ -138,6 +151,22 @@ export function FileTree({
         {children[ROOT]?.length === 0 ? <div className="ft-note">空目录</div> : null}
         {renderLevel(ROOT, 0)}
       </div>
+
+      {onRequestDelete && openEntryMenu ? (
+        <ContextMenu
+          x={openEntryMenu.x}
+          y={openEntryMenu.y}
+          onClose={entryMenu.close}
+          items={[
+            {
+              key: 'delete-entry',
+              label: openEntryMenu.target.type === 'dir' ? '删除目录…' : '删除文件…',
+              danger: true,
+              onSelect: () => onRequestDelete(openEntryMenu.target),
+            },
+          ]}
+        />
+      ) : null}
     </div>
   )
 }

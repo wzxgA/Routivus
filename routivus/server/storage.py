@@ -315,6 +315,19 @@ class WorkspaceStore:
             )
         return record
 
+    def delete_session(self, session_id: str) -> bool:
+        """删除会话；消息 / 事件 / 幂等表由外键级联清掉。
+
+        连接里已经 `PRAGMA foreign_keys=ON`，而 messages、events、processed_requests
+        三张表都是 `REFERENCES sessions(id) ON DELETE CASCADE`，所以删这一行就够了。
+        不在这里逐表 DELETE：漏掉一张表就会留下查不到、也删不掉的孤儿数据。
+
+        返回是否真的删到了行（调用方据此区分 404）。**不检查是否在运行**——那是
+        app 层的职责（它才看得见内存里的任务表）。
+        """
+        with self._lock, self._connect() as conn:
+            return conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,)).rowcount > 0
+
     def count_sessions(self, project_id: str) -> int:
         with self._lock, self._connect() as conn:
             return int(conn.execute("SELECT count(*) FROM sessions WHERE project_id = ?", (project_id,)).fetchone()[0])
@@ -427,8 +440,6 @@ class WorkspaceStore:
             except sqlite3.OperationalError:
                 records = self.list_card_events(session_id, ("tool.completed",), limit=1000)
                 return sum(1 for item in records if not bool(item.data.get("ok", False)))
-        with self._lock, self._connect() as conn:
-            return conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,)).rowcount > 0
 
     def latest_session(self, project_id: str) -> SessionRecord | None:
         records = self.list_sessions(project_id, limit=1)

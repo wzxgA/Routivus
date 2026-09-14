@@ -39,6 +39,7 @@ from routivus.server.config import ServerConfig
 from routivus.server.files import (
     WorkspaceFileError,
     create_entry,
+    delete_entry,
     list_entries,
     read_image,
     read_text_file,
@@ -848,8 +849,29 @@ def create_app(
 
     @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_session(session_id: str) -> Response:
+        """删除会话（连同它的消息与事件，级联在 storage 层）。
+
+        运行中的会话拒绝删除，判定以**内存任务表**为准（与「移除项目」一致：库里
+        的 running 可能是服务重启后留下的陈旧状态）。不拦的话有两个后果：那一轮还会
+        继续往已删会话写消息与事件（外键约束会让它抛 KeyError），以及挂起的审批
+        Future 永远没人应答。审批只有在一轮运行中才可能存在，所以 busy 判定就是它
+        的保护，这里不需要再去 cancel_pending。
+
+        删除后顺手丢掉这个会话的进程内状态：agent / 审批桥 / 计划审阅 / 可续跑执行器
+        / 路由器。不清的话这些字典会随着删会话一直涨，而且被删会话的 agent 还可能被
+        后续连接复用。
+        """
         require_session(session_id)
-        workspace_store.delete_session(session_id)
+        task = running_tasks.get(session_id)
+        if task is not None and not task.done():
+            raise ApiError(409, "session_busy", "会话正在运行，请先停止后再删除")
+        if not workspace_store.delete_session(session_id):
+            raise ApiError(404, "session_not_found", "会话不存在")
+        session_agents.pop(session_id, None)
+        session_approvals.pop(session_id, None)
+        session_reviews.pop(session_id, None)
+        session_resumable.pop(session_id, None)
+        session_routers.pop(session_id, None)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @router.get("/sessions/{session_id}/messages", response_model=list[MessageResponse])
@@ -1093,6 +1115,19 @@ def create_app(
         """新建文件或目录（父目录必须已存在）。"""
         project = require_project(project_id)
         return create_entry(Path(project.root_path), payload.path, payload.kind)
+
+    @router.delete("/projects/{project_id}/file")
+    async def delete_project_file(
+        project_id: str, path: str, recursive: bool = False
+    ) -> dict[str, Any]:
+        """删除项目内的文件或目录（不可逆，落审计）。
+
+        `recursive` 必须显式声明：目录非空时不给它就报 409，避免"右键点错就把整棵树
+        删掉"。路径越界、忽略目录（含 .git）与项目数据目录（.routivus）都会被拒，
+        见 `files.delete_entry`。
+        """
+        project = require_project(project_id)
+        return delete_entry(Path(project.root_path), path, recursive=recursive)
 
     # ---------- Web Console 配置接口 ----------
     # 桌面端与 Web 端共用。没有这组接口，用户就只能靠 REPL / CLI 配 provider，

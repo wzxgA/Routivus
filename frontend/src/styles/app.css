@@ -3150,6 +3150,43 @@ button {
   text-decoration: underline;
 }
 
+/* ---- 右键菜单（会话列表 / 文件树共用）----
+   位置由 JS 给（鼠标坐标 + 贴边回拉），这里只管长相。 */
+.ctx-menu {
+  position: fixed;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 140px;
+  padding: 4px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 26px rgba(60, 54, 40, 0.16);
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--text);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ctx-item:hover {
+  background: var(--beige);
+}
+.ctx-item.danger {
+  color: var(--danger);
+}
+
 /* ---- 模态 ---- */
 .modal-backdrop {
   position: absolute;

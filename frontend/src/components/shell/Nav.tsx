@@ -1,6 +1,8 @@
 import type { Note, Project, Session } from '../../api/types'
 import type { Route } from '../../router'
 import { formatRelative, truncate } from '../../utils/format'
+import { ContextMenu } from '../common/ContextMenu'
+import { useContextMenu } from '../common/useContextMenu'
 
 interface NavProps {
   route: Route
@@ -14,6 +16,8 @@ interface NavProps {
   onNewProject: () => void
   onSelectSession: (sessionId: string) => void
   onNewSession: () => void
+  /** 右键「删除会话」：由上层弹确认框后真正执行（删除是不可逆的）。 */
+  onRequestDeleteSession: (session: Session) => void
   onSelectProjectNote: (noteId: string) => void
   onNewProjectNote: () => void
   onGoHome: () => void
@@ -35,6 +39,7 @@ export function Nav({
   onNewProject,
   onSelectSession,
   onNewSession,
+  onRequestDeleteSession,
   onSelectProjectNote,
   onNewProjectNote,
   onGoHome,
@@ -45,6 +50,9 @@ export function Nav({
 }: NavProps) {
   const inProject = route.kind === 'project'
   const activeProjectId = route.kind === 'project' ? route.projectId : ''
+  const sessionMenu = useContextMenu<Session>()
+  // 存成局部常量：闭包里才能保住类型收窄（属性访问的收窄进不了回调）
+  const openSessionMenu = sessionMenu.menu
 
   return (
     <nav className="nav">
@@ -92,6 +100,7 @@ export function Nav({
                     key={session.id}
                     className={`sess-item${active ? ' active' : ''}`}
                     onClick={() => onSelectSession(session.id)}
+                    onContextMenu={(event) => sessionMenu.open(session, event)}
                   >
                     <div className="sess-top">
                       <span className="sess-name">{session.title}</span>
@@ -204,6 +213,22 @@ export function Nav({
           </div>
         </div>
       )}
+
+      {openSessionMenu ? (
+        <ContextMenu
+          x={openSessionMenu.x}
+          y={openSessionMenu.y}
+          onClose={sessionMenu.close}
+          items={[
+            {
+              key: 'delete-session',
+              label: '删除会话',
+              danger: true,
+              onSelect: () => onRequestDeleteSession(openSessionMenu.target),
+            },
+          ]}
+        />
+      ) : null}
 
       <div className="nav-ver">Web Console v0.1.0</div>
     </nav>

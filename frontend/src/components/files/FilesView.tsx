@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as api from '../../api'
-import type { FileContent } from '../../api/types'
+import type { FileContent, FileEntry } from '../../api/types'
 import { describeError } from '../../state/errors'
 import { Empty } from '../common/Empty'
+import { Modal } from '../common/Modal'
 import { FileEditor } from './FileEditor'
 import { FilePreview } from './FilePreview'
 import { FileTree } from './FileTree'
@@ -28,6 +29,11 @@ export function FilesView({ projectId, projectName, projectPath }: FilesViewProp
   const [creating, setCreating] = useState<'file' | 'dir' | null>(null)
   const [newPath, setNewPath] = useState('')
   const [createError, setCreateError] = useState('')
+  // 删除：右键菜单只负责选中目标，真正的执行走确认框（不可逆操作不省这一步）
+  const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null)
+  const [recursive, setRecursive] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+  const [deleting, setDeleting] = useState(false)
 
   const open = useCallback(
     async (path: string) => {
@@ -73,6 +79,30 @@ export function FilesView({ projectId, projectName, projectPath }: FilesViewProp
       if (kind === 'file') void open(path)
     } catch (caught) {
       setCreateError(describeError(caught))
+    }
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
+    const target = deleteTarget
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      await api.deleteProjectEntry(projectId, { path: target.path, recursive })
+      // 删目录时，当前打开的文件可能正是它里面的某个文件：一起清掉，别留个
+      // 指向已消失路径的编辑框（保存时才报错就太晚了）。
+      const current = selected ?? ''
+      if (current === target.path || current.startsWith(`${target.path}/`)) {
+        setSelected(null)
+        setFile(null)
+        setError('')
+      }
+      setDeleteTarget(null)
+      setTreeKey((value) => value + 1)
+    } catch (caught) {
+      setDeleteError(describeError(caught))
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -146,6 +176,11 @@ export function FilesView({ projectId, projectName, projectPath }: FilesViewProp
           activePath={selected}
           onOpenFile={(path) => void open(path)}
           refreshKey={treeKey}
+          onRequestDelete={(entry) => {
+            setDeleteError('')
+            setRecursive(false)
+            setDeleteTarget(entry)
+          }}
         />
 
         <div className="files-pane">
@@ -190,6 +225,59 @@ export function FilesView({ projectId, projectName, projectPath }: FilesViewProp
           ) : null}
         </div>
       </div>
+
+      {deleteTarget ? (
+        <Modal
+          title={`删除：${deleteTarget.path}`}
+          description={
+            deleteTarget.type === 'dir'
+              ? '删除不可恢复。空目录可以直接删；非空目录需要勾选下面的递归选项。'
+              : '删除不可恢复。每次删除都会记入 .routivus/audit.log。'
+          }
+          onClose={() => setDeleteTarget(null)}
+          actions={
+            <>
+              <button type="button" className="btn" onClick={() => setDeleteTarget(null)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn danger"
+                disabled={deleting}
+                onClick={() => void confirmDelete()}
+              >
+                {deleting ? '删除中…' : '删除'}
+              </button>
+            </>
+          }
+        >
+          {deleteError ? (
+            <div className="banner error" style={{ margin: '0 0 10px' }}>
+              {deleteError}
+            </div>
+          ) : null}
+          {deleteTarget.symlink ? (
+            <div className="ed-meta">
+              这是一个链接：只会移除链接本身，它指向的内容不会被删除。
+            </div>
+          ) : null}
+          {deleteTarget.type === 'dir' ? (
+            <label className="ed-meta" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={recursive}
+                onChange={(event) => setRecursive(event.target.checked)}
+              />
+              递归删除目录内的全部内容
+            </label>
+          ) : null}
+          {deleteTarget.ignored || deleteTarget.outside ? (
+            <div className="hint" style={{ marginTop: 6 }}>
+              该条目位于被忽略的目录里、或指向项目根之外，服务端可能拒绝删除并给出原因。
+            </div>
+          ) : null}
+        </Modal>
+      ) : null}
     </section>
   )
 }

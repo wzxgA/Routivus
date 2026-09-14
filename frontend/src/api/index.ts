@@ -124,6 +124,25 @@ export const createProjectEntry = (
     { method: 'POST', body: payload },
   )
 
+/**
+ * 删除文件或目录（不可逆，服务端落审计）。
+ *
+ * 目录非空时必须显式传 `recursive`，否则服务端回 409 `directory_not_empty` —— 这是
+ * 有意设计的"第二次确认"，避免手滑删掉整棵树。项目根、忽略目录（含 .git）与项目
+ * 数据目录（.routivus）会被拒（422）。
+ */
+export const deleteProjectEntry = (
+  projectId: string,
+  payload: { path: string; recursive?: boolean },
+) =>
+  request<{ path: string; type: string; deleted: boolean; recursive: boolean }>(
+    fileApiPath(projectId),
+    {
+      method: 'DELETE',
+      query: { path: payload.path, recursive: payload.recursive ? '1' : '' },
+    },
+  )
+
 /** 图片原始字节地址（`<img src>` 无法带 Authorization 头，走查询参数令牌）。 */
 export const projectFileRawUrl = (projectId: string, path: string) =>
   authedUrl(`${fileApiPath(projectId)}/raw?path=${encodeURIComponent(path)}`)
