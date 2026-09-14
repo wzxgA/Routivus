@@ -286,41 +286,6 @@ export function ConfigView({ config, loading, error, onReload }: ConfigViewProps
       </div>
 
       <div className="big-card">
-        <div className="card-name">安全策略</div>
-        <div className="card-desc">审批与策略层由服务端强制，客户端无法绕过</div>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>项</th>
-              <th>行为</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>HITL 审批</td>
-              <td>默认 `execute_command` 必审、`write_file` 确认；由会话 WebSocket 推送审批卡</td>
-            </tr>
-            <tr>
-              <td>路径 / 命令策略</td>
-              <td>`PathGuard`（含 symlink 与 cwd 越界）与 `CommandGuard` 直接拒绝，不可被审批放行绕过</td>
-            </tr>
-            <tr>
-              <td>访问令牌</td>
-              <td>配置后 REST 与 WebSocket 都需要 Bearer Token；`/healthz` 与静态资源免鉴权</td>
-            </tr>
-            <tr>
-              <td>终端通道</td>
-              <td>服务端绑定项目根目录启动；需配置 Token 或 Origin，否则端点直接拒绝</td>
-            </tr>
-            <tr>
-              <td>审计</td>
-              <td>工具调用、审批、终端命令写入项目 `.routivus/audit.log`（敏感字段脱敏）</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div className="big-card">
         <div className="card-name">数据目录</div>
         <table className="table">
           <tbody>
