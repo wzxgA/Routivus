@@ -7,6 +7,7 @@ import { routerChipLabel } from '../../utils/routerNotes'
 import type { ConnState } from '../../ws/sessionSocket'
 import { ThemeToggle } from '../common/ThemeToggle'
 import { RouterPopover } from './RouterPopover'
+import { Toolbar, type ToolbarItem } from './Toolbar'
 
 interface TopBarProps {
   route: Route
@@ -102,6 +103,8 @@ export function TopBar({
   }, [routerOpen])
 
   const inProject = route.kind === 'project'
+  // `view` 只存在于 project 变体上；抽出来是为了在 JSX 里保持类型收窄
+  const projectView = route.kind === 'project' ? route.view : 'chat'
   const usageRatio =
     liveSession && contextWindow > 0
       ? Math.min(1, liveSession.total_tokens / contextWindow)
@@ -126,178 +129,216 @@ export function TopBar({
       ? [currentModel]
       : []
 
-  return (
-    <header className="topbar">
-      {inProject ? (
-        <>
-          <div className="proj-crumb">
-            <b>{project?.name ?? '项目'}</b>
-            <span className="crumb-path" title={project?.root_path}>
-              {project?.root_path ?? ''}
-            </span>
-          </div>
-          <div className="vtabs">
-            <button
-              type="button"
-              className={`vtab${route.view === 'chat' ? ' active' : ''}`}
-              onClick={onGoChat}
-            >
-              会话
-            </button>
-            <button
-              type="button"
-              className={`vtab${route.view === 'notes' ? ' active' : ''}`}
-              onClick={onGoProjectNotes}
-            >
-              笔记
-              {projectNotesCount > 0 ? ` ${projectNotesCount}` : ''}
-            </button>
-            <button
-              type="button"
-              className={`vtab${route.view === 'files' ? ' active' : ''}`}
-              onClick={onGoProjectFiles}
-            >
-              文件
-            </button>
-          </div>
+  const projectCrumb = (
+    <div className="proj-crumb">
+      <b>{project?.name ?? '项目'}</b>
+      <span className="crumb-path" title={project?.root_path}>
+        {project?.root_path ?? ''}
+      </span>
+    </div>
+  )
+
+  const projectTabs = (
+    <div className="vtabs">
+      <button
+        type="button"
+        className={`vtab${projectView === 'chat' ? ' active' : ''}`}
+        onClick={onGoChat}
+      >
+        会话
+      </button>
+      <button
+        type="button"
+        className={`vtab${projectView === 'notes' ? ' active' : ''}`}
+        onClick={onGoProjectNotes}
+      >
+        笔记
+        {projectNotesCount > 0 ? ` ${projectNotesCount}` : ''}
+      </button>
+      <button
+        type="button"
+        className={`vtab${projectView === 'files' ? ' active' : ''}`}
+        onClick={onGoProjectFiles}
+      >
+        文件
+      </button>
+    </div>
+  )
+
+  const globalTabs = (
+    <div className="vtabs">
+      <button
+        type="button"
+        className={`vtab${route.kind === 'home' ? ' active' : ''}`}
+        onClick={onGoHome}
+      >
+        首页
+      </button>
+      <button
+        type="button"
+        className={`vtab${route.kind === 'notes' ? ' active' : ''}`}
+        onClick={onGoNotes}
+      >
+        笔记
+      </button>
+      <button
+        type="button"
+        className={`vtab${route.kind === 'config' ? ' active' : ''}`}
+        onClick={onGoConfig}
+      >
+        配置
+      </button>
+    </div>
+  )
+
+  const terminalToggle = (
+    <button
+      type="button"
+      className={`term-toggle${terminalOpen ? ' on' : ''}`}
+      onClick={onToggleTerminal}
+      title="折叠 / 展开终端（Ctrl+`）"
+    >
+      <span className="term-ic">&gt;_</span>终端
+    </button>
+  )
+
+  const filesToggle =
+    projectView === 'chat' ? (
+      <button
+        type="button"
+        className={`term-toggle${filesOpen ? ' on' : ''}`}
+        onClick={onToggleFiles}
+        title="折叠 / 展开项目文件抽屉（Ctrl+Shift+E）"
+      >
+        <span className="term-ic">▤</span>文件
+      </button>
+    ) : null
+
+  const statusChips = (
+    <div className="chips">
+      {status === 'running' || status === 'waiting_approval' ? (
+        <span className="chip">
+          <span className="dot" />
+          {STATUS_TEXT[status]}
+        </span>
+      ) : (
+        <span className="chip">{STATUS_TEXT[status] ?? status}</span>
+      )}
+      <span className="chip" title="上下文使用率">
+        Context <span className="num">{(usageRatio * 100).toFixed(1)}%</span>
+      </span>
+      <span className="chip hitl" title="HITL 由服务端托管">
+        {hitl ? 'HITL ON' : 'HITL —'}
+      </span>
+      {router?.enabled ? (
+        <div className="router-chip-wrap" ref={routerRef}>
           <button
             type="button"
-            className={`term-toggle${terminalOpen ? ' on' : ''}`}
-            onClick={onToggleTerminal}
-            title="折叠 / 展开终端（Ctrl+`）"
+            className={`chip router${router.error ? ' warn' : ''}`}
+            onClick={() => setRouterOpen((open) => !open)}
+            title={
+              router.error ||
+              `智能路由：普通对话轮按复杂度自动换档${
+                router.tier ? `，本轮 ${router.tier}` : ''
+              }${router.configured === false ? '（该档未显式配置，回落 active 模型）' : ''} — 点击查看依据`
+            }
           >
-            <span className="term-ic">&gt;_</span>终端
+            {routerChipLabel(router)}
           </button>
-          {route.view === 'chat' ? (
-            <button
-              type="button"
-              className={`term-toggle${filesOpen ? ' on' : ''}`}
-              onClick={onToggleFiles}
-              title="折叠 / 展开项目文件抽屉（Ctrl+Shift+E）"
-            >
-              <span className="term-ic">▤</span>文件
-            </button>
-          ) : null}
-          <div className="chips">
-            {status === 'running' || status === 'waiting_approval' ? (
-              <span className="chip">
-                <span className="dot" />
-                {STATUS_TEXT[status]}
-              </span>
-            ) : (
-              <span className="chip">{STATUS_TEXT[status] ?? status}</span>
-            )}
-            <span className="chip" title="上下文使用率">
-              Context <span className="num">{(usageRatio * 100).toFixed(1)}%</span>
-            </span>
-            <span className="chip hitl" title="HITL 由服务端托管">
-              {hitl ? 'HITL ON' : 'HITL —'}
-            </span>
-            {router?.enabled ? (
-              <div className="router-chip-wrap" ref={routerRef}>
-                <button
-                  type="button"
-                  className={`chip router${router.error ? ' warn' : ''}`}
-                  onClick={() => setRouterOpen((open) => !open)}
-                  title={
-                    router.error ||
-                    `智能路由：普通对话轮按复杂度自动换档${
-                      router.tier ? `，本轮 ${router.tier}` : ''
-                    }${router.configured === false ? '（该档未显式配置，回落 active 模型）' : ''} — 点击查看依据`
-                  }
-                >
-                  {routerChipLabel(router)}
-                </button>
-                {routerOpen ? (
-                  <RouterPopover router={router} tiers={config?.tiers ?? []} />
-                ) : null}
-              </div>
-            ) : null}
+          {routerOpen ? <RouterPopover router={router} tiers={config?.tiers ?? []} /> : null}
+        </div>
+      ) : null}
+    </div>
+  )
+
+  const modelPicker = (
+    <div className={`model${modelOpen ? ' open' : ''}`} ref={modelRef}>
+      <button
+        type="button"
+        className="model-btn"
+        onClick={() => {
+          setSwitchError(null)
+          setModelOpen((open) => !open)
+        }}
+      >
+        <span className="model-name">{currentModel || '未配置模型'}</span>
+        <span className="model-provider">{activeProvider}</span>
+        <span className="model-caret">▼</span>
+      </button>
+      <div className="pop">
+        <div className="pop-title">运行模型</div>
+        {availableModels.length === 0 ? (
+          <div className="hint" style={{ margin: '6px 4px 2px' }}>
+            尚未配置 provider，请先到「配置」页添加。
           </div>
-          <ConnectionBadge state={connection} />
-          <div className={`model${modelOpen ? ' open' : ''}`} ref={modelRef}>
+        ) : (
+          availableModels.map((model) => (
             <button
               type="button"
-              className="model-btn"
-              onClick={() => {
+              key={model}
+              className="pop-item"
+              disabled={model === currentModel}
+              onClick={async () => {
                 setSwitchError(null)
-                setModelOpen((open) => !open)
+                try {
+                  await onSwitchModel(activeProvider, model)
+                  setModelOpen(false)
+                } catch (err) {
+                  setSwitchError(describeError(err))
+                }
               }}
             >
-              <span className="model-name">{currentModel || '未配置模型'}</span>
-              <span className="model-provider">{activeProvider}</span>
-              <span className="model-caret">▼</span>
+              <span className="m">{model}</span>
+              <span className="v">{model === currentModel ? '当前' : activeProvider}</span>
             </button>
-            <div className="pop">
-              <div className="pop-title">运行模型</div>
-              {availableModels.length === 0 ? (
-                <div className="hint" style={{ margin: '6px 4px 2px' }}>
-                  尚未配置 provider，请先到「配置」页添加。
-                </div>
-              ) : (
-                availableModels.map((model) => (
-                  <button
-                    type="button"
-                    key={model}
-                    className="pop-item"
-                    disabled={model === currentModel}
-                    onClick={async () => {
-                      setSwitchError(null)
-                      try {
-                        await onSwitchModel(activeProvider, model)
-                        setModelOpen(false)
-                      } catch (err) {
-                        setSwitchError(describeError(err))
-                      }
-                    }}
-                  >
-                    <span className="m">{model}</span>
-                    <span className="v">{model === currentModel ? '当前' : activeProvider}</span>
-                  </button>
-                ))
-              )}
-              {switchError ? (
-                <div className="hint" style={{ margin: '6px 4px 2px', color: 'var(--accent)' }}>
-                  {switchError}
-                </div>
-              ) : null}
-              <div className="hint" style={{ margin: '6px 4px 2px' }}>
-                切换的是全局默认模型；会话会复用已建立的 Agent，需新建会话后才生效。
-              </div>
-            </div>
+          ))
+        )}
+        {switchError ? (
+          <div className="hint" style={{ margin: '6px 4px 2px', color: 'var(--accent)' }}>
+            {switchError}
           </div>
-        </>
-      ) : (
-        <>
-          <div className="vtabs">
-            <button
-              type="button"
-              className={`vtab${route.kind === 'home' ? ' active' : ''}`}
-              onClick={onGoHome}
-            >
-              首页
-            </button>
-            <button
-              type="button"
-              className={`vtab${route.kind === 'notes' ? ' active' : ''}`}
-              onClick={onGoNotes}
-            >
-              笔记
-            </button>
-            <button
-              type="button"
-              className={`vtab${route.kind === 'config' ? ' active' : ''}`}
-              onClick={onGoConfig}
-            >
-              配置
-            </button>
-          </div>
-        </>
-      )}
+        ) : null}
+        <div className="hint" style={{ margin: '6px 4px 2px' }}>
+          切换的是全局默认模型；会话会复用已建立的 Agent，需新建会话后才生效。
+        </div>
+      </div>
+    </div>
+  )
 
-      {/* 项目态下模型选择器自带 margin-left:auto，无需再补占位，避免出现双段空白 */}
-      {inProject ? null : <div style={{ marginLeft: 'auto' }} />}
-      <ThemeToggle theme={theme} onToggle={onToggleTheme} />
+  const themeToggle = <ThemeToggle theme={theme} onToggle={onToggleTheme} />
+  // 连接正常时不渲染徽标：空槽位也会吃掉一个 gap，不如整块不参与排布
+  const showConnBadge = connection !== 'connected' && connection !== 'connecting'
+
+  /**
+   * 顶栏区块与优先级。数字越大越重要、越晚被收进「更多」；排序按"撤掉它损失多大"：
+   * 外观开关 > 导航页签 > 当前模型 > 断线提示 > 状态组 > 终端 / 文件开关。
+   *
+   * 终端与文件开关排最后，是因为它们与页签（文件）、快捷键（Ctrl+`、Ctrl+Shift+E）
+   * 语义重复，窄窗口下最先让位代价最小。新增区块只需往这个数组里加一项并给个优先级。
+   */
+  const items: ToolbarItem[] = inProject
+    ? [
+        { key: 'crumb', priority: 100, flexible: true, node: projectCrumb },
+        { key: 'tabs', priority: 90, stretch: true, node: projectTabs },
+        { key: 'terminal', priority: 55, node: terminalToggle },
+        ...(filesToggle ? [{ key: 'files', priority: 50, node: filesToggle }] : []),
+        { key: 'chips', priority: 70, node: statusChips },
+        ...(showConnBadge
+          ? [{ key: 'conn', priority: 75, node: <ConnectionBadge state={connection} /> }]
+          : []),
+        { spacer: true },
+        { key: 'model', priority: 85, node: modelPicker },
+        { key: 'theme', priority: 200, node: themeToggle },
+      ]
+    : [
+        { key: 'tabs', priority: 90, stretch: true, node: globalTabs },
+        { spacer: true },
+        { key: 'theme', priority: 200, node: themeToggle },
+      ]
+
+  return (
+    <header className="topbar">
+      <Toolbar items={items} />
     </header>
   )
 }

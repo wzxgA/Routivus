@@ -480,11 +480,13 @@ button {
   min-width: 0;
 }
 
+/* 顶栏工具条（方案 11）：区块层级的排布交给 `Toolbar` 组件（按优先级收纳），
+   这里只定"容器行为"——放不下时允许换行。兜底是"多占一行"，绝不出现互相压字。 */
 .topbar {
-  flex: 0 0 46px;
+  flex: 0 0 auto; /* 原来是 0 0 46px：换行后要能长高，定高会把内容裁掉 */
+  min-height: 46px;
   display: flex;
-  align-items: center;
-  gap: 14px;
+  align-items: stretch;
   padding: 0 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
@@ -493,8 +495,7 @@ button {
 .vtabs {
   display: flex;
   gap: 4px;
-  height: 100%;
-  align-self: flex-end;
+  height: 100%; /* 配合 .tb-slot-stretch，页签下划线仍贴着顶栏底边 */
 }
 .vtab {
   background: none;
@@ -505,6 +506,7 @@ button {
   padding: 0 13px;
   cursor: pointer;
   position: relative;
+  white-space: nowrap; /* 汉字不再逐字换行把整条顶栏撑高 */
   transition: color var(--dur) var(--ease);
 }
 .vtab:hover {
@@ -523,6 +525,135 @@ button {
   height: 2px;
   background: var(--accent);
   border-radius: 1px;
+}
+
+/* ---- 工具条契约（方案 11 §4.1）----
+   进顶栏的每一块都必须显式声明自己的行为，二选一：
+   刚性（不缩、不换行、放不下就进「更多」）或可压缩（缩到窄，靠 .tb-trunc 出省略号）。
+   吃默认值（flex-shrink:1 / min-width:auto / overflow:visible）就必然出现压字。 */
+.tb {
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap; /* 兜底：JS 没跑或实在放不下时换行，不重叠 */
+  column-gap: 14px;
+  row-gap: 6px;
+}
+.tb-slot {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+/* 撑满高度（页签下划线要对齐顶栏底边用） */
+.tb-slot-stretch {
+  align-self: stretch;
+  align-items: stretch;
+}
+/* 可压缩槽位：能缩到比内容窄，省略号交给内部 .tb-trunc；常驻，不收纳 */
+.tb-slot-flex {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* 可压缩文本：min-width:0 与 overflow:hidden 必须成对出现，缺后者就是"框压扁、文字照画" */
+.tb-trunc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 弹性占位：把右侧分组推到最右；空间不够时先归零 */
+.tb-spacer {
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* 装不下的区块收进「更多」下拉 */
+.tb-more {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.tb-more-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.tb-more-btn:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.tb-more-btn.open {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.tb-more-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+}
+.tb-more-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: max-content;
+  min-width: 180px;
+  max-width: 92vw;
+  padding: 6px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 8px 26px rgba(60, 54, 40, 0.14);
+}
+.tb-more-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+.tb-more-item:hover {
+  background: var(--beige);
+}
+/* 收纳进来的页签按钮占满一行，左边对齐更像菜单 */
+.tb-more-item .vtab,
+.tb-more-item .term-toggle {
+  color: var(--muted);
+  flex: 1 1 auto;
+  justify-content: flex-start;
+  text-align: left;
+}
+.tb-more-item .vtab::after {
+  display: none; /* 菜单里不需要下划线 */
+}
+/* 只用于测量：绝对定位到视口外；visibility:hidden 让里面的按钮同时不可点、不可聚焦 */
+.tb-measure {
+  position: absolute;
+  top: -9999px;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: max-content;
+  white-space: nowrap;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .model {
@@ -545,14 +676,25 @@ button {
   border-color: var(--border-strong);
   box-shadow: 0 1px 3px rgba(60, 54, 40, 0.07);
 }
+/* 模型名与 provider 是可变长的：给各自封顶并允许省略号，避免撑爆顶栏 */
 .model-name {
   font-weight: 700;
   font-size: 14px;
   color: var(--text);
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .model-provider {
   font-size: 11px;
   color: var(--muted);
+  min-width: 0;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .model-caret {
   font-size: 9px;
@@ -622,6 +764,7 @@ button {
   display: flex;
   gap: 6px;
   align-items: center;
+  flex-wrap: nowrap; /* 状态组整体作为一块：要么完整显示，要么整块进「更多」 */
 }
 .chip {
   display: flex;
@@ -836,6 +979,8 @@ button {
   letter-spacing: -0.5px;
 }
 
+/* 面包屑是可压缩槽位：缩到窄时两级文字各自出省略号。
+   注意 overflow:hidden 在容器上（原来只有 min-width:0，框被压到 0 宽、文字照画）。 */
 .proj-crumb {
   display: flex;
   align-items: center;
@@ -844,14 +989,20 @@ button {
   color: var(--muted);
   white-space: nowrap;
   min-width: 0;
+  overflow: hidden;
 }
 .proj-crumb b {
   color: var(--text);
   font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .proj-crumb .crumb-path {
   font-family: var(--mono);
   font-size: 11px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 260px;
@@ -868,6 +1019,7 @@ button {
   border-radius: 999px;
   background: var(--card);
   flex: 0 0 auto;
+  white-space: nowrap;
 }
 .conn-badge .dot {
   width: 6px;
