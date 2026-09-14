@@ -11,6 +11,19 @@ export function readStoredTheme(): ThemeName {
 export function applyTheme(theme: ThemeName): void {
   document.documentElement.setAttribute('data-theme', theme)
   window.localStorage.setItem(STORAGE_KEY, theme)
+  applyFavicon(theme)
+}
+
+/**
+ * 标签页图标跟随主题。
+ *
+ * 夜间主题下仍挂日间版图标，浏览器标签栏与任务栏上就是一枚扎眼的浅色方块；
+ * 两版都是 SVG，所以只换同一个 `<link>` 的 href（元素在 index.html 里预置）。
+ */
+function applyFavicon(theme: ThemeName): void {
+  const link = document.getElementById('app-favicon')
+  if (!(link instanceof HTMLLinkElement)) return
+  link.href = theme === 'night' ? '/routivus-logo-night.svg' : '/routivus-logo.svg'
 }
 
 export function otherTheme(theme: ThemeName): ThemeName {

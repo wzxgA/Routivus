@@ -49,7 +49,8 @@ export function Nav({
   return (
     <nav className="nav">
       <div className="nav-brand">
-        <div className="logo">R</div>
+        {/* 标记本身是 CSS 背景图：日/夜两版按 data-theme 换（见 app.css 的 .logo） */}
+        <span className="logo" role="img" aria-label="Routivus" />
         <div>
           <div className="brand-name">Routivus</div>
           <div className="brand-sub">Web Console</div>

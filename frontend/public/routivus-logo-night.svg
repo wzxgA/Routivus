@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <!-- 暖黑渐变背景（夜间版：底色调到近黑，但保留暖色相，和日间版是同一枚标记） -->
+    <radialGradient id="bgGrad" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#221D18"/>
+      <stop offset="100%" stop-color="#15120F"/>
+    </radialGradient>
+    <!-- 主色渐变：暖橙（深底上提亮一档，保证对比度） -->
+    <linearGradient id="warmGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F0A97C"/>
+      <stop offset="100%" stop-color="#DE7A5A"/>
+    </linearGradient>
+    <!-- 线条用渐变（userSpaceOnUse：水平线不会被算成零面积而失渲染） -->
+    <linearGradient id="warmLineGrad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="400" y2="400">
+      <stop offset="0%" stop-color="#F0A97C"/>
+      <stop offset="100%" stop-color="#DE7A5A"/>
+    </linearGradient>
+    <!-- 辅色渐变：暖金 -->
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F2CE8A"/>
+      <stop offset="100%" stop-color="#DFB061"/>
+    </linearGradient>
+    <!-- 节点发光效果（userSpaceOnUse 固定区域：水平线的零高度包围盒不会把滤镜区域裁成零） -->
+    <filter id="glow" filterUnits="userSpaceOnUse" x="180" y="140" width="200" height="60">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- 深底上投影要够黑才看得出层次（日间版是暖灰阴影） -->
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <!-- 背景圆角方形 -->
+  <rect x="20" y="20" width="360" height="360" rx="72" ry="72" fill="url(#bgGrad)" stroke="#3A322A" stroke-width="1.5"/>
+  <!-- 内层柔和边框 -->
+  <rect x="36" y="36" width="328" height="328" rx="60" ry="60" fill="none" stroke="#2E2721" stroke-width="0.8" opacity="0.7"/>
+  <!-- ===== 核心图形：智能路由网络（放大外扩版，无文字，垂直居中） ===== -->
+  <g transform="translate(0 32)">
+  <!-- 左侧到中心的连接路径（暗暖灰，未选中） -->
+  <line x1="101" y1="90" x2="180" y2="152" stroke="#4C4238" stroke-width="2" stroke-dasharray="5,5" opacity="0.75"/>
+  <line x1="74" y1="168" x2="174" y2="168" stroke="#4C4238" stroke-width="2" stroke-dasharray="5,5" opacity="0.75"/>
+  <line x1="101" y1="247" x2="180" y2="184" stroke="#4C4238" stroke-width="2" stroke-dasharray="5,5" opacity="0.75"/>
+  <!-- 左侧候选节点（3个备选） -->
+  <circle cx="88" cy="80" r="14" fill="#D9A85F" opacity="0.9" filter="url(#softShadow)"/>
+  <circle cx="88" cy="80" r="14" fill="none" stroke="#FFE9D2" stroke-width="1" opacity="0.35"/>
+  <circle cx="88" cy="80" r="5" fill="#17120E" opacity="0.9"/>
+  <circle cx="58" cy="168" r="14" fill="#D9A85F" opacity="0.9" filter="url(#softShadow)"/>
+  <circle cx="58" cy="168" r="14" fill="none" stroke="#FFE9D2" stroke-width="1" opacity="0.35"/>
+  <circle cx="58" cy="168" r="5" fill="#17120E" opacity="0.9"/>
+  <circle cx="88" cy="257" r="14" fill="#D9A85F" opacity="0.9" filter="url(#softShadow)"/>
+  <circle cx="88" cy="257" r="14" fill="none" stroke="#FFE9D2" stroke-width="1" opacity="0.35"/>
+  <circle cx="88" cy="257" r="5" fill="#17120E" opacity="0.9"/>
+  <!-- 中心节点（Agent 工作站核心） -->
+  <circle cx="200" cy="168" r="24" fill="url(#warmGrad)" filter="url(#softShadow)"/>
+  <circle cx="200" cy="168" r="24" fill="none" stroke="#FFE9D2" stroke-width="1.5" opacity="0.4"/>
+  <!-- 中心节点内部小点 -->
+  <circle cx="200" cy="168" r="7" fill="#FFF1E0" opacity="0.92"/>
+  <circle cx="200" cy="168" r="3" fill="#E58A63" opacity="0.7"/>
+  <!-- 中心到右侧输出（高亮路径 — 选中，两端接入节点） -->
+  <line x1="224" y1="168" x2="318" y2="168" stroke="url(#warmLineGrad)" stroke-width="3.5" stroke-linecap="round" filter="url(#glow)" opacity="0.95"/>
+  <!-- 路径上的流动光点 -->
+  <circle cx="258" cy="168" r="3.5" fill="#FFF1E0" opacity="0.95">
+    <animate attributeName="opacity" values="0.4;1;0.4" dur="1.8s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="286" cy="168" r="2.5" fill="#FFF1E0" opacity="0.7">
+    <animate attributeName="opacity" values="0.3;0.9;0.3" dur="1.8s" begin="0.4s" repeatCount="indefinite"/>
+  </circle>
+  <!-- 右侧输出节点（选中，加大） -->
+  <circle cx="336" cy="168" r="18" fill="url(#goldGrad)" filter="url(#softShadow)"/>
+  <circle cx="336" cy="168" r="18" fill="none" stroke="#FFE9D2" stroke-width="1.2" opacity="0.45"/>
+  <circle cx="336" cy="168" r="6" fill="#FFF1E0" opacity="0.92"/>
+  <!-- 选中节点脉冲环（强化"最优"，无对勾） -->
+  <circle cx="336" cy="168" r="18" fill="none" stroke="#E0705F" stroke-width="1.5" opacity="0.6">
+    <animate attributeName="r" values="18;26" dur="2.2s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.65;0" dur="2.2s" repeatCount="indefinite"/>
+  </circle>
+  </g>
+</svg>

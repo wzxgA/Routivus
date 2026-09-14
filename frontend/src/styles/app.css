@@ -123,18 +123,17 @@ button {
   gap: 9px;
   padding: 0 4px;
 }
+/* 品牌标记：日/夜两版 SVG（同一枚标记，深底版提亮配色）按 data-theme 切换。
+   用背景图而不是 <img>，切换主题只走 CSS，不必让 React 重渲染；
+   SVG 自带暖色圆角底与 5% 内边距，所以这里只定尺寸、不画底色。 */
 .logo {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
+  width: 30px;
+  height: 30px;
   flex: 0 0 auto;
-  background: var(--accent);
-  color: #fff;
-  font-weight: 700;
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  background: url(/routivus-logo.svg) center / contain no-repeat;
+}
+[data-theme='night'] .logo {
+  background-image: url(/routivus-logo-night.svg);
 }
 .brand-name {
   font-weight: 700;
@@ -3199,9 +3198,6 @@ kbd {
 }
 [data-theme='night'] .view-page {
   background: transparent;
-}
-[data-theme='night'] .logo {
-  color: #fff;
 }
 [data-theme='night'] .chip.hitl {
   border-color: #2f4a3a;

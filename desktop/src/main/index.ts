@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { randomBytes } from 'node:crypto'
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { createLogger, type Logger } from './log'
 import { resolvePython, startServer, stopServer, type ServerHandle } from './python'
@@ -39,7 +39,23 @@ function resolveLayout(): Layout {
   }
 }
 
+/**
+ * 应用图标（窗口 / 任务栏）的路径。
+ *
+ * Electron 的 `nativeImage` **不支持 SVG**，所以这里用构建期光栅化好的位图：
+ * 源图是 `frontend/public/routivus-logo.svg`，渲染方式见 `desktop/assets/` 下的
+ * PNG（512×512，透明底，圆角外留透明）与 ICO（16~256，供打包成 exe 时使用）。
+ * 打包后资源目录与源码运行不同，所以两处都找一遍；找不到就不设，退回 Electron 默认图标。
+ */
+function resolveIconPath(): string | undefined {
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, 'assets', 'icon.png')]
+    : [path.join(app.getAppPath(), 'assets', 'icon.png')]
+  return candidates.find((item) => existsSync(item))
+}
+
 function createWindow(): BrowserWindow {
+  const iconPath = resolveIconPath()
   const win = new BrowserWindow({
     width: 1360,
     height: 860,
@@ -48,6 +64,7 @@ function createWindow(): BrowserWindow {
     show: false,
     title: APP_NAME,
     backgroundColor: '#faf9f5',
+    ...(iconPath ? { icon: iconPath } : {}),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
