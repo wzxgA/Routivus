@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -35,6 +36,7 @@ from routivus.server.terminal import (
     default_shell,
     new_terminal_id,
     select_backend,
+    shell_argv,
 )
 from routivus.server import terminal as terminal_module
 from routivus.server import winproc
@@ -648,6 +650,24 @@ def test_terminal_open_binds_cwd_and_ignores_client_path(tmp_path: Path) -> None
     assert (event["cols"], event["rows"]) == (100, 40)
 
 
+def test_terminal_open_honors_configured_shell(tmp_path: Path) -> None:
+    """配置的 shell 必须落到 spec 与 terminal.opened —— 前端据此显示标题与提示符。"""
+    specs: list[TerminalSpec] = []
+    client, project, _ = _terminal_client(
+        tmp_path,
+        lambda spec: specs.append(spec) or FakeBackend(spec),
+        terminal_shell="powershell.exe",
+    )
+
+    with client.websocket_connect(f"/api/ws/projects/{project['id']}/terminal", headers=_auth_headers()) as socket:
+        socket.send_json({"type": "terminal.open", "request_id": "r1"})
+        event = socket.receive_json()
+
+    assert event["type"] == "terminal.opened"
+    assert event["shell"] == "powershell.exe"
+    assert specs[0].shell == "powershell.exe"
+
+
 def test_terminal_input_before_open(tmp_path: Path) -> None:
     client, project, _ = _terminal_client(tmp_path, lambda spec: FakeBackend(spec))
     with client.websocket_connect(f"/api/ws/projects/{project['id']}/terminal", headers=_auth_headers()) as socket:
@@ -1046,6 +1066,88 @@ def test_select_backend_conpty_missing_raises(tmp_path: Path, monkeypatch) -> No
         select_backend(_spec(tmp_path), "conpty")
 
 
+def test_shell_argv_is_shell_specific() -> None:
+    """启动参数按 shell 类型给 —— cmd 的 /Q /D 盲传给 PowerShell 会让它报错退出。"""
+    assert shell_argv("cmd.exe") == ["/Q", "/D"]
+    assert shell_argv(r"C:\Windows\System32\cmd.exe") == ["/Q", "/D"]
+    assert shell_argv("powershell.exe") == ["-NoLogo", "-NoProfile"]
+    assert shell_argv("pwsh.exe") == ["-NoLogo", "-NoProfile"]
+    assert shell_argv(r'"C:\Program Files\PowerShell\7\pwsh.exe"') == ["-NoLogo", "-NoProfile"]
+    # 未知 shell（bash / wsl）一律不加参数：它们的开关与 cmd 不兼容，猜错会直接起不来
+    assert shell_argv("bash.exe") == []
+    assert shell_argv("/bin/bash") == []
+
+
+def test_default_shell_prefers_configured() -> None:
+    assert default_shell("powershell.exe") == "powershell.exe"
+    assert default_shell("  pwsh.exe  ") == "pwsh.exe"
+
+
+def test_default_shell_probes_powershell_on_windows(monkeypatch) -> None:
+    """没配置时必须探测 PowerShell —— %COMSPEC% 恒为 cmd，等于拿它当默认。"""
+    monkeypatch.setattr(terminal_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        terminal_module.shutil, "which", lambda name: f"C:\\fake\\{name}" if name == "powershell.exe" else None
+    )
+    assert default_shell("") == "powershell.exe"
+
+
+def test_default_shell_prefers_pwsh_over_windows_powershell(monkeypatch) -> None:
+    monkeypatch.setattr(terminal_module.sys, "platform", "win32")
+    monkeypatch.setattr(terminal_module.shutil, "which", lambda name: f"C:\\fake\\{name}")
+    assert default_shell("") == "pwsh.exe"
+
+
+def test_default_shell_falls_back_to_comspec(monkeypatch) -> None:
+    """两个 PowerShell 都没有时退回 %COMSPEC%（再没有才是 cmd.exe）。"""
+    monkeypatch.setattr(terminal_module.sys, "platform", "win32")
+    monkeypatch.setattr(terminal_module.shutil, "which", lambda name: None)
+    monkeypatch.setenv("COMSPEC", "C:\\Windows\\system32\\cmd.exe")
+    assert default_shell("") == "C:\\Windows\\system32\\cmd.exe"
+
+
+def test_default_shell_does_not_probe_off_windows(monkeypatch) -> None:
+    """终端通道是 Windows-only：POSIX 上不引入新行为，保持旧回退。"""
+    monkeypatch.setattr(terminal_module.sys, "platform", "linux")
+    monkeypatch.setattr(terminal_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setenv("COMSPEC", "/bin/sh")
+    assert default_shell("") == "/bin/sh"
+
+
+def test_default_shell_configured_beats_probe(monkeypatch) -> None:
+    """显式配置（想回 cmd 的人）永远优先于探测。"""
+    monkeypatch.setattr(terminal_module.sys, "platform", "win32")
+    monkeypatch.setattr(terminal_module.shutil, "which", lambda name: f"C:\\fake\\{name}")
+    assert default_shell("cmd.exe") == "cmd.exe"
+
+
+async def test_pty_backend_spawns_configured_shell_with_its_own_flags(tmp_path: Path, monkeypatch) -> None:
+    """PtyBackend 必须把 shell 及其对应开关一起传给 spawn（不 spawn 真实进程）。"""
+    spawned: dict[str, object] = {}
+
+    class _Proc:
+        pid = 4321
+
+        def isalive(self) -> bool:
+            return True
+
+    class _PtyProcess:
+        @staticmethod
+        def spawn(argv, **kwargs):
+            spawned["argv"] = list(argv)
+            return _Proc()
+
+    monkeypatch.setitem(sys.modules, "winpty", SimpleNamespace(PtyProcess=_PtyProcess))
+    monkeypatch.setattr(winproc, "create_kill_on_close_job", lambda: None)
+    root = tmp_path / "root"
+    root.mkdir()
+    spec = TerminalSpec(new_terminal_id(), "p1", root, "powershell.exe", 80, 24, {})
+
+    await PtyBackend(spec).start()
+
+    assert spawned["argv"] == ["powershell.exe", "-NoLogo", "-NoProfile"]
+
+
 def test_winproc_is_safe_off_windows(monkeypatch) -> None:
     """winproc 必须能在任何平台导入，且在非 Windows 上是 no-op。"""
     assert winproc.create_kill_on_close_job() is None or sys.platform == "win32"
@@ -1066,6 +1168,7 @@ def test_server_config_terminal_defaults_and_clamps() -> None:
     assert config.approval_timeout == 300.0
     assert config.terminal_enabled is True
     assert config.terminal_backend == "auto"
+    assert config.terminal_shell == ""
     assert config.terminal_max_sessions == 4
     assert config.terminal_max_per_project == 2
     assert config.terminal_idle_timeout == 900.0
@@ -1084,7 +1187,9 @@ def test_server_config_terminal_defaults_and_clamps() -> None:
         "ROUTIVUS_TERMINAL_COMMAND_TIMEOUT": "9999",
         "ROUTIVUS_APPROVAL_TIMEOUT": "1",
         "ROUTIVUS_TERMINAL_COLS": "5",
+        "ROUTIVUS_TERMINAL_SHELL": "  powershell.exe  ",
     })
+    assert clamped.terminal_shell == "powershell.exe"
     assert clamped.terminal_backend == "auto"
     assert clamped.terminal_max_sessions == 1
     assert clamped.terminal_max_per_project == 16

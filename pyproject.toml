@@ -19,6 +19,10 @@ dependencies = [
     # SmartRouter 语义精判（运行时推理两件；torch 等导出大件仍为可选语义 extras）
     "onnxruntime>=1.17",
     "tokenizers>=0.15",
+    # Web Console 终端的 ConPTY 后端（仅 Windows 有意义）。放在核心依赖里：
+    # 缺了它终端通道会明确报错（terminal_unavailable），"装完就能用终端"这一步
+    # 不该再让用户自己去找一个 extra（方案 09 §0.4）。
+    "pywinpty>=2.0; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -29,11 +33,9 @@ semantic = [
     "torch>=2.2",
     "safetensors>=0.4",
 ]
-# Web Console 终端的 ConPTY 后端（仅 Windows 有意义）。缺失时终端通道会明确
-# 报错，除非显式把 ROUTIVUS_TERMINAL_BACKEND 设为 oneshot 走受限命令执行器。
-terminal = [
-    "pywinpty>=2.0; sys_platform == 'win32'",
-]
+# 历史 extra：pywinpty 已并入核心依赖（见上）。保留名字是为了让 README / 脚本里
+# 既有的 `pip install "routivus[terminal]"` 不报「未知 extra」。
+terminal = []
 
 # 桌面客户端前端由 Routivus 客户端另行接入，暂不提供 CLI 脚本入口
 [project.scripts]

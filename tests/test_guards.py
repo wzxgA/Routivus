@@ -55,6 +55,53 @@ class TestCommandGuard:
         assert command_guard("   ").ok
 
 
+class TestPowerShellBlacklist:
+    """默认交互 shell 是 PowerShell（方案 09 §4.4）。
+
+    上面那组模式是 cmd / POSIX 语法，PS 原生 cmdlet 不在表内 —— 这里钉住
+    「换默认 shell 不降低安全性」：递归删除 / 关机重启 / 磁盘格式化三类都要拦。
+    """
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "Remove-Item -Recurse -Force C:\\",
+            "remove-item -recurse c:\\windows",
+            "Remove-Item C:\\ -Recurse",  # -Recurse 写在路径后面同样要拦
+            "ri -r C:\\",
+            "rd -Recurse C:\\temp",
+            "rm -recurse C:\\",
+            "Remove-Item -Recurse -Force /",
+            "ri -r /",
+            "Stop-Computer",
+            "Stop-Computer -Force",
+            "Restart-Computer -Force",
+            "Format-Volume -DriveLetter C",
+            "Clear-Disk -Number 0 -RemoveData",
+            "Initialize-Disk -Number 0",
+        ],
+    )
+    def test_powershell_blacklist_hits(self, cmd):
+        result = command_guard(cmd)
+        assert not result.ok
+        assert result.reason == "command_blacklist"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "Get-ChildItem",
+            "Format-Table",
+            "Get-ChildItem -Recurse C:\\Users\\me\\project",  # 递归「读取」不是删除
+            "Test-Connection -ComputerName localhost",
+            "Remove-Item build\\old.log",  # 项目内相对路径、非递归：放行
+            "ri -r .\\build",  # 对齐 cmd 里 `rm -rf ./build` 也是放行的
+            "Remove-Item -Recurse .\\__pycache__",
+        ],
+    )
+    def test_powershell_safe_commands_pass(self, cmd):
+        assert command_guard(cmd).ok
+
+
 class TestPathGuard:
     def test_in_root_passes(self, tmp_path: Path):
         (tmp_path / "src").mkdir()

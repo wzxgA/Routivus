@@ -2401,20 +2401,20 @@ button {
 .term-out.dim {
   color: var(--term-faint);
 }
-.term-input-line {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
+/* 输入框内联在输出流末尾（提示符后面），宽度由 JS 按已输入列数以 ch 给出 ——
+   这里只保证它是一段可流动的行内块：不占满整行、不撑开容器、基线跟随文本。 */
 .term-input {
-  flex: 1;
-  min-width: 0;
+  display: inline-block;
   padding: 0;
+  margin: 0;
+  max-width: 100%;
+  vertical-align: baseline;
   outline: none;
   border: none;
   background: transparent;
   font-family: var(--mono);
   font-size: 11.5px;
+  line-height: inherit;
   color: #f4f1e8;
   caret-color: var(--term-green);
 }

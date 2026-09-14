@@ -43,13 +43,39 @@ _COMMAND_BLACKLIST_PATTERNS = [
     re.compile(r":\(\)\s*\{\s*:\|:&\s*\}\s*;"),
 ]
 
+# PowerShell 的破坏性写法（方案 09 §4.4）：上面那组是 cmd / POSIX 语法，PS 原生
+# cmdlet 不在表内 —— 而终端默认 shell 已是 PowerShell。别名 rm / ri / del / erase /
+# rd / rmdir 都指向 Remove-Item，`-r` 是 `-Recurse` 的合法缩写。
+# 只补原表覆盖的三类最危险操作（递归删除 / 关机重启 / 磁盘格式化），保持「最小集」。
+_PS_DELETE = r"\b(?:remove-item|ri|del|erase|rm|rmdir|rd)\b"
+_PS_RECURSE = r"\s-(?:recurse|r)\b"
+# 顺序无关：`-Recurse` 写在路径前或后都算（`Remove-Item C:\ -Recurse` 与
+# `Remove-Item -Recurse C:\` 同等看待），所以用两个前瞻而不是串联。
+_PS_RECURSIVE_DELETE = _PS_DELETE + r"(?=[^\r\n]*" + _PS_RECURSE + r")"
+
+_POWERSHELL_BLACKLIST_PATTERNS = [
+    # 递归删除 + 盘符绝对路径（对齐 cmd 的 `del C:\` / `rd /s`；含误伤换安全）
+    re.compile(_PS_RECURSIVE_DELETE + r"(?=[^\r\n]*\b[a-z]:\\)"),
+    # 递归删除 POSIX 根（对齐 `rm -rf /`）
+    re.compile(_PS_RECURSIVE_DELETE + r"(?=[^\r\n]*\s/(?:\s|\*|$))"),
+    # 关机 / 重启的 PS 原生 cmdlet（对齐 shutdown / reboot）
+    re.compile(r"\b(?:stop-computer|restart-computer)\b"),
+    # 磁盘 / 分区级破坏（对齐 format / diskpart）
+    re.compile(r"\b(?:format-volume|clear-disk|initialize-disk|new-partition)\b"),
+]
+
 
 def command_guard(command: str) -> GuardResult:
-    """校验命令是否命中黑名单。空命令放行（后续由工具层报错）。"""
+    """校验命令是否命中黑名单。空命令放行（后续由工具层报错）。
+
+    两组模式：POSIX / cmd 语法（`_COMMAND_BLACKLIST_PATTERNS`）与 PowerShell 原生
+    写法（`_POWERSHELL_BLACKLIST_PATTERNS`，方案 09 §4.4）。黑名单只看命令字符串、
+    看不到 shell 的状态，两组都过一遍才能保证「换默认 shell 不降低安全性」。
+    """
     if not command or not command.strip():
         return GuardResult(ok=True)
     lower = command.strip().lower()
-    for pattern in _COMMAND_BLACKLIST_PATTERNS:
+    for pattern in (*_COMMAND_BLACKLIST_PATTERNS, *_POWERSHELL_BLACKLIST_PATTERNS):
         if pattern.search(lower):
             return GuardResult(ok=False, reason="command_blacklist", detail=command.strip())
     return GuardResult(ok=True)

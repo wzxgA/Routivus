@@ -3,11 +3,18 @@
 两条后端路径：
 
 - ``PtyBackend``（默认）—— pywinpty 提供的 Windows ConPTY 伪终端。是真正的
-  终端：ANSI 颜色、resize、交互式程序、Ctrl-C 都正常。pywinpty 是可选依赖
-  （``pip install "routivus[terminal]"``）。
+  终端：ANSI 颜色、resize、交互式程序、Ctrl-C 都正常。pywinpty 已随核心依赖
+  安装（``sys_platform == 'win32'`` 标记，方案 09 §0.4）。
 - ``OneShotBackend``（需显式 ``ROUTIVUS_TERMINAL_BACKEND=oneshot``）—— 计划
   Phase 5 第 4 条规定的兜底「受限 Command Runner」：每条输入起一个新进程在
   项目根执行。没有 cd 延续性、没有环境变量累积、交互式程序不可用。
+
+**启动哪个 shell**（方案 09）：``ROUTIVUS_TERMINAL_SHELL`` 显式指定 >
+自动探测（Windows：``pwsh.exe`` > ``powershell.exe``）> ``%COMSPEC%`` > ``cmd.exe``
+（见 `default_shell`）；启动参数由 `shell_argv` 按 shell 类型给出 —— cmd 用
+``/Q /D``，PowerShell 用 ``-NoLogo -NoProfile``，其他 shell 一律不加参数。
+**不能只按 cmd 的开关硬传**：PowerShell 不认 ``/Q``，会把它当命令名报错后直接退出，
+表现为「终端打开了却什么都没有」（已实测 ``powershell.exe /Q`` → ``exit=1``）。
 
 **不做管道持久 shell**：Windows 上子进程一旦接管道就转块缓冲（输出要攒够几
 KB 才吐），``cmd.exe`` 非交互模式下也不保证输出提示符、没有「命令结束」信号，
@@ -27,6 +34,7 @@ import base64
 import logging
 import os
 import queue as _queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -46,6 +54,10 @@ MIN_COLS, MAX_COLS = 20, 400
 MIN_ROWS, MAX_ROWS = 5, 200
 
 _READ_SIZE = 4096
+
+# 自动探测的候选 shell（方案 09）：PS 7 优先（UTF-8 与 VT 更好），
+# PS 5.1 是 Win10/11 必带的保底；两者都没有才回退 %COMSPEC% / cmd.exe。
+_POWERSHELL_CANDIDATES = ("pwsh.exe", "powershell.exe")
 
 # 一次性执行器启动提示（UTF-8 字节，避免在终端里乱码）
 _ONESHOT_BANNER = (
@@ -69,10 +81,55 @@ def pty_available() -> bool:
 
 
 def default_shell(configured: str = "") -> str:
-    """解析要启动的 shell：显式配置 > %COMSPEC% > cmd.exe。"""
+    """解析要启动的 shell：显式配置 > 自动探测 > %COMSPEC% > cmd.exe。
+
+    Windows 上自动探测 PowerShell（``pwsh.exe`` 优先，PS 7 的 UTF-8 与 VT 支持更
+    好；``powershell.exe`` 是 Win10/11 必带的 5.1，作保底）。不探测的话，
+    ``%COMSPEC%`` 恒为 cmd，等于把「系统默认命令解释器」当成交互终端的默认值 ——
+    用户看到的是最古老的 shell，``ls`` 直接报「不是内部或外部命令」。
+
+    **返回裸文件名而不是 `shutil.which` 的绝对路径**：PS 7 装在
+    ``C:\\Program Files\\PowerShell\\7\\``，路径带空格，而 pywinpty 的 spawn 由它
+    自己拼命令行；裸名交给 PATH 解析（which 已证明能找到）可以绕开引号问题。
+
+    不做缓存：每次开终端两次 ``shutil.which`` 的开销可忽略，缓存反而会造成
+    「刚装了 PS 7，不重启服务不生效」。
+    """
     if configured.strip():
         return configured.strip()
+    if sys.platform == "win32":
+        for candidate in _POWERSHELL_CANDIDATES:
+            if shutil.which(candidate):
+                return candidate
     return os.environ.get("COMSPEC", "") or "cmd.exe"
+
+
+def _shell_name(shell: str) -> str:
+    """取出 shell 的可执行文件名（小写、去引号），用于判断 shell 类型。
+
+    同时按 ``\\`` 与 ``/`` 切分，不依赖平台：测试可能在任何平台跑，而配置里写的
+    是 Windows 路径。
+    """
+    return shell.strip().strip('"').replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def shell_argv(shell: str) -> list[str]:
+    """按 shell 类型给出启动参数（不含 shell 自身）。
+
+    - cmd：``/Q``（关回显）、``/D``（禁用 AutoRun 注册表键，否则机器上配置的命令
+      会在每个终端里自动执行）。
+    - PowerShell：等价意图是 ``-NoLogo``（去掉启动横幅）、``-NoProfile``（不执行
+      用户 / 机器级 profile —— 与 ``/D`` 同一个理由）。**不能沿用 cmd 的开关**：
+      PowerShell 会把 ``/Q`` 当成要执行的命令名，报错后进程立刻退出。
+    - 其他 shell（bash、wsl）一律不加参数：它们的开关与 cmd 完全不兼容，猜错会直接
+      起不来。
+    """
+    name = _shell_name(shell)
+    if name in {"cmd", "cmd.exe"}:
+        return ["/Q", "/D"]
+    if name in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
+        return ["-NoLogo", "-NoProfile"]
+    return []
 
 
 @dataclass(frozen=True)
@@ -176,9 +233,9 @@ class PtyBackend:
             import winpty
         except ImportError as exc:  # pragma: no cover - select_backend 已预先拦截
             raise TerminalUnavailableError("pywinpty 未安装") from exc
-        # /Q 关回显，/D 禁用 AutoRun 注册表键（否则机器上配置的命令会在每个
-        # 终端里自动执行）。spawn 本身阻塞，放线程里避免卡住事件循环。
-        argv = [self.spec.shell, "/Q", "/D"]
+        # 启动参数按 shell 类型给（见 shell_argv）：cmd 是 /Q /D，PowerShell 是
+        # -NoLogo -NoProfile。spawn 本身阻塞，放线程里避免卡住事件循环。
+        argv = [self.spec.shell, *shell_argv(self.spec.shell)]
         self._proc = await asyncio.to_thread(
             winpty.PtyProcess.spawn,
             argv,
@@ -318,7 +375,8 @@ def select_backend(spec: TerminalSpec, mode: str, *, command_timeout: float = 12
     if mode == "conpty":
         if not pty_available():
             raise TerminalUnavailableError(
-                'ConPTY 后端需要 pywinpty：pip install "routivus[terminal]"'
+                "ConPTY 后端需要 pywinpty（Windows 上随核心依赖安装，"
+                "缺失时重新同步依赖：uv sync / pip install -e .）"
             )
         return PtyBackend(spec)
     # auto：优先 ConPTY；不可用时给出明确指引，而不是悄悄换成命令框 ——
@@ -326,7 +384,8 @@ def select_backend(spec: TerminalSpec, mode: str, *, command_timeout: float = 12
     if pty_available():
         return PtyBackend(spec)
     raise TerminalUnavailableError(
-        'ConPTY 后端不可用（未安装 pywinpty）。请执行 pip install "routivus[terminal]"；'
+        "ConPTY 后端不可用（未安装 pywinpty）。Windows 上它随核心依赖安装，"
+        "缺失时重新同步依赖（uv sync / pip install -e .）；"
         "若接受无 cd、无环境变量延续的受限命令执行器，可设置 "
         "ROUTIVUS_TERMINAL_BACKEND=oneshot。"
     )

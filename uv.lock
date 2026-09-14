@@ -1534,6 +1534,7 @@ dependencies = [
     { name = "onnxruntime" },
     { name = "prompt-toolkit" },
     { name = "python-dotenv" },
+    { name = "pywinpty", marker = "sys_platform == 'win32'" },
     { name = "rich" },
     { name = "scikit-learn" },
     { name = "tokenizers" },
@@ -1546,9 +1547,6 @@ semantic = [
     { name = "safetensors" },
     { name = "torch" },
     { name = "transformers" },
-]
-terminal = [
-    { name = "pywinpty", marker = "sys_platform == 'win32'" },
 ]
 
 [package.dev-dependencies]
@@ -1569,7 +1567,7 @@ requires-dist = [
     { name = "optimum", extras = ["onnxruntime"], marker = "extra == 'semantic'", specifier = ">=1.16" },
     { name = "prompt-toolkit", specifier = ">=3.0.43" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
-    { name = "pywinpty", marker = "sys_platform == 'win32' and extra == 'terminal'", specifier = ">=2.0" },
+    { name = "pywinpty", marker = "sys_platform == 'win32'", specifier = ">=2.0" },
     { name = "rich", specifier = ">=13.7.0" },
     { name = "safetensors", marker = "extra == 'semantic'", specifier = ">=0.4" },
     { name = "scikit-learn", specifier = ">=1.4" },

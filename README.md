@@ -16,8 +16,7 @@
 
 ```bash
 cd Routivus                          # 仓库根目录（Routivus/），不是 routivus/ 子目录
-uv sync                              # 或 pip install -e .
-pip install "routivus[terminal]"     # 可选：Windows 终端通道需要 pywinpty
+uv sync                              # 或 pip install -e .；Windows 上 pywinpty（终端 ConPTY 后端）随之装好
 
 cd frontend && npm install           # 可选：Web Console 前端
 ```
@@ -144,16 +143,12 @@ fail-closed 规则：`ROUTIVUS_APPROVAL_TIMEOUT`（默认 300 秒）内无人应
 
 ### 终端通道
 
-地址为 `/api/ws/projects/{project_id}/terminal`，与会话 socket 相互独立（终端生命周期与 Agent 轮次无关，且终端输出不会写库）。需要 Windows 上的 ConPTY 后端，装可选依赖：
-
-```bash
-pip install "routivus[terminal]"     # 或 uv sync --extra terminal
-```
+地址为 `/api/ws/projects/{project_id}/terminal`，与会话 socket 相互独立（终端生命周期与 Agent 轮次无关，且终端输出不会写库）。需要 Windows 上的 ConPTY 后端，`pywinpty` **已随核心依赖安装**（带 `sys_platform == 'win32'` 标记），不需要额外装什么；历史写法 `pip install "routivus[terminal]"` 仍然可用（该 extra 已留空以兼容旧脚本）。
 
 ```bash
 ROUTIVUS_TERMINAL_ENABLED=on
 ROUTIVUS_TERMINAL_BACKEND=auto      # auto | conpty | oneshot
-ROUTIVUS_TERMINAL_SHELL=            # 空则用 %COMSPEC%，再退回 cmd.exe
+ROUTIVUS_TERMINAL_SHELL=            # 空 = 自动探测（pwsh.exe → powershell.exe → %COMSPEC% → cmd.exe）；设 cmd.exe 可回到 cmd
 ROUTIVUS_TERMINAL_MAX_SESSIONS=4
 ROUTIVUS_TERMINAL_MAX_PER_PROJECT=2
 ROUTIVUS_TERMINAL_IDLE_TIMEOUT=900
@@ -172,7 +167,22 @@ ROUTIVUS_TERMINAL_ROWS=30
 
 服务端事件：`terminal.opened`（含 `cwd`/`shell`/`backend`）、`terminal.output`（`seq` 递增供丢块检测，`encoding` 为 `utf8` 或 `base64`）、`terminal.input.ack`、`terminal.resized`、`terminal.cleared`、`terminal.output.dropped`（背压丢块计数）、`terminal.exit`、`terminal.closed`（`reason` 为 `client_closed` / `idle_timeout` / `limit` / `server_shutdown`）。
 
-`ROUTIVUS_TERMINAL_BACKEND=auto` 在缺 pywinpty 时会**明确报错**（`terminal_unavailable`）而不是静默降级 —— 静默把终端换成命令框会让 `cd`、环境变量、venv 激活悄悄失效。确实想要无状态的受限命令执行器时显式设 `oneshot`。
+`ROUTIVUS_TERMINAL_BACKEND=auto` 在缺 pywinpty 时会**明确报错**（`terminal_unavailable`）而不是静默降级 —— 静默把终端换成命令框会让 `cd`、环境变量、venv 激活悄悄失效。确实想要无状态的受限命令执行器时显式设 `oneshot`；注意 `oneshot` **不接受** `ROUTIVUS_TERMINAL_SHELL`（它每条命令都走 `cmd /c`，与持久 shell 不等价）。
+
+**启动的 shell**：**默认就是 PowerShell**（Windows 上不设任何变量即可）。优先级为
+
+```
+ROUTIVUS_TERMINAL_SHELL  →  pwsh.exe        # PowerShell 7，优先（UTF-8 / VT 支持更好）
+                         →  powershell.exe  # Windows PowerShell 5.1，Win10/11 必带
+                         →  %COMSPEC%       # 都没有才回退
+                         →  cmd.exe
+```
+
+探测只在 Windows 上做（终端通道依赖 pywinpty，本身就是 Windows-only），用的是 `shutil.which`，返回裸文件名交给 PATH 解析（PS 7 装在 `C:\Program Files\...`，裸名可以绕开引号问题）。想回 cmd：`ROUTIVUS_TERMINAL_SHELL=cmd.exe`（显式配置永远优先）。
+
+启动参数由程序按 shell 类型给，**不要自己把开关写进这个变量**：cmd 用 `/Q /D`，PowerShell 用 `-NoLogo -NoProfile`，其他 shell 不加参数。`-NoProfile` 与 cmd 的 `/D` 同源（不执行机器 / 用户级自动脚本），代价是自定义 profile 不加载，但 `ls` / `dir` / `copy` / `del` / `cls` 是 PowerShell **内置别名**，不依赖 profile。反过来说，把 cmd 的 `/Q` 传给 PowerShell 会让它当成命令名报错后直接退出（界面表现为「终端打开了却什么都没有」），所以类型判断是必需的。
+
+前端抽屉的标题与提示符按 `terminal.opened.shell` 显示（PowerShell 会显示成 `PowerShell` 与 `PS D:\x>`），不是写死的 `cmd`。
 
 #### 安全边界（务必阅读）
 
@@ -181,8 +191,10 @@ ROUTIVUS_TERMINAL_ROWS=30
 **终端不是沙箱。** 进程由服务端绑定项目根目录启动，客户端无法指定路径，每条命令经过 `CommandGuard` 黑名单、`PathGuard`（含 `cwd` 越界检查）、超时限制与审计。但黑名单只匹配命令字符串，看不到 shell 的当前目录，因此：
 
 - 持久化 shell 里 `cd ..` 之后再执行命令，即可操作项目根之外的文件；
-- `type C:\Users\...\.ssh\id_rsa` 这类用绝对路径读取外部文件的方式不在黑名单内；
+- `type C:\Users\...\.ssh\id_rsa`（PowerShell 下是 `Get-Content C:\...\id_rsa`）这类用绝对路径读取外部文件的方式不在黑名单内；
 - `subst` / `mklink /J` 可以把外部目录映射成根内路径。
+
+黑名单同时覆盖 cmd / POSIX 写法（`del C:\`、`rd /s`、`rm -rf /`）与 **PowerShell 原生写法**（`Remove-Item -Recurse -Force C:\`、`ri -r C:\`、`Stop-Computer`、`Restart-Computer`、`Format-Volume`、`Clear-Disk`），两类都拦。但它仍然只是「命令字符串层面的尽力而为」：目标是变量（`$env:USERPROFILE`）、命令写在脚本文件里、或绕过别名直接调 .NET API 等情形都不在覆盖范围。
 
 Windows 上没有非特权 chroot 类原语，所以这里保证的是「**客户端无法指定路径**」，**不是**「操作系统阻止进程访问根外资源」。终端以服务端用户身份运行，可读写该用户能触及的任何资源（含网络）。请只在本来就信任浏览器客户端的机器上启用，用 `ROUTIVUS_TERMINAL_ENABLED=off` 可完全关闭。真正的 OS 级隔离（AppContainer 或低权限账户）尚未实现。
 
@@ -219,7 +231,7 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 - **Skill（任务规范）**：独立管理页（导航「技能」，路由 `#/skills`）——顶部项目选择器切换「全局（内置 + 用户级）/ 某项目」，支持列表、正文预览、新建与编辑（写入 `SKILL.md`）、启用/禁用；会话内也可用 `/skill list|load|enable|disable`，两者共用同一份配置。规范放 `<用户目录>/skills/<名称>/SKILL.md` 或项目 `.routivus/skills/` 下即被自动发现；索引注入 system prompt（开关变更后下一轮生效），正文由模型按需调用 `load_skill` 加载，参考资料受路径白名单与字数上限约束。
 - **Markdown 渲染**：会话正文支持标题 / 列表（含嵌套）/ 表格 / 任务列表 / 删除线 / 引用 / 链接 / 图片 / 围栏代码块；代码块带语言角标、一键复制与语法着色（暖白与夜间各一套配色，均经对比度校核）。三重取舍：流式输出期间先不着色、这一轮结束后再上色；逐 token 的增量先攒 60ms 再合并刷出（把渲染次数封顶）；单块超过 300 行或 20k 字符跳过着色（保滚动与内存，角标与复制仍在）。安全边界不变：不渲染裸 HTML、链接仅 http/https、不使用 `innerHTML`。
 - **项目文件**：顶栏「文件」页签进入整页视图——左侧懒加载文件树（逐层请求、可切换显示被忽略目录），右侧查看或编辑；聊天页还可按 `Ctrl+Shift+E` 展开只读抽屉边聊边看。点击文件**默认先预览**（想改再点「编辑」），编辑态可保存（`Ctrl+S`）并显示光标行列；图片直接预览，二进制/超 1MB/含无法解码字节的文件只读。写入边界：只允许项目根内（`..` 与软链接逃逸一律拒绝）、拒绝写 `.git` 与被忽略目录、超 5MB 拒绝；保存带内容版本号，文件被外部改过会提示「覆盖 / 重新加载」而不是静默覆盖；换行符按原文件保留（Windows 上 CRLF 文件不会因为改一行而整篇 diff）。每次写入都会记入 `.routivus/audit.log`。
-- **终端抽屉**：`Ctrl+\`` 或顶栏按钮展开，走 `/api/ws/projects/{id}/terminal`，服务端绑定项目 cwd。
+- **终端抽屉**：`Ctrl+\`` 或顶栏按钮展开，走 `/api/ws/projects/{id}/terminal`，服务端绑定项目 cwd；**Windows 上默认就是 PowerShell**（自动探测 `pwsh.exe` → `powershell.exe`，见「终端通道」一节），想用 cmd 设 `ROUTIVUS_TERMINAL_SHELL=cmd.exe`；抽屉标题与提示符跟随实际 shell。
 - **智能路由**：配置页开关与四档；普通对话轮按任务复杂度自动换档，顶栏 chip 与信息侧栏显示本轮档位与实际模型。
 - **主题**：暖白 / 夜间双主题（含夜空动效），偏好存 `localStorage`。
 
