@@ -21,7 +21,7 @@ uv sync                              # 或 pip install -e .；Windows 上 pywinp
 cd frontend && npm install           # 可选：Web Console 前端
 ```
 
-> 依赖不含 `textual`（已随 TUI 移除）；`onnxruntime`（语义精判）按需启用。仅语义模型离线导出那套大件（torch 等）仍在可选依赖中，日常使用不需要。
+> 依赖不含 `textual`（已随 TUI 移除）。SmartRouter 的**运行时**依赖（`numpy` / `scikit-learn` / `lightgbm` / `joblib` / `onnxruntime` / `tokenizers`）与 Windows 的 `pywinpty` 均已并入核心依赖，装完即可用；只有**离线重导出**语义模型那套大件（`optimum` / `transformers` / `torch` / `safetensors`，即 `routivus[semantic]`）仍属可选，日常使用不需要。
 
 ## 快速开始
 
@@ -259,7 +259,7 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 | `~/.routivus/adaptive/router_semantics.onnx` + `.json` | 语义编码器（bge-small-zh，int8）与伴生 tokenizer | 随包落位；`tools/export_bge_onnx.py` 可离线重导出 |
 | `~/.routivus/adaptive/calibration.json`、`learned_rules.json` | 本地校准偏置与自学习规则（L1，秒级生效） | 启动时聚合 `feedback.log` |
 | `~/.routivus/adaptive/sem_samples.jsonl` | 本地样本库：`text_hash` + 512 维语义向量（**不存原文**） | 路由时自动采集（编码器可用时） |
-| `~/.routivus/adaptive/evolve_state.json`、`evolve.log` | 进化状态（上次尝试/成功、增量计数）与每次尝试的决策记录 | `/smartRouter evolve`、自动触发 |
+| `~/.routivus/adaptive/evolve_state.json`、`evolve.log`、`evolve.lock` | 进化状态（上次尝试/成功、增量计数）、每次尝试的决策记录（含被"不劣门"丢弃的原因）与演化子进程互斥锁（残留超 1 小时可被接管） | `/smartRouter evolve`、自动触发 |
 | `~/.routivus/adaptive/semantic_head.json` | L3 本地语义头（每档质心，方案 10 §4.7） | 进化时训练 |
 | `~/.routivus/input-history/` | 按项目隔离的输入历史 | 自动 |
 | `<项目>/.routivus/memory.db` | 项目长期记忆 | `/save`、`/memory` |
@@ -279,7 +279,7 @@ ML 精判是「**出厂兜底 + 本地进化**」的分层结构：出厂基线�
 | L1 在线微调 | `calibration.json`（每档偏置，±0.15 夹紧）+ `learned_rules.json`（±1 档局部规则）；单档样本 ≥20 才生效 | **已经每人不同**，秒级、每次启动重算 |
 | L2 本地重训 | `/smartRouter evolve`（或自动触发）用本机 feedback 重训 `router.lgb`，产物含 L3 语义头 | 每人不同 |
 
-**自动演化何时触发**：启动后与每 50 轮各检查一次，**全部**满足才训练 —— 距上次尝试 ≥7 天、自上次成功新增可用样本 ≥20、每档有效标签 ≥20 且总量 ≥60（首次 ≥120）、没有其他演化进程在跑。**不劣门**：新产物在同一 holdout（按时间切分）上的加权准确率不得低于当前在用产物，否则**丢弃**并把原因写进 `evolve.log`。训练在子进程里跑（`python -m routivus.adaptive.evolve`），不阻塞交互；只有真实服务进程会触发（`ROUTIVUS_SERVER_RUNTIME=1`），测试与库调用永远不会偷偷训练。开关：`ROUTIVUS_ADAPTIVE_EVOLVE=off` 关掉自动演化（手动命令仍可用）。
+**自动演化何时触发**：启动后与每 50 轮各检查一次，**全部**满足才训练 —— 距上次尝试 ≥7 天、自上次成功新增可用样本 ≥20、每档有效标签 ≥20 且总量 ≥60（首次 ≥120）、没有其他演化进程在跑。**不劣门**：新产物在同一 holdout（按时间切分）上的加权准确率不得低于当前在用产物，否则**丢弃**并把原因写进 `evolve.log`。训练在子进程里跑（`python -m routivus.adaptive.evolve`），不阻塞交互；只有真实服务进程会触发（`ROUTIVUS_SERVER_RUNTIME=1`），测试与库调用永远不会偷偷训练。开关：`ROUTIVUS_ADAPTIVE_EVOLVE=off` 关掉自动演化（手动命令仍可用）。门槛本身也可微调：`ROUTIVUS_ADAPTIVE_COOLDOWN_DAYS`（默认 7）、`ROUTIVUS_ADAPTIVE_MIN_NEW`（默认 20）、`ROUTIVUS_ADAPTIVE_CHECK_ROUNDS`（默认 50 轮检查一次）。
 
 **隐私**：反馈与样本**全部留在本机**，不联网、不上传。`feedback.log` 只存输入的短哈希与特征快照；`sem_samples.jsonl` 存的是 512 维语义向量（int8 量化，基本不可逆推原文）——**整条训练链路不需要原文**。清空入口：`/smartRouter reset`（清校准与规则）或 `/smartRouter reset --hard`（连本地产物与样本一起，下次启动回到出厂基线）。
 
@@ -393,18 +393,20 @@ SmartRouter 按任务复杂度动态选择四档模型（Basic / Enhanced / Supe
 
 | 命令 | 行为 |
 |------|------|
-| `/smartRouter status` | 查看路由状态、四档配置、ML 精判与语义通道指标 |
+| `/smartRouter status` | 查看路由状态、四档配置、ML 精判（产物来源 + 不可用原因码）、语义通道指标与本地进化状态（样本量 / 上次进化 / holdout 对比） |
 | `/smartRouter on` / `off` | 开启 / 关闭智能路由 |
-| `/smartRouter reset` | 重建共享路由状态（重载 ML 模型等） |
+| `/smartRouter evolve [--force]` | 手动触发一次本地重训（后台子进程，不阻塞界面；`--force` 跳过门槛但仍守不劣门），完成后用 `status` 看结果 |
+| `/smartRouter reset [--hard]` | 清空校准与自学习规则并重建共享路由状态（重载 ML 模型等）；`--hard` 连本地产物、样本库与上一版备份一起清除，下次启动回出厂基线 |
 | `/tier list` | 列出四档 provider/model（未配回落主动 active） |
 | `/tier show <tier>` | 查看单个档位 |
 | `/tier set <tier> <provider> [model]` | 设置档位 provider/model（缺省 model 用该 provider 的 default_model） |
 | `/tier clear <tier>` | 清空档位，回落到手动 active |
 | `/train [labeled.jsonl] [--yes] [--no-semantic]` | 手动训练 ML 精判模型（需确认） |
 
-- **ML 精判**：默认走 TF-IDF + LightGBM 离线训练，产物写入 `~/.routivus/adaptive/router.lgb`；训练带语义列可选。用户训练的 `router.lgb` 存在时优先使用，否则回落内置通用模型。
-- **语义通道**：内存 + 任务特征打分命中一定触发条件后，用 BGE 语义编码器（`router_semantics.onnx`，512 维）增强 ML 路由精度；编码器缺失时静默回落 TF-IDF-only。可通过 `/smartRouter status` 观察语义编码次数与耗时。
-- 语义编码器需用 `tools/export_bge_onnx.py` 离线导出，模型文件不随包分发。
+- **ML 精判的回落链**：按 `语义版` → `无语义兜底版` → `不可用` 依次尝试。语义版（`~/.routivus/adaptive/router.lgb`，声明 512 维语义列）要求编码器可用；环境里缺 / 装坏 `onnxruntime` 时会落到随包的 `router.lgb.nosem`（只用数值特征），不再出现"整层 ML 精判消失"。两级都不行才判为不可用。`/smartRouter status` 显示**产物来源**（`semantic` / `nosem`）与**不可用原因码**（`no_artifact` / `no_semantic` / `runtime_missing` / `load_failed` / `bad_artifact` / `version_mismatch`），界面提示按码给出可操作文案。本地产物（`/train` 或本地进化产出）始终优先于随包基线。
+- **训练**：默认走 TF-IDF + LightGBM 离线训练；本地重训用本机样本、可带语义列（见「本地进化与隐私」）。进化替换前会把旧产物备份为 `router.lgb.prev`，供回滚。
+- **语义通道**：内存 + 任务特征打分命中一定触发条件后，用 BGE 语义编码器（`router_semantics.onnx`，512 维 int8）增强 ML 路由精度。编码器不可用时**不再"静默"**回落：原因码会进路由依据、`status` 与前端提示。可通过 `/smartRouter status` 观察语义编码次数与耗时。
+- 语义编码器（`router_semantics.onnx` + 伴生 tokenizer）与无语义兜底产物都**随包分发**，无需手动导出。`tools/export_bge_onnx.py` 仅用于离线重导出（如更换量化档位），`tools/distill_nosem_router.py` 可复现兜底产物。
 
 ## 命令总览
 
@@ -416,7 +418,7 @@ SmartRouter 按任务复杂度动态选择四档模型（Basic / Enhanced / Supe
 | `/team <任务>` | Multi-Agent 模式：Supervisor 调度隔离 Worker，审查证据并定向修复（见下） |
 | `/provider` | 管理服务商（增删改查、切 base、写 Key、维护模型列表，见「配置 Provider」） |
 | `/model` | 查看当前模型，或在当前 provider 内切换模型（见「配置 Provider」） |
-| `/smartRouter` | 智能路由总开关与状态（on / off / status / reset） |
+| `/smartRouter` | 智能路由总开关、状态、本地进化与重置（on / off / status / evolve / reset，见「SmartRouter 智能路由」） |
 | `/tier` | 配置四档模型（list / show / set / clear） |
 | `/train` | 手动训练 ML 精判模型（需确认） |
 | `/init` | 分析当前项目，预览并生成 `Routivus.md` 项目记忆（已有文件不覆盖） |
@@ -556,6 +558,7 @@ provider 与 SmartRouter 配置统一存于 `config.json`（见「配置 Provide
 | `ROUTIVUS_TOOL_TIMEOUT` | 单工具执行超时秒数（默认 120） |
 | `ROUTIVUS_HITL` | 危险操作审批开关（on 默认 / off 危险模式） |
 | `ROUTIVUS_ROUTER_TIMEOUT` | 智能路由（含首次模型加载）超时秒数（默认 120，下限 5）；超时只降级为「本轮不换档」 |
+| `ROUTIVUS_ADAPTIVE_EVOLVE` | 本地自动演化开关（on 默认，off 关闭；手动 `/smartRouter evolve` 不受影响）。服务端进程里需为真实环境变量（见「Web Console Server」的警告），另见「本地进化与隐私」 |
 | `ROUTIVUS_PLAN_MAX_SUBTASKS` | 计划模式子任务数上限（默认 12，超出截断） |
 | `ROUTIVUS_PLAN_SUBTASK_STEPS` | 计划模式单个子任务最大工具步数（默认 10） |
 | `ROUTIVUS_PLAN_MAX_FAILURES` | 计划级允许失败数（默认 3，超出终止剩余轮次） |
@@ -606,4 +609,4 @@ uv run pytest -m "not slow"   # 常规回归
 uv run pytest                 # 全量测试
 ```
 
-项目分层：`routivus/agent`（ReAct 循环 + 计划模式）、`routivus/llm`（客户端抽象 + OpenAI 兼容实现 + 工厂）、`routivus/tool`（统一工具注册表 + 内置工具）、`routivus/mcp`（协议、transport、动态工具和 resources）、`routivus/skill`（Skill 发现、解析、按需加载与安全策略）、`routivus/input_history`（输入历史、游标、持久化与隐私策略）、`routivus/memory`（项目/长期记忆 + 上下文压缩）、`routivus/tui`（纯逻辑编排：state / reducer / controller / i18n，无界面）、`routivus/cli`（命令服务层，无 REPL）、`routivus/service`（UI 无关的程序化命令入口）、`routivus/config`（provider/MCP/Web/Skill 配置与运行时快照）、`routivus/router`（SmartRouter 路由、校准与训练）。
+项目分层：`routivus/agent`（ReAct 循环 + 计划模式）、`routivus/llm`（客户端抽象 + OpenAI 兼容实现 + 工厂）、`routivus/tool`（统一工具注册表 + 内置工具）、`routivus/mcp`（协议、transport、动态工具和 resources）、`routivus/skill`（Skill 发现、解析、按需加载与安全策略）、`routivus/input_history`（输入历史、游标、持久化与隐私策略）、`routivus/memory`（项目/长期记忆 + 上下文压缩）、`routivus/safety`（PathGuard / CommandGuard 与审计日志）、`routivus/web`（只读搜索与抓取，含 DNS / 重定向逐跳校验）、`routivus/ask`（`ask_user` 的载荷模型）、`routivus/tui`（纯逻辑编排：state / reducer / controller / i18n，无界面）、`routivus/cli`（命令服务层，无 REPL）、`routivus/service`（UI 无关的程序化命令入口）、`routivus/server`（REST + WebSocket 服务层、HITL 通道与项目终端通道）、`routivus/config`（provider/MCP/Web/Skill 配置与运行时快照）、`routivus/router`（SmartRouter 路由、校准与训练）、`routivus/adaptive`（本地样本库、训练内核与本地进化）、`routivus/assets`（随包 SmartRouter 产物：语义编码器、语义版与无语义兜底产物）。
