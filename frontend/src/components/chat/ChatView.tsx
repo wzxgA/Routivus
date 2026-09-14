@@ -191,7 +191,10 @@ export function ChatView({
         onOpenInPage={onOpenFilesPage}
       />
 
+      {/* 文件抽屉与四页签侧栏共用右侧这一列：抽屉打开时侧栏收起（DOM 保留，免得
+          来回开合丢掉当前页签），会话区因此不再被三栏挤窄。 */}
       <SidePanel
+        hidden={filesOpen}
         session={liveSession}
         usage={timeline.usage}
         audit={timeline.audit}

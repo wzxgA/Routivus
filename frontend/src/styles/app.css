@@ -2426,6 +2426,10 @@ button {
   min-height: 0;
   background: var(--panel);
 }
+/* 文件抽屉接管右侧那一列时收起侧栏。用隐藏而不是卸载，来回开合不丢当前页签。 */
+.side-hide {
+  display: none;
+}
 .tabs {
   display: flex;
   gap: 2px;
@@ -3437,6 +3441,8 @@ kbd {
 }
 .files-body > .file-tree {
   flex: 0 0 248px;
+  /* 同上：长文件名不该把整页视图的树列顶宽 */
+  min-width: 0;
 }
 .ft-bar {
   flex: 0 0 auto;
@@ -3637,9 +3643,17 @@ kbd {
   border: 1px solid var(--border);
 }
 
-/* ---- 聊天侧只读抽屉 ---- */
+/* ---- 聊天侧只读抽屉 ----
+   抽屉打开时接管右侧侧栏那一列（.side 同时被隐藏），所以宽度与 .side 对齐为 340px、
+   整高；会话区因此不再被"抽屉 + 侧栏"两列一起挤窄。
+
+   `min-width: 0` 是必须的：flex 项的 min-width 默认是 auto，等于"不得小于内容的
+   min-content 宽度"。预览里的宽表格（width: max-content）与不换行的长行（pre）
+   min-content 可以远超 340px，于是这一列被内容顶宽、反过来把会话区挤成一条 ——
+   尺寸必须由我们定死，超宽内容在内部滚动。 */
 .files-drawer {
-  flex: 0 0 296px;
+  flex: 0 0 340px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -3668,7 +3682,21 @@ kbd {
 .fd-preview {
   flex: 1 1 45%;
   overflow: auto;
+  min-width: 0;
   min-height: 0;
   padding: 6px 2px;
   border-top: 1px dashed var(--border);
+}
+/* 窄窗口降级要写在这里（而不是上方 .side 那一组）：同特异性的规则里后出现的胜，
+   放到抽屉定义之前会被 flex 简写盖掉。 */
+@media (max-width: 1180px) {
+  .files-drawer {
+    flex-basis: 300px;
+  }
+}
+@media (max-width: 1000px) {
+  /* 侧栏在窄窗口下整块隐藏，但抽屉是"用户显式展开"的东西，只收窄不消失 */
+  .files-drawer {
+    flex-basis: 280px;
+  }
 }

@@ -47,6 +47,8 @@ interface SidePanelProps {
   contextWindow: number
   /** 会话当前模型的能力上限；换模型 / 路由换档后会变（见 plans/enhancement/06）。 */
   context: ContextPayload | null
+  /** 文件抽屉接管右侧区域时收起。只隐藏、不卸载：来回开合不会丢掉当前页签。 */
+  hidden?: boolean
 }
 
 export function SidePanel({
@@ -64,6 +66,7 @@ export function SidePanel({
   router,
   contextWindow,
   context,
+  hidden = false,
 }: SidePanelProps) {
   const [tab, setTab] = useState<TabName>('Session')
   const usedTokens = session?.total_tokens ?? 0
@@ -86,7 +89,7 @@ export function SidePanel({
   }, [tab, onRefreshMemory])
 
   return (
-    <aside className="side">
+    <aside className={`side${hidden ? ' side-hide' : ''}`}>
       <div className="tabs">
         {TABS.map((name) => (
           <button
