@@ -12,7 +12,10 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+logger = logging.getLogger("routivus.router.semantic")
 
 _EMBED_DIM = 512  # bge-small-zh-v1.5 输出维度
 
@@ -29,6 +32,8 @@ class SemanticEncoder:
         self._path = onnx_path or _default_onnx_path()
         self._session = None
         self._tokenizer = None
+        # 不可用原因码（方案 10 §4.6）：供 notes / status / 日志说明"为什么没走语义通道"
+        self._reason = ""
         # C3 观测：成功编码统计（每轮耗时 + 有效样本量），供 /smartRouter status 展示
         self._calls = 0
         self._total_ms = 0.0
@@ -36,8 +41,14 @@ class SemanticEncoder:
         self._load()
 
     def _load(self) -> None:
-        """加载 ONNX session + tokenizer；任何异常 → 不可用。"""
+        """加载 ONNX session + tokenizer；任何异常 → 不可用（并记下原因码）。
+
+        原因码用于把"ML 精判不可用"从一句合并文案变成可操作提示：
+        ``artifact_missing`` / ``tokenizer_missing`` / ``runtime_missing`` /
+        ``dim_mismatch`` / ``load_failed``。
+        """
         if not self._path.exists():
+            self._reason = "artifact_missing"
             return
         try:
             import onnxruntime  # noqa: PLC0415
@@ -47,6 +58,7 @@ class SemanticEncoder:
             # bge 的 tokenizer 以 JSON 与产物同级目录存放（C1 导出时同目录）
             tok_path = self._path.with_suffix(".json")
             if not tok_path.exists():
+                self._reason = "tokenizer_missing"
                 return
             tok = Tokenizer.from_file(str(tok_path))
             sess = onnxruntime.InferenceSession(
@@ -56,16 +68,31 @@ class SemanticEncoder:
             out_meta = sess.get_outputs()[0].shape
             dims = [d for d in out_meta if d not in (None, -1)]
             if dims and dims[-1] != _EMBED_DIM:
+                self._reason = "dim_mismatch"
                 return
             self._session = sess
             self._tokenizer = tok
-        except Exception:
+            self._reason = ""
+        except ImportError as exc:
+            # 最常见的一类：onnxruntime 未装 / 装坏（缺原生扩展）
+            self._reason = "runtime_missing"
+            logger.warning("语义编码器不可用（runtime_missing）：%s", exc)
+            self._session = None
+            self._tokenizer = None
+        except Exception as exc:  # noqa: BLE001 - 任何加载异常都降级，不能影响启动
+            self._reason = "load_failed"
+            logger.warning("语义编码器加载失败（load_failed）：%s", exc)
             self._session = None
             self._tokenizer = None
 
     @property
     def available(self) -> bool:
         return self._session is not None and self._tokenizer is not None
+
+    @property
+    def unavailable_reason(self) -> str:
+        """不可用原因码；可用时为空串（方案 10 §4.6）。"""
+        return self._reason
 
     @property
     def dim(self) -> int:

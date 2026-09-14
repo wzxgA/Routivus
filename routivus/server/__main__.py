@@ -119,8 +119,20 @@ def main() -> None:
         )
     )
 
+    # 必须是"真实服务进程"才允许自动演化：测试与库调用（TestClient）永远不该
+    # 偷偷拉起训练子进程。见 adaptive/evolve.py 的 spawn()。
+    os.environ["ROUTIVUS_SERVER_RUNTIME"] = "1"
+
     # 必须在 server.run() 之前、主线程内完成：见 _prewarm_router_before_loop。
     _prewarm_router_before_loop(config)
+
+    # 启动后做一次本地进化的门槛检查（只读计数与时间；真正训练在子进程，方案 10 §4.3）
+    try:
+        from routivus.adaptive.evolve import maybe_spawn
+
+        maybe_spawn("startup")
+    except Exception:  # noqa: BLE001 - 演化是锦上添花，绝不影响启动
+        logging.getLogger("routivus.server").debug("evolve startup check failed", exc_info=True)
 
     if desktop:
         _watch_stdin_for_shutdown(server)

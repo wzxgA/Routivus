@@ -212,6 +212,21 @@ def _cmd_smart_router(
             _switch(agent, settings, manager, saved[0], saved[1], language=language)
         return translate(language, "ui.router.disabled_detail")
 
+    if sub in ("evolve", "train"):
+        # 手动触发本地进化（方案 10 §4.3）：与 /train 一致，训练放后台子进程，
+        # 不阻塞界面；结果去 /smartRouter status 看（样本量 / 验证准确率 / 产物来源）。
+        from routivus.adaptive.evolve import spawn
+
+        force = "--force" in arg
+        if not spawn("manual", force=force, require_runtime=False):
+            return "本地进化启动失败（详情见服务端日志）" if language != "en" \
+                else "Failed to start local evolution (see server log)"
+        return (
+            "已拉起本地进化（后台子进程，样本不足会直接跳过）。完成后用 /smartRouter status 查看结果。"
+            if language != "en" else
+            "Local evolution started in background; check /smartRouter status for the result."
+        )
+
     if sub in ("reset", "clear"):
         from routivus.adaptive.store import reset_adaptive_data
         from routivus.adaptive.calibrate import recalibrate
@@ -219,16 +234,29 @@ def _cmd_smart_router(
         from routivus.router.postprocess import Hysteresis
         from routivus.router.ml_router import MLRouter
 
-        removed = reset_adaptive_data()
-        # 重建内存共享状态，使 reset 立即生效（不再用旧校准/规则）
+        hard = "--hard" in arg
+        removed = reset_adaptive_data(hard=hard)
+        # 重建内存共享状态，使 reset 立即生效（不再用旧校准/规则）；--hard 时
+        # 本地产物已删，MLRouter 会重新落位出厂基线（ensure_default_artifacts）
         agent._smart_calibration = recalibrate()
         agent._smart_learned = re_learn()
         agent._smart_hysteresis = Hysteresis()
         from routivus.router.semantic import load_semantic_encoder
 
         agent._smart_ml = MLRouter(semantic=load_semantic_encoder())  # 与主循环一致
+        try:
+            from routivus.server.routing import reset_shared_assets
+
+            reset_shared_assets()  # 服务端：丢弃进程级共享资产，下次路由重新加载
+        except Exception:  # noqa: BLE001 - TUI/单测里没有服务端共享资产
+            pass
         detail = ", ".join(removed) if removed and language == "en" else "、".join(removed) if removed else ("(nothing to clear this round)" if language == "en" else "（本轮无可清除项）")
-        return translate(language, "ui.router.reset", detail=detail)
+        base = translate(language, "ui.router.reset", detail=detail)
+        if hard:
+            base += ("\n已连本地产物一起清除，下次启动回到出厂基线。"
+                     if language != "en" else
+                     "\nLocal artifacts cleared; next start falls back to the bundled baseline.")
+        return base
 
     if sub == "status" or arg.strip() in ("status", ""):
         lines = [translate(language, "ui.router.status", status="Enabled" if settings.smart_router_enabled else "Disabled" if language == "en" else "开启" if settings.smart_router_enabled else "关闭")]
@@ -276,6 +304,11 @@ def _cmd_smart_router(
                 lines.append(translate(language, "ui.router.ml_available", suffix=suffix, dim=ml.sem_dim))
             else:
                 lines.append(translate(language, "ui.router.ml_offline"))
+                # 原因码（方案 10 §4.6）：把"无产物或依赖缺失"拆成可操作的结论
+                reason = getattr(ml, "unavailable_reason", "")
+                if reason:
+                    lines.append(f"  ML 原因码：{reason}" if language != "en"
+                                 else f"  ML reason: {reason}")
             # 语义通道：可用性/产物/耗时/有效样本 观测
             sem = ml.semantic
             if sem is not None:
@@ -287,9 +320,95 @@ def _cmd_smart_router(
                     lines.append(translate(language, "ui.router.semantic_broken"))
                 else:
                     lines.append(translate(language, "ui.router.semantic_missing"))
+        # 本地进化（方案 10 §2 目标 4）：样本量 / 上次进化 / holdout 表现 / 产物来源
+        lines.extend(_evolve_status_lines(language, agent))
         return "\n".join(lines)
 
     return translate(language, "ui.router.usage")
+
+
+def _ml_source(agent: ReActAgent) -> str:
+    """当前 ML 产物来源：优先 agent 绑定的路由器，其次服务端共享资产。"""
+    ml = getattr(agent, "_smart_ml", None)
+    source = getattr(ml, "source", "") if ml is not None else ""
+    if source:
+        return str(source)
+    try:
+        from routivus.server.routing import shared_assets
+
+        return str(getattr(shared_assets().ml, "source", "") or "")
+    except Exception:  # noqa: BLE001 - TUI / 单测里没有服务端共享资产
+        return ""
+
+
+def _evolve_status_lines(language: UiLanguage, agent: ReActAgent) -> list[str]:
+    """本地进化状态（方案 10 §2 目标 4）：样本量、上次进化、holdout 表现、产物来源。
+
+    只读本地文件（feedback.log / sem_samples.jsonl / evolve_state.json）；
+    任何异常都退化成空列表，绝不让 status 命令报错。
+    """
+    try:
+        import time
+
+        from routivus.adaptive.evolve import (
+            COOLDOWN_DAYS,
+            MIN_NEW,
+            auto_enabled,
+            collect_samples,
+            read_state,
+        )
+        from routivus.adaptive.training import TIER_NAMES as _TIER_NAMES
+
+        samples, _stats = collect_samples()
+        counts: dict[int, int] = {}
+        for s in samples:
+            counts[int(s["tier"])] = counts.get(int(s["tier"]), 0) + 1
+        per = " ".join(f"{name}={counts.get(i, 0)}" for i, name in enumerate(_TIER_NAMES))
+        state = read_state()
+        lines: list[str] = []
+        lines.append(
+            f"  本地进化：可用样本 {len(samples)}（{per}）"
+            if language != "en" else
+            f"  Local evolution: {len(samples)} usable samples ({per})"
+        )
+
+        if state.evolve_count:
+            acc = "N/A" if state.last_holdout_acc is None else f"{state.last_holdout_acc:.3f}"
+            base_acc = ("N/A" if state.last_baseline_acc is None
+                        else f"{state.last_baseline_acc:.3f}")
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(state.last_success_at))
+            lines.append(
+                f"  上次进化：{when} · holdout {acc}（基线 {base_acc}）· 累计 {state.evolve_count} 次"
+                if language != "en" else
+                f"  Last evolved: {when} · holdout {acc} (baseline {base_acc})"
+                f" · {state.evolve_count} time(s)"
+            )
+        elif state.last_attempt_at:
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(state.last_attempt_at))
+            lines.append(
+                f"  上次尝试：{when} · 结果 {state.last_decision or '-'}（{state.last_reason or '-'}）"
+                if language != "en" else
+                f"  Last attempt: {when} · {state.last_decision or '-'}"
+                f" ({state.last_reason or '-'})"
+            )
+
+        source = _ml_source(agent)
+        if source:
+            label = {"semantic": "语义版（出厂/本地）", "nosem": "无语义兜底版",
+                     "explicit": "指定产物"}.get(source, source)
+            lines.append(f"  产物来源：{label}" if language != "en"
+                         else f"  Artifact source: {source}")
+
+        lines.append(
+            f"  自动演化：{'开' if auto_enabled() else '关'}"
+            f"（冷却 {COOLDOWN_DAYS:g} 天 / 新增门槛 {MIN_NEW} / 每 50 轮检查）"
+            if language != "en" else
+            f"  Auto evolution: {'on' if auto_enabled() else 'off'}"
+            f" (cooldown {COOLDOWN_DAYS:g}d / min new {MIN_NEW})"
+        )
+        return lines
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _disable_smart_router(settings: Settings, manager: ConfigManager) -> None:

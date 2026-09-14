@@ -16,7 +16,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import logging
+
 from ..adaptive.calibrate import CONFIDENCE_BASE, apply_calibration
+
+logger = logging.getLogger("routivus.router.ml_router")
+
+
+def _log_load_failure(path: object, reason: str, exc: BaseException) -> None:
+    """产物加载失败要说清"哪个文件、什么原因"（方案 10 §4.6）。
+
+    之前是裸 except：环境里 onnxruntime / lightgbm 装坏时，界面只有一句
+    「ML 精判不可用（无产物或依赖缺失）」，日志里什么都看不到。
+    """
+    logger.warning("ML 产物加载失败（%s）：%s —— %s", reason, path, exc)
 
 # 产物格式版本（与 tools/train_router.py 的 ARTIFACT_FORMAT 一致）
 ARTIFACT_FORMAT = 1
@@ -41,9 +54,12 @@ class MLRouter:
         self._model = None
         self._feature_keys: tuple[str, ...] = ()
         # 可选语义编码器（bge 512 维）。训练产物带 sem_dim>0 时，
-        # 预测需语义列；语义不可用则整个静默回落（无法提供既定列宽）。
+        # 预测需语义列；语义不可用则该级回落，继续试无语义兜底产物。
         self._semantic = semantic
         self._sem_dim = 0
+        # 产物来源（semantic / nosem / explicit / ""）与不可用原因码（方案 10 §4.5/§4.6）
+        self._source = ""
+        self._unavailable_reason = ""
         # 随包兜底：默认产物缺失时首启自动落位（clone 后开箱可用）
         if artifact_path is None:
             self._ensure_bundled()
@@ -56,37 +72,71 @@ class MLRouter:
 
     # -- 加载 -----------------------------------------------------------
     def _load(self, artifact_path: Path | None) -> None:
-        """加载产物；任何异常（缺依赖/缺文件/损坏/格式不符）→ 不可用。"""
-        path = artifact_path or self._default_path()
+        """按**回落链**加载产物（方案 10 §4.5）：
+
+        显式路径 > 语义版（``router.lgb``）> 无语义兜底（``router.lgb.nosem``）。
+
+        为什么要第二级：语义版声明 ``sem_dim>0``，环境里 onnxruntime 缺失/装坏时
+        整层 ML 精判会消失；无语义版只用数值特征，那种环境下仍然可用。
+        每一级失败都记原因码，全部失败时由 route() 把原因写进 notes。
+        """
+        chain: list[tuple[str, Path | None]] = []
+        if artifact_path is not None:
+            chain.append(("explicit", artifact_path))
+        else:
+            chain.append(("semantic", self._default_path()))
+            from ..adaptive.store import ml_router_nosem_path
+            chain.append(("nosem", ml_router_nosem_path()))
+
+        reasons: list[str] = []
+        for kind, path in chain:
+            reason = self._try_load(path)
+            if reason == "":
+                self._source = kind
+                self._unavailable_reason = ""
+                return
+            reasons.append(reason)
+        self._source = ""
+        # 取最后一级的原因：它最接近"为什么最终没有可用产物"
+        self._unavailable_reason = reasons[-1] if reasons else "no_artifact"
+
+    def _try_load(self, path: Path | None) -> str:
+        """尝试加载一个产物；成功返回空串，失败返回原因码。"""
         if path is None or not path.exists():
-            return
+            return "no_artifact"
         try:
             import joblib  # noqa: PLC0415
             from sklearn.utils.validation import check_is_fitted  # noqa: PLC0415
+        except ImportError:
+            # lightgbm / sklearn 不可用（onnxruntime 之外的依赖）
+            return "runtime_missing"
+        try:
             payload = joblib.load(path)
-            if not isinstance(payload, dict) or payload.get("format") != ARTIFACT_FORMAT:
-                return
+        except Exception as exc:  # noqa: BLE001 - 损坏 / 缺 lightgbm / 版本不兼容
+            _log_load_failure(path, "load_failed", exc)
+            return "load_failed"
+        try:
+            if not isinstance(payload, dict):
+                return "bad_artifact"
+            if payload.get("format") != ARTIFACT_FORMAT:
+                return "version_mismatch"
             model = payload.get("model")
-            vec = payload.get("vectorizer")
-            keys = payload.get("feature_keys") or ()
             if not hasattr(model, "predict_proba"):
-                return
+                return "bad_artifact"
             check_is_fitted(model)
             sem_dim = payload.get("sem_dim", 0) or 0
-            # 产物声明需要语义列，但语义编码器不可用 → 整链静默回落
+            # 语义版要求编码器可用；不可用则交给下一级（无语义兜底）
             if sem_dim > 0 and (self._semantic is None or not self._semantic.available):
-                return
-            self._vectorizer = vec
-            self._model = model
-            self._feature_keys = tuple(keys)
-            self._sem_dim = int(sem_dim)
-            self._payload = payload
-        except Exception:
-            self._payload = None
-            self._vectorizer = None
-            self._model = None
-            self._feature_keys = ()
-            self._sem_dim = 0
+                return "no_semantic"
+        except Exception as exc:  # noqa: BLE001
+            _log_load_failure(path, "bad_artifact", exc)
+            return "bad_artifact"
+        self._vectorizer = payload.get("vectorizer")
+        self._model = model
+        self._feature_keys = tuple(payload.get("feature_keys") or ())
+        self._sem_dim = int(sem_dim)
+        self._payload = payload
+        return ""
 
     def _default_path(self) -> Path | None:
         from ..adaptive.store import data_dir
@@ -96,6 +146,16 @@ class MLRouter:
     def available(self) -> bool:
         """产物已成功加载且模型可用。"""
         return self._model is not None
+
+    @property
+    def source(self) -> str:
+        """当前产物来源：``semantic`` / ``nosem`` / ``explicit`` / ``""``（不可用）。"""
+        return self._source
+
+    @property
+    def unavailable_reason(self) -> str:
+        """不可用原因码；可用时为空串。供 notes / status / 日志解释"为什么没走 ML"。"""
+        return self._unavailable_reason
 
     @property
     def n_samples(self) -> int | None:
@@ -164,7 +224,8 @@ class MLRouter:
         """
         if not self.available:
             if notes is not None:
-                notes.append("ml:unavailable")
+                reason = self._unavailable_reason
+                notes.append(f"ml:unavailable:{reason}" if reason else "ml:unavailable")
             return None
         pred = self.predict(text, features)
         if pred is None:

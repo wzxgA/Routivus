@@ -29,6 +29,39 @@ export function formatScore(score: number): string {
   return Number.isInteger(score) ? String(score) : score.toFixed(1)
 }
 
+/**
+ * ML 精判不可用的**可操作**文案（方案 10 §4.6）。
+ *
+ * 后端下发原因码（`ml:unavailable:<reason>`），这里翻成"该去装什么/查什么"，
+ * 而不是一句合并的「无产物或依赖缺失」。
+ */
+function mlUnavailableLabel(reason: string): string {
+  switch (reason) {
+    case 'runtime_missing':
+      return 'ML 精判不可用（onnxruntime 导入失败，重装 onnxruntime 即可恢复）'
+    case 'artifact_missing':
+      return 'ML 精判不可用（语义产物缺失）'
+    case 'tokenizer_missing':
+      return 'ML 精判不可用（语义产物缺伴生 tokenizer）'
+    case 'dim_mismatch':
+      return 'ML 精判不可用（语义产物输出维度不符）'
+    case 'load_failed':
+      return 'ML 精判不可用（语义产物加载失败）'
+    case 'no_semantic':
+      return 'ML 精判不可用（语义编码器不可用且无兜底产物）'
+    case 'bad_artifact':
+      return 'ML 精判不可用（产物损坏或格式不符）'
+    case 'version_mismatch':
+      return 'ML 精判不可用（产物版本与本版本不匹配）'
+    case 'no_artifact':
+      return 'ML 精判不可用（无产物）'
+    case '':
+      return 'ML 精判不可用（无产物或依赖缺失）'
+    default:
+      return `ML 精判不可用（原因码 ${reason}）`
+  }
+}
+
 /** 单条依据 → 中文短语；未知格式原样返回，保证新枚举不会显示成空白。 */
 export function describeNote(raw: string): NoteView {
   const text = String(raw ?? '')
@@ -68,8 +101,16 @@ export function describeNote(raw: string): NoteView {
         const prob = tail.replace('skipped:low_conf(', '').replace(')', '')
         return { raw: text, label: `ML 精判信心不足${prob ? `（${prob}）` : ''}，沿用规则档`, tone: 'muted' }
       }
-      if (tail === 'unavailable') {
-        return { raw: text, label: 'ML 精判不可用（无产物或依赖缺失）', tone: 'muted' }
+      if (tail === 'nosem') {
+        return {
+          raw: text,
+          label: 'ML 精判走无语义兜底版（该环境缺 onnxruntime，不影响路由）',
+          tone: 'muted',
+        }
+      }
+      if (tail === 'unavailable' || tail.startsWith('unavailable:')) {
+        const reason = tail.startsWith('unavailable:') ? tail.slice('unavailable:'.length) : ''
+        return { raw: text, label: mlUnavailableLabel(reason), tone: 'muted' }
       }
       return { raw: text, label: 'ML 精判异常，沿用规则档', tone: 'muted' }
     }

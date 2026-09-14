@@ -21,8 +21,15 @@ FEEDBACK_LOG = "feedback.log"        # JSONL 追加，只增不改
 CALIBRATION_JSON = "calibration.json"  # 校准结果，原子写
 LEARNED_RULES_JSON = "learned_rules.json"  # 自学习规则
 ML_ROUTER_BIN = "router.lgb"         # ML 精判产物（joblib 容器）
+ML_ROUTER_NOSEM = "router.lgb.nosem"  # 无语义兜底产物（onnxruntime 不可用时的回落链第二级）
 SEMANTIC_ONNX = "router_semantics.onnx"  # bge 语义编码器（ONNX int8）落盘（见 learned_rules.py）
 SEMANTIC_ONNX_TOK = "router_semantics.json"  # 与 .onnx 同名的伴生 tokenizer（semantic.py 按主文件同级取）
+ML_ROUTER_PREV = "router.lgb.prev"   # 上一版本地产物（进化替换前备份，供回滚）
+SEM_SAMPLES_JSONL = "sem_samples.jsonl"  # 本地样本库：text_hash -> 语义向量（不存原文，方案 10 §4.1）
+EVOLVE_STATE_JSON = "evolve_state.json"  # 进化状态：上次尝试/成功时间、增量计数（方案 10 §4.3）
+EVOLVE_LOG = "evolve.log"            # 每次尝试一行 JSONL（为什么没进化的唯一可信来源）
+SEMANTIC_HEAD = "semantic_head.json"  # L3 本地语义头（质心，方案 10 §4.7）
+EVOLVE_LOCK = "evolve.lock"          # 演化子进程互斥锁
 
 
 def feedback_log_path() -> Path:
@@ -41,14 +48,59 @@ def semantic_onnx_path() -> Path:
     return data_dir() / SEMANTIC_ONNX
 
 
-def reset_adaptive_data() -> list[str]:
+def ml_router_path() -> Path:
+    return data_dir() / ML_ROUTER_BIN
+
+
+def ml_router_nosem_path() -> Path:
+    return data_dir() / ML_ROUTER_NOSEM
+
+
+def ml_router_prev_path() -> Path:
+    return data_dir() / ML_ROUTER_PREV
+
+
+def sem_samples_path() -> Path:
+    return data_dir() / SEM_SAMPLES_JSONL
+
+
+def evolve_state_path() -> Path:
+    return data_dir() / EVOLVE_STATE_JSON
+
+
+def evolve_log_path() -> Path:
+    return data_dir() / EVOLVE_LOG
+
+
+def semantic_head_path() -> Path:
+    return data_dir() / SEMANTIC_HEAD
+
+
+def evolve_lock_path() -> Path:
+    return data_dir() / EVOLVE_LOCK
+
+
+def reset_adaptive_data(hard: bool = False) -> list[str]:
     """清空校准与自学习规则（feedback.log 保留作历史）。返回被删除的文件名。
 
     ``/smartRouter reset``。删除后校准/规则回到空态，
     等价于“删掉 calibration.json + learned_rules.json 回到空态”。
+
+    ``hard=True``（``/smartRouter reset --hard``，方案 10 §4.4）：额外删除**本地
+    进化产物**（router.lgb / sem_samples.jsonl / router.lgb.prev / semantic_head.npz），
+    下次启动由 ``ensure_default_artifacts()`` 重新落位出厂基线。feedback.log 仍保留。
     """
+    targets = [calibration_path(), learned_rules_path()]
+    if hard:
+        targets += [
+            ml_router_path(),
+            ml_router_prev_path(),
+            sem_samples_path(),
+            semantic_head_path(),
+            evolve_state_path(),
+        ]
     removed: list[str] = []
-    for p in (calibration_path(), learned_rules_path()):
+    for p in targets:
         try:
             if p.exists():
                 p.unlink()
@@ -84,7 +136,7 @@ def _atomic_copy(src: Path, dst: Path) -> None:
 
 
 # 随包默认产物（routivus/assets/，wheel 打包自带）：包内名称 -> 数据目录的目标路径
-_BUNDLED_BASENAMES = (ML_ROUTER_BIN, SEMANTIC_ONNX, SEMANTIC_ONNX_TOK)
+_BUNDLED_BASENAMES = (ML_ROUTER_BIN, ML_ROUTER_NOSEM, SEMANTIC_ONNX, SEMANTIC_ONNX_TOK)
 
 
 def _bundled_target(name: str) -> Path:
@@ -95,7 +147,8 @@ def _bundled_target(name: str) -> Path:
 def ensure_default_artifacts() -> None:
     """首启把随包产物复制到数据目录；目标已存在则跳过（不覆盖用户数据）。
 
-    随包资源在 ``routivus/assets/``：``router.lgb``（ML 精判兜底）与
+    随包资源在 ``routivus/assets/``：``router.lgb``（ML 精判兜底）、
+    ``router.lgb.nosem``（无语义兜底，缺 onnxruntime 时仍可用）与
     ``router_semantics.onnx`` + ``.json``（语义编码器）。无随包资源、
     目标已存在或复制失败时静默跳过——对应功能维持离线回落，绝不影响启动。
     """

@@ -232,7 +232,7 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 - **Markdown 渲染**：会话正文支持标题 / 列表（含嵌套）/ 表格 / 任务列表 / 删除线 / 引用 / 链接 / 图片 / 围栏代码块；代码块带语言角标、一键复制与语法着色（暖白与夜间各一套配色，均经对比度校核）。三重取舍：流式输出期间先不着色、这一轮结束后再上色；逐 token 的增量先攒 60ms 再合并刷出（把渲染次数封顶）；单块超过 300 行或 20k 字符跳过着色（保滚动与内存，角标与复制仍在）。安全边界不变：不渲染裸 HTML、链接仅 http/https、不使用 `innerHTML`。
 - **项目文件**：顶栏「文件」页签进入整页视图——左侧懒加载文件树（逐层请求、可切换显示被忽略目录），右侧查看或编辑；聊天页还可按 `Ctrl+Shift+E` 展开只读抽屉边聊边看。点击文件**默认先预览**（想改再点「编辑」），编辑态可保存（`Ctrl+S`）并显示光标行列；图片直接预览，二进制/超 1MB/含无法解码字节的文件只读。写入边界：只允许项目根内（`..` 与软链接逃逸一律拒绝）、拒绝写 `.git` 与被忽略目录、超 5MB 拒绝；保存带内容版本号，文件被外部改过会提示「覆盖 / 重新加载」而不是静默覆盖；换行符按原文件保留（Windows 上 CRLF 文件不会因为改一行而整篇 diff）。每次写入都会记入 `.routivus/audit.log`。
 - **终端抽屉**：`Ctrl+\`` 或顶栏按钮展开，走 `/api/ws/projects/{id}/terminal`，服务端绑定项目 cwd；**Windows 上默认就是 PowerShell**（自动探测 `pwsh.exe` → `powershell.exe`，见「终端通道」一节），想用 cmd 设 `ROUTIVUS_TERMINAL_SHELL=cmd.exe`；抽屉标题与提示符跟随实际 shell。
-- **智能路由**：配置页开关与四档；普通对话轮按任务复杂度自动换档，顶栏 chip 与信息侧栏显示本轮档位与实际模型。
+- **智能路由**：配置页开关与四档；普通对话轮按任务复杂度自动换档，顶栏 chip 与信息侧栏显示本轮档位与实际模型。ML 精判走「出厂兜底 → 本地进化」，`/smartRouter status` 会显示 ML 可用性与**原因码**（例：`runtime_missing` 即 onnxruntime 导入失败）、产物来源（语义版 / 无语义兜底版）以及本地进化状态（样本量 / 上次进化 / holdout 对比）；`/smartRouter evolve` 手动触发一次本地重训。
 - **主题**：暖白 / 夜间双主题（含夜空动效），偏好存 `localStorage`。
 
 已知限制：
@@ -243,6 +243,8 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 - `/team resume` 只能恢复**本会话最近一次** `/team` 的执行器，且写入范围必须显式声明（`--write-scope`，fail closed）；服务重启后执行器不保留，无法恢复。
 - Memory 页签展示的是**项目级**长期记忆（`<项目根>/.routivus/memory.db`，同一项目的所有会话共享同一份）；会话快照的 `memory` 段与 `/api/sessions/{id}/memory` 都直接读它，`/save`、`/memory delete` 执行后会推送 `memory.updated` 让页签重拉。库里没有条目时为空态（不会为了看一眼记忆就在项目里建库）；条目默认只回传最近 20 条（`limit` 上限 100），超出会在页签里提示总数。
 - 终端通道要求鉴权：Vite 开发端口是 `5183`，需把后端 `ROUTIVUS_ALLOWED_ORIGINS` 设为 `http://localhost:5183`（或配置 `VITE_ROUTIVUS_TOKEN`），否则终端会以 `terminal_auth_required` 拒绝。
+- 本地进化的节奏：隐式信号是**弱标签**（`interrupt` 可能是手滑），可用样本只产在"档位被判定不合适"的轮次，桌面端一天可能只有几条 → **首次自动进化通常落在第 2–4 周**；在那之前让你觉得"越来越贴合"的是 L1（校准 + 局部规则，秒级生效）。另外：随包 `router.lgb` 由 34 条演示样本训出（`val_accuracy` ≈ 0.29，接近四分类随机水平），更像"接口占位"；满足门槛（首次 ≥120 条）的本地重训大概率会明显超过它——这也是"不劣门"只在**本地产物之间**比较的原因（本地 holdout 没有原文，TF-IDF 列全零，拿出厂产物比不公平）。
+- 语义编码器 `router_semantics.onnx` 随包 **22.8MB**（int8 量化），所以 wheel 体积约 26MB；`tools/export_bge_onnx.py` 可离线重导出，`tools/distill_nosem_router.py` 可复现无语义兜底产物。
 - 未实现「开发环境 mock adapter」：前端全部走真实 REST / WebSocket，没有离线可视化回归模式，视觉回归依赖真实后端。
 
 ## 数据目录与迁移
@@ -252,7 +254,13 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 | `~/.routivus/projects.json` | 项目注册表（原子写入） | `ROUTIVUS_PROJECTS_FILE` |
 | `~/.routivus/workspace.sqlite3` | 会话、消息、笔记、事件、幂等 request 表 | `ROUTIVUS_DATABASE_PATH` |
 | `~/.routivus/config.json` | Provider / 模型 / SmartRouter / 主题无关的后端配置 | `/provider`、`/tier` 等命令 |
-| `~/.routivus/adaptive/router.lgb` | SmartRouter ML 精判模型（可选） | `/train` |
+| `~/.routivus/adaptive/router.lgb` | SmartRouter ML 精判产物（出厂语义版 → 可被本地进化替换；`router.lgb.prev` 为上一版，供回滚） | 随包落位、`/smartRouter evolve`、`/train` |
+| `~/.routivus/adaptive/router.lgb.nosem` | **无语义兜底产物**：缺 onnxruntime 的环境仍有一层 ML 精判 | 随包落位（`tools/distill_nosem_router.py` 可复现） |
+| `~/.routivus/adaptive/router_semantics.onnx` + `.json` | 语义编码器（bge-small-zh，int8）与伴生 tokenizer | 随包落位；`tools/export_bge_onnx.py` 可离线重导出 |
+| `~/.routivus/adaptive/calibration.json`、`learned_rules.json` | 本地校准偏置与自学习规则（L1，秒级生效） | 启动时聚合 `feedback.log` |
+| `~/.routivus/adaptive/sem_samples.jsonl` | 本地样本库：`text_hash` + 512 维语义向量（**不存原文**） | 路由时自动采集（编码器可用时） |
+| `~/.routivus/adaptive/evolve_state.json`、`evolve.log` | 进化状态（上次尝试/成功、增量计数）与每次尝试的决策记录 | `/smartRouter evolve`、自动触发 |
+| `~/.routivus/adaptive/semantic_head.json` | L3 本地语义头（每档质心，方案 10 §4.7） | 进化时训练 |
 | `~/.routivus/input-history/` | 按项目隔离的输入历史 | 自动 |
 | `<项目>/.routivus/memory.db` | 项目长期记忆 | `/save`、`/memory` |
 | `<项目>/.routivus/audit.log` | 审计 JSONL（工具、审批、终端命令） | 自动 |
@@ -260,6 +268,20 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 | `<项目>/Routivus.md`、`Routivus.local.md` | 项目记忆文件，每次任务自动注入 | `/init` 或手动 |
 
 迁移行为：`workspace.sqlite3` 用 `PRAGMA user_version` 版本化，`WorkspaceStore._initialize()` 在打开时按版本增量建表（当前 `VERSION = 3`）。**只支持向上迁移**：若文件版本高于当前代码版本会直接抛错，不做降级。项目注册表带 `version` 字段，版本不匹配同样拒绝读取。删除数据请直接删文件；**删除项目注册关系不会删除项目目录**（`DELETE /api/projects/{id}` 只改元数据）。
+
+### 本地进化与隐私（SmartRouter）
+
+ML 精判是「**出厂兜底 + 本地进化**」的分层结构：出厂基线人人相同，之后各人不同。
+
+| 层 | 内容 | 谁在变 |
+|---|---|---|
+| L0 出厂兜底 | 随包的语义编码器、`router.lgb`（语义版）与 `router.lgb.nosem`（无语义兜底）。首启复制到数据目录，**已存在则不覆盖**（不会冲掉你的进化成果） | 所有人相同 |
+| L1 在线微调 | `calibration.json`（每档偏置，±0.15 夹紧）+ `learned_rules.json`（±1 档局部规则）；单档样本 ≥20 才生效 | **已经每人不同**，秒级、每次启动重算 |
+| L2 本地重训 | `/smartRouter evolve`（或自动触发）用本机 feedback 重训 `router.lgb`，产物含 L3 语义头 | 每人不同 |
+
+**自动演化何时触发**：启动后与每 50 轮各检查一次，**全部**满足才训练 —— 距上次尝试 ≥7 天、自上次成功新增可用样本 ≥20、每档有效标签 ≥20 且总量 ≥60（首次 ≥120）、没有其他演化进程在跑。**不劣门**：新产物在同一 holdout（按时间切分）上的加权准确率不得低于当前在用产物，否则**丢弃**并把原因写进 `evolve.log`。训练在子进程里跑（`python -m routivus.adaptive.evolve`），不阻塞交互；只有真实服务进程会触发（`ROUTIVUS_SERVER_RUNTIME=1`），测试与库调用永远不会偷偷训练。开关：`ROUTIVUS_ADAPTIVE_EVOLVE=off` 关掉自动演化（手动命令仍可用）。
+
+**隐私**：反馈与样本**全部留在本机**，不联网、不上传。`feedback.log` 只存输入的短哈希与特征快照；`sem_samples.jsonl` 存的是 512 维语义向量（int8 量化，基本不可逆推原文）——**整条训练链路不需要原文**。清空入口：`/smartRouter reset`（清校准与规则）或 `/smartRouter reset --hard`（连本地产物与样本一起，下次启动回到出厂基线）。
 
 ## MVP 冻结与验证记录
 

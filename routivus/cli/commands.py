@@ -377,9 +377,19 @@ SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
             SlashSubcommandSpec("status", "/smartRouter status", "查看开关状态、四档模型配置、校准与自学习规则"),
             SlashSubcommandSpec("on", "/smartRouter on", "开启智能路由"),
             SlashSubcommandSpec("off", "/smartRouter off", "关闭并恢复开启前的手动模型"),
-            SlashSubcommandSpec("reset", "/smartRouter reset", "清空校准与自学习规则（feedback.log 保留）"),
+            SlashSubcommandSpec(
+                "evolve",
+                "/smartRouter evolve [--force]",
+                "用本机反馈重训 ML 产物（后台子进程，样本不足会跳过）",
+            ),
+            SlashSubcommandSpec(
+                "reset",
+                "/smartRouter reset [--hard]",
+                "清空校准与自学习规则（--hard 连本地产物一起，回到出厂基线）",
+            ),
         ),
-        examples=("/smartRouter", "/smartRouter on", "/smartRouter status", "/smartRouter reset"),
+        examples=("/smartRouter", "/smartRouter on", "/smartRouter status",
+                  "/smartRouter evolve", "/smartRouter reset --hard"),
     ),
     SlashCommandSpec(
         "/train",

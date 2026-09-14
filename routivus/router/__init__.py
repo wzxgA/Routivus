@@ -88,13 +88,19 @@ def route(text: str, *,
 
     # 优先：ML 精判（仅软规则决策、且产物可用时）→ 置信门 + 校准偏置
     if ml_router is not None and not hard_rule and ml_router.available:
+        if getattr(ml_router, "source", "") == "nosem":
+            # 无语义兜底产物（缺 onnxruntime 的环境，方案 10 §4.5）：ML 仍可用，
+            # 只是没有语义列 —— 单记一条依据，界面据此说明"用的是兜底版"
+            notes.append("ml:nosem")
         ml_tier = ml_router.decide(text, f, calibration, notes=notes)
         if ml_tier is not None:
             tier_idx = ml_tier
     else:
         if ml_router is not None and not hard_rule:
-            # 配置了 ML 精判但产物不可用：留一条依据，避免"为什么没走 ML"无从解释
-            notes.append("ml:unavailable")
+            # 配置了 ML 精判但产物不可用：带上原因码（方案 10 §4.6），
+            # 让界面能说"onnxruntime 导入失败"而不是"无产物或依赖缺失"
+            reason = getattr(ml_router, "unavailable_reason", "") or ""
+            notes.append(f"ml:unavailable:{reason}" if reason else "ml:unavailable")
         if calibration is not None:
             calibrated = apply_calibration(
                 tier_idx, confidence(decision), hard_rule, calibration,

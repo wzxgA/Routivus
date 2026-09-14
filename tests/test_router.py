@@ -433,7 +433,8 @@ class TestRouteNotes:
 
     def test_ml_unavailable_note(self):
         r = route("写个二分查找", ml_router=MLRouter(artifact_path=Path("absent.lgb")))
-        assert "ml:unavailable" in r.notes
+        # 带原因码（方案 10 §4.6）：显式路径不存在 → no_artifact
+        assert "ml:unavailable:no_artifact" in r.notes
 
     def test_notes_do_not_change_decision(self):
         """总闸：notes 是纯记录，档位与既有断言完全一致。"""

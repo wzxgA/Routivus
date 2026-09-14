@@ -195,6 +195,31 @@ class SessionRouter:
         # 最近一次路由的运行态补充（是否真的换了模型 / 路由与加载耗时，方案 08 §4.2）
         self.last_meta: dict[str, Any] = {}
 
+    def _capture_sem_sample(self, text: str) -> None:
+        """把本轮的语义向量写入本地样本库；语义通道不可用时静默跳过。
+
+        成本：一次 encode（int8 小模型，约 0.6ms）+ 一行 JSONL 追加，跑在 to_thread 里。
+
+        只在**真实服务进程**里采集（``ROUTIVUS_SERVER_RUNTIME=1``，由
+        ``server/__main__.py`` 设置）：否则测试会往用户真实数据目录里灌样本，
+        污染本地进化的语料。与自动进化的门控同源（``adaptive/evolve.py``）。
+        """
+        if os.environ.get("ROUTIVUS_SERVER_RUNTIME") != "1":
+            return
+        try:
+            encoder = getattr(shared_assets().ml, "semantic", None)
+            if encoder is None or not getattr(encoder, "available", False):
+                return
+            vec = encoder.encode(text)
+            if not vec:
+                return
+            from routivus.adaptive.feedback import text_hash
+            from routivus.adaptive.samples import write_sem_sample
+
+            write_sem_sample(text_hash(text), vec)
+        except Exception:  # noqa: BLE001 - 采集失败只影响进化，不影响路由
+            logger.debug("sem sample capture failed", exc_info=True)
+
     def apply(self, text: str, *, settings: Any, manager: Any, agent: Any) -> tuple[Any, str]:
         """对一轮输入做路由，并按结果切换 `agent.llm`。
 
@@ -236,6 +261,16 @@ class SessionRouter:
             TIER_NAMES,
         )
         self.feedback.flush()
+        # 本地样本库（方案 10 §4.1）：采集期就把语义向量存下来 —— 训练时没有原文，
+        # 事后算不出向量。不存原文，只落 text_hash + int8 量化的 512 维向量。
+        self._capture_sem_sample(text)
+        # 每 N 轮做一次"是否值得进化"的轻量检查；真正的训练在子进程里（方案 10 §4.3）
+        try:
+            from routivus.adaptive.evolve import note_turn
+
+            note_turn()
+        except Exception:  # noqa: BLE001 - 演化触发绝不影响路由
+            logger.debug("evolve trigger skipped", exc_info=True)
 
         error = ""
         before = (settings.provider, settings.model)
