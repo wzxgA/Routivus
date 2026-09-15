@@ -60,6 +60,12 @@
   --hl-punct: #6a6455;
   --hl-add: #357045;
   --hl-del: #b0473a;
+  /* token 面板的四档配色（方案 12）：取自本文件里已做过对比度校核的色板，
+     绿 → 蓝 → 琥珀 → 砖红，档位越高越"热"。对白底最低 3.6（图形元素按 3:1 校核） */
+  --tier-basic: #3e7c50;
+  --tier-enhanced: #2f6f8f;
+  --tier-superior: #a3822b;
+  --tier-ultimate: #b0473a;
 }
 
 * {
@@ -3111,56 +3117,6 @@ button {
 .usage-kpi-sub .dim {
   color: var(--faint);
 }
-.usage-chart {
-  position: relative;
-  margin-top: 14px;
-}
-.usage-svg {
-  display: block;
-  width: 100%;
-  height: 92px;
-}
-.usage-hit {
-  fill: transparent;
-}
-.usage-bar-prompt {
-  fill: var(--muted);
-}
-.usage-bar-completion {
-  fill: var(--accent);
-}
-.usage-axis {
-  display: flex;
-  gap: 10px;
-  margin-top: 4px;
-  font-size: 10px;
-  color: var(--faint);
-}
-.usage-axis-peak {
-  margin-left: auto;
-}
-.usage-tip {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  transform: translateX(-50%);
-  z-index: 20;
-  padding: 6px 9px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 8px 26px rgba(60, 54, 40, 0.14);
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text);
-  white-space: nowrap;
-  pointer-events: none;
-}
-.usage-tip-date {
-  font-weight: 700;
-}
-.usage-tip .dim {
-  color: var(--faint);
-}
 .usage-tiers {
   display: flex;
   flex-direction: column;
@@ -3178,9 +3134,35 @@ button {
   font-size: 11px;
   color: var(--muted);
 }
+/* 档位 → 颜色：这一层只做映射，色值放在主题块（--tier-*），日/夜各一套。
+   未知档位回落 --accent，不会出现"没有颜色"的条。 */
+.usage-tier[data-tier='Basic'] {
+  --tier-color: var(--tier-basic);
+}
+.usage-tier[data-tier='Enhanced'] {
+  --tier-color: var(--tier-enhanced);
+}
+.usage-tier[data-tier='Superior'] {
+  --tier-color: var(--tier-superior);
+}
+.usage-tier[data-tier='Ultimate'] {
+  --tier-color: var(--tier-ultimate);
+}
 .usage-tier-name {
   width: 74px;
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+/* 色点与条形同色，档位名保持中性色：11px 的彩字在浅底与深底上对比度都不稳 */
+.usage-tier-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--tier-color, var(--accent));
 }
 .usage-tier-bar {
   flex: 1 1 auto;
@@ -3194,7 +3176,7 @@ button {
   display: block;
   height: 100%;
   border-radius: 4px;
-  background: var(--accent);
+  background: var(--tier-color, var(--accent));
 }
 .usage-tier-value {
   width: 52px;
@@ -3533,6 +3515,11 @@ kbd {
   --hl-punct: #8a857c;
   --hl-add: #8fd6a2;
   --hl-del: #e08b7d;
+  /* 四档配色的夜间版：色相不变、整体提亮，深底（--card #171717）上最低 5.6 */
+  --tier-basic: #6fbf86;
+  --tier-enhanced: #7fb8d8;
+  --tier-superior: #d9b45f;
+  --tier-ultimate: #e0705f;
 }
 
 [data-theme='night'] .app {
