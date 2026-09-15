@@ -21,7 +21,7 @@ uv sync                              # 或 pip install -e .；Windows 上 pywinp
 cd frontend && npm install           # 可选：Web Console 前端
 ```
 
-> 依赖不含 `textual`（已随 TUI 移除）。SmartRouter 的**运行时**依赖（`numpy` / `scikit-learn` / `lightgbm` / `joblib` / `onnxruntime` / `tokenizers`）与 Windows 的 `pywinpty` 均已并入核心依赖，装完即可用；只有**离线重导出**语义模型那套大件（`optimum` / `transformers` / `torch` / `safetensors`，即 `routivus[semantic]`）仍属可选，日常使用不需要。
+> 依赖不含 `textual`（已随 TUI 移除）。SmartRouter 的**运行时**依赖（`numpy` / `scikit-learn` / `lightgbm` / `joblib` / `onnxruntime` / `tokenizers`）、Windows 的 `pywinpty`（终端通道的 ConPTY 后端）与 `websockets`（**对话通道的 WebSocket 实现**，uvicorn 本身只带 http 栈；缺了它每个升级请求都被拒，前端会停在「重连中」）均已并入核心依赖，装完即可用；只有**离线重导出**语义模型那套大件（`optimum` / `transformers` / `torch` / `safetensors`，即 `routivus[semantic]`）仍属可选，日常使用不需要。
 
 ## 快速开始
 

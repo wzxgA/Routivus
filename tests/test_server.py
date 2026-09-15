@@ -32,6 +32,24 @@ def test_health_check_returns_request_id() -> None:
     assert response.headers["X-Request-ID"] == "req-test-1"
 
 
+def test_websocket_implementation_is_installed() -> None:
+    """回归：uvicorn 只声明 http 栈，WebSocket 协议得有实现（websockets / wsproto）。
+
+    缺了它每个升级请求都被 uvicorn 拒掉（日志：Unsupported upgrade request /
+    No supported WebSocket library detected），前端表现是**永远"重连中"**——对话
+    通道整条不可用。而 REST 全绿、所有走 TestClient 的用例也全绿（TestClient 自带
+    进程内 WS 实现），所以这个缺口必须从依赖层面钉住，否则很容易再被漏掉。
+    """
+    from uvicorn.config import Config
+
+    config = Config(app=None, ws="auto")
+    config.load()
+
+    assert config.ws_protocol_class is not None, (
+        "缺少 WebSocket 实现：装 websockets（uv add websockets / uv sync）"
+    )
+
+
 def test_server_config_uses_safe_default_port_and_validates_override(tmp_path: Path) -> None:
     config = ServerConfig.from_env(
         {

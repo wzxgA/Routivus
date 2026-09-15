@@ -23,6 +23,12 @@ dependencies = [
     # 缺了它终端通道会明确报错（terminal_unavailable），"装完就能用终端"这一步
     # 不该再让用户自己去找一个 extra（方案 09 §0.4）。
     "pywinpty>=2.0; sys_platform == 'win32'",
+    # WebSocket 实现。uvicorn 只声明 http 栈，WS 协议要另装实现（websockets / wsproto）——
+    # 缺了它每个升级请求都被拒（日志：Unsupported upgrade request / No supported
+    # WebSocket library detected），前端表现是永远"重连中"，整条对话通道不可用。
+    # 之所以显式列出而不是写 uvicorn[standard]：standard 还会带上 httptools /
+    # watchfiles / uvloop 等本项目用不到的加速件，装完即可用只需要这一个。
+    "websockets>=17.1",
 ]
 
 [project.optional-dependencies]
