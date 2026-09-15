@@ -1,6 +1,10 @@
 ﻿"""内置工具 v1：read_file / write_file / list_dir / glob_files / grep_code / execute_command。
 
 路径解析以注册时传入的 base_dir（默认当前工作目录）为基准。
+
+另外三组按条件注册：web_search / web_fetch（有 web 配置且启用时）、load_skill
+（Skill 启用时）、notes_list / notes_read（传入笔记数据源与 project_id 时，见
+routivus/tool/notes.py）。
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 from routivus.llm.types import ToolResult
+from routivus.tool.notes import NotesSource, make_notes_tools
 from routivus.tool.registry import Tool, ToolRegistry
 from routivus.web.fetch import WebFetchService
 from routivus.web.models import WebConfig
@@ -33,6 +38,9 @@ def build_registry(
     web_fetch: WebFetchService | None = None,
     skill_registry: SkillRegistry | None = None,
     ask_user_enabled: bool = True,
+    notes_source: NotesSource | None = None,
+    project_id: str | None = None,
+    notes_include_global: bool = False,
 ) -> ToolRegistry:
     base = (base_dir or Path.cwd()).resolve()
     registry = ToolRegistry(max_output_chars=max_output_chars, guard=guard, audit=audit)
@@ -96,6 +104,18 @@ def build_registry(
             async_handler=lambda args, _s=skill_registry: _skill_result(_s, args),
             source="builtin-skill",
         ))
+    if notes_source is not None and project_id:
+        # 两个参数缺一不注册：没有数据源就没有笔记可读，没有 project_id 就无法
+        # 把范围钉在当前项目（见 plans/tools/notes-read-tool.md §2 决策 2）。
+        # 未接线时工具名不出现在 names()，既有调用方与测试的断言面不受影响。
+        for tool in make_notes_tools(
+            notes_source,
+            project_id,
+            include_global=notes_include_global,
+            # 单页正文按注册表的输出上限算，否则续读提示会被截断（见 notes.py 注释）
+            max_output_chars=max_output_chars,
+        ):
+            registry.register(tool)
     return registry
 
 

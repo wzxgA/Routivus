@@ -843,6 +843,7 @@ class WorkspaceStore:
         query: str = "",
         limit: int = 50,
         offset: int = 0,
+        include_global: bool = False,
     ) -> list[NoteRecord]:
         if scope == "project" and not project_id:
             raise ValueError("项目范围查询缺少 project_id")
@@ -855,7 +856,10 @@ class WorkspaceStore:
             # global notes and notes associated with every project.
             pass
         elif scope == "project":
-            clauses.append("project_id = ?")
+            # include_global 把"不属于任何项目"的笔记一并纳入（同一个查询、同一个索引、
+            # 同一套分页），供 agent 的 notes_list 用；默认 False，既有调用方语义不变。
+            # 注意它只在项目范围下有意义：scope="global" 本来就是不带项目过滤。
+            clauses.append("(project_id = ? OR project_id IS NULL)" if include_global else "project_id = ?")
             args.append(project_id)
         clean_query = query.strip().casefold()
         if clean_query:

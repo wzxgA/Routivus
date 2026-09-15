@@ -18,6 +18,10 @@ DEFAULT_APPROVAL_LEVELS = {
     "execute_command": "always",
     "web_search": "never",
     "web_fetch": "never",
+    # 笔记工具只读（见 plans/tools/notes-read-tool.md）：未列出的工具本来就按
+    # "never" 处理，这里显式写出来，让"只读不审"是个写下来的决定而不是默认值。
+    "notes_list": "never",
+    "notes_read": "never",
     # 交互询问无副作用：由 ReAct 在 agent 层拦截等待用户，不在注册表盲执行。
     "ask_user": "never",
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import json
 import logging
@@ -525,8 +526,18 @@ def _event_payload(event: EventRecord) -> dict[str, Any]:
     }
 
 
-def _build_default_agent(project: Any, session: SessionRecord) -> Any:
-    """Build the existing ReAct stack for a project-scoped WebSocket turn."""
+def _build_default_agent(
+    project: Any,
+    session: SessionRecord,
+    *,
+    notes_source: Any | None = None,
+) -> Any:
+    """Build the existing ReAct stack for a project-scoped WebSocket turn.
+
+    `notes_source` 由 `create_app` 用 `functools.partial` 绑定（见
+    plans/tools/notes-read-tool.md §3.3）：传进来才会注册 notes_list / notes_read，
+    否则工具名根本不出现 —— 测试与嵌入方自带的 agent 工厂因此不受影响。
+    """
     from routivus.agent.react import ReActAgent
     from routivus.config.manager import ConfigManager
     from routivus.config.settings import load_settings
@@ -567,6 +578,9 @@ def _build_default_agent(project: Any, session: SessionRecord) -> Any:
         audit=audit,
         ask_user_enabled=settings.ask_user_enabled,
         skill_registry=skills,
+        # 笔记工具：project_id 在这里捕获、不进工具参数，模型无法指定别的项目
+        notes_source=notes_source,
+        project_id=project.id,
     )
     memory = MemoryManager(
         root,
@@ -654,7 +668,11 @@ def create_app(
     app.state.project_registry = project_registry
     app.state.server_config = resolved_config
     app.state.workspace_store = workspace_store
-    app.state.agent_factory = agent_factory or _build_default_agent
+    # 默认工厂用 partial 绑定笔记数据源：调用点仍是 factory(project, session)
+    # （ensure_session_agent），测试里注入的 lambda project, session 一律不受影响。
+    app.state.agent_factory = agent_factory or functools.partial(
+        _build_default_agent, notes_source=workspace_store
+    )
     app.state.ws_connections = {}
     app.state.session_agents = {}
     app.state.running_tasks = {}
