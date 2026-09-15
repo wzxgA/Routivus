@@ -133,6 +133,10 @@ class Settings:
     ask_user_enabled: bool = True
     ask_max_fields: int = 5
     ask_max_options: int = 8
+    # 笔记写工具（notes_create / notes_update / notes_delete）开关：默认开。
+    # 写是破坏性能力，给一个能一键收掉的旋钮；关掉后只保留两个只读笔记工具。
+    # 见 plans/tools/notes-write-tools.md 决策 6。
+    notes_write_enabled: bool = True
 
     @property
     def token_budget(self) -> int:
@@ -238,6 +242,7 @@ def load_settings(manager: ConfigManager | None = None) -> Settings:
         input_history_max_bytes=max(4_096, _get_int(manager.env, "ROUTIVUS_INPUT_HISTORY_MAX_BYTES", 1_048_576)),
         smart_router_enabled=bool(manager.smart_router_config().get("enabled", False)),
         ask_user_enabled=manager.env.get("ROUTIVUS_ASK_USER", "on").lower() not in ("off", "0", "false"),
+        notes_write_enabled=manager.env.get("ROUTIVUS_NOTES_WRITE", "on").lower() not in ("off", "0", "false"),
         ask_max_fields=max(1, min(20, _get_int(manager.env, "ROUTIVUS_ASK_MAX_FIELDS", 5))),
         ask_max_options=max(1, min(20, _get_int(manager.env, "ROUTIVUS_ASK_MAX_OPTIONS", 8))),
     )

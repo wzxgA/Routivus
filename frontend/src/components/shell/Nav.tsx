@@ -1,4 +1,4 @@
-import type { Note, Project, Session } from '../../api/types'
+import type { Project, Session } from '../../api/types'
 import type { Route } from '../../router'
 import { formatRelative, truncate } from '../../utils/format'
 import { ContextMenu } from '../common/ContextMenu'
@@ -10,21 +10,16 @@ interface NavProps {
   project: Project | null
   sessions: Session[]
   activeSessionId: string | null
-  projectNotes: Note[]
-  selectedNoteId: string | null
   onSelectProject: (projectId: string) => void
   onNewProject: () => void
   onSelectSession: (sessionId: string) => void
   onNewSession: () => void
   /** 右键「删除会话」：由上层弹确认框后真正执行（删除是不可逆的）。 */
   onRequestDeleteSession: (session: Session) => void
-  onSelectProjectNote: (noteId: string) => void
-  onNewProjectNote: () => void
   onGoHome: () => void
   onGoNotes: () => void
   onGoSkills: () => void
   onGoConfig: () => void
-  onGoProjectNotes: () => void
 }
 
 export function Nav({
@@ -33,20 +28,15 @@ export function Nav({
   project,
   sessions,
   activeSessionId,
-  projectNotes,
-  selectedNoteId,
   onSelectProject,
   onNewProject,
   onSelectSession,
   onNewSession,
   onRequestDeleteSession,
-  onSelectProjectNote,
-  onNewProjectNote,
   onGoHome,
   onGoNotes,
   onGoSkills,
   onGoConfig,
-  onGoProjectNotes,
 }: NavProps) {
   const inProject = route.kind === 'project'
   const activeProjectId = route.kind === 'project' ? route.projectId : ''
@@ -112,37 +102,7 @@ export function Nav({
                   </button>
                 )
               })}
-              {sessions.length === 0 ? <div className="project-notes-empty">暂无会话</div> : null}
-            </div>
-          </div>
-
-          <div className="nav-sec project-notes">
-            <div className="nav-title">
-              项目笔记
-              <span>
-                <button type="button" className="nav-more" onClick={onGoProjectNotes}>
-                  全部
-                </button>
-                <button type="button" className="nav-new" title="新建项目笔记" onClick={onNewProjectNote}>
-                  +
-                </button>
-              </span>
-            </div>
-            <div className="project-notes-list">
-              {projectNotes.map((note) => (
-                <button
-                  type="button"
-                  key={note.id}
-                  className={`project-note-item${note.id === selectedNoteId ? ' active' : ''}`}
-                  onClick={() => onSelectProjectNote(note.id)}
-                >
-                  <div className="project-note-title">{note.title}</div>
-                  <div className="project-note-meta">{formatRelative(note.updated_at)}</div>
-                </button>
-              ))}
-              {projectNotes.length === 0 ? (
-                <div className="project-notes-empty">暂无关联笔记</div>
-              ) : null}
+              {sessions.length === 0 ? <div className="nav-empty">暂无会话</div> : null}
             </div>
           </div>
         </div>
@@ -172,7 +132,7 @@ export function Nav({
                 </div>
               </button>
             ))}
-            {projects.length === 0 ? <div className="project-notes-empty">暂无项目</div> : null}
+            {projects.length === 0 ? <div className="nav-empty">暂无项目</div> : null}
           </div>
 
           <div className="nav-sec">

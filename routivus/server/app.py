@@ -37,6 +37,7 @@ from routivus.safety.hitl import ApprovalDecision
 from routivus.server.approval import ApprovalBridge
 from routivus.server.completions import completion_payload
 from routivus.server.config import ServerConfig
+from routivus.server.notes_source import StoreNotesSource
 from routivus.server.files import (
     WorkspaceFileError,
     create_entry,
@@ -578,9 +579,12 @@ def _build_default_agent(
         audit=audit,
         ask_user_enabled=settings.ask_user_enabled,
         skill_registry=skills,
-        # 笔记工具：project_id 在这里捕获、不进工具参数，模型无法指定别的项目
-        notes_source=notes_source,
+        # 笔记工具：project_id 在这里捕获、不进工具参数，模型无法指定别的项目。
+        # store 先过一层适配器：把 NoteConflictError 翻译成工具层的异常词汇
+        # （tool/ 是下层，不 import server/，见 plans/tools/notes-write-tools.md §3.2）。
+        notes_source=StoreNotesSource(notes_source) if notes_source is not None else None,
         project_id=project.id,
+        notes_write_enabled=settings.notes_write_enabled,
     )
     memory = MemoryManager(
         root,

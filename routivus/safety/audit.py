@@ -40,6 +40,22 @@ def _web_audit_value(key: str, value: Any) -> Any:
     return value
 
 
+def _notes_audit_args(args: dict) -> dict:
+    """笔记工具的审计参数：保留诊断信息，丢掉整篇正文。
+
+    与 `_web_audit_value` 同一个理由（"审计要有用，但不留全文"）：写笔记时正文是模型给的
+    args，照原样落盘就等于把用户笔记正文抄进 audit.log。留下 id / 标题 / 标签 / 版本号与
+    正文长度，足够复盘是谁在什么时候动了哪条笔记。
+    """
+    shaped: dict[str, Any] = {}
+    for key, value in args.items():
+        if key == "body_markdown" and isinstance(value, str):
+            shaped[key] = f"[{len(value)} 字已省略]"
+        else:
+            shaped[key] = value
+    return shaped
+
+
 def redact_text(value: str) -> str:
     """脱敏文本中的 Bearer token 与常见 key=value 形式敏感值。"""
     value = _BEARER_RE.sub(r"\1***", value)
@@ -82,6 +98,8 @@ class AuditLogger:
     def tool_call(self, tool: str, args: dict, ok: bool, duration_ms: int, approved: bool = True) -> None:
         if tool.startswith("web_"):
             args = {key: _web_audit_value(key, value) for key, value in args.items()}
+        elif tool.startswith("notes_"):
+            args = _notes_audit_args(args)
         self.record(
             "tool_call",
             tool=tool,

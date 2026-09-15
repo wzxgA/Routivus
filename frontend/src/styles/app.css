@@ -355,8 +355,7 @@ button {
   min-width: 0;
 }
 
-.sess-list,
-.project-notes-list {
+.sess-list {
   flex: 1;
   overflow-y: auto;
   display: flex;
@@ -364,12 +363,10 @@ button {
   gap: 2px;
   min-height: 0;
 }
-.sess-list::-webkit-scrollbar,
-.project-notes-list::-webkit-scrollbar {
+.sess-list::-webkit-scrollbar {
   width: 6px;
 }
-.sess-list::-webkit-scrollbar-thumb,
-.project-notes-list::-webkit-scrollbar-thumb {
+.sess-list::-webkit-scrollbar-thumb {
   background: var(--beige-deep);
   border-radius: 3px;
 }
@@ -414,62 +411,11 @@ button {
   margin-top: 1px;
 }
 
-.project-notes {
-  flex: 0 1 190px;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.project-note-item {
-  padding: 6px 9px;
-  border-radius: 7px;
-  cursor: pointer;
-  border: 1px solid transparent;
-  background: transparent;
-  width: 100%;
-  text-align: left;
-  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
-}
-.project-note-item:hover,
-.project-note-item.active {
-  background: var(--beige);
-}
-.project-note-item.active {
-  border-color: var(--beige-deep);
-}
-.project-note-title {
-  font-size: 11.5px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text);
-}
-.project-note-item.active .project-note-title {
-  font-weight: 700;
-}
-.project-note-meta {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--faint);
-  margin-top: 1px;
-}
-.project-notes-empty {
+/* 导航里的空态文案（暂无会话 / 暂无项目） */
+.nav-empty {
   padding: 6px 9px;
   font-size: 11px;
   color: var(--faint);
-}
-.nav-more {
-  border: 0;
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  font-size: 10.5px;
-  cursor: pointer;
-  padding: 0 2px;
-}
-.nav-more:hover {
-  color: var(--accent);
 }
 .nav-ver {
   font-size: 10px;
@@ -1725,6 +1671,11 @@ button {
   margin: 6px 0;
   white-space: pre-wrap;
   word-break: break-all;
+  /* 参数里可能是整篇笔记正文（notes_update 的 body_markdown 上限 20000 字）：
+     不封顶会把卡片撑成几千像素，整屏只剩这一块。封顶后可滚动，内容不丢。
+     见 plans/tools/notes-write-tools.md §3.6。 */
+  max-height: 320px;
+  overflow: auto;
   max-height: 160px;
   overflow-y: auto;
 }

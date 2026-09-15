@@ -3,8 +3,9 @@
 路径解析以注册时传入的 base_dir（默认当前工作目录）为基准。
 
 另外三组按条件注册：web_search / web_fetch（有 web 配置且启用时）、load_skill
-（Skill 启用时）、notes_list / notes_read（传入笔记数据源与 project_id 时，见
-routivus/tool/notes.py）。
+（Skill 启用时）、notes_list / notes_read 以及写工具 notes_create / notes_update /
+notes_delete（传入笔记数据源与 project_id 时；写工具还受 notes_write_enabled 控制，
+见 routivus/tool/notes.py）。
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ def build_registry(
     ask_user_enabled: bool = True,
     notes_source: NotesSource | None = None,
     project_id: str | None = None,
-    notes_include_global: bool = False,
+    notes_write_enabled: bool = True,
 ) -> ToolRegistry:
     base = (base_dir or Path.cwd()).resolve()
     registry = ToolRegistry(max_output_chars=max_output_chars, guard=guard, audit=audit)
@@ -111,9 +112,10 @@ def build_registry(
         for tool in make_notes_tools(
             notes_source,
             project_id,
-            include_global=notes_include_global,
             # 单页正文按注册表的输出上限算，否则续读提示会被截断（见 notes.py 注释）
             max_output_chars=max_output_chars,
+            # 写开关：关掉时只保留两个只读工具（见 notes-write-tools.md 决策 6）
+            write_enabled=notes_write_enabled,
         ):
             registry.register(tool)
     return registry

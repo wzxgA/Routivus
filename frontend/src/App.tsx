@@ -111,38 +111,10 @@ export function App() {
     [projectId],
   )
 
-  const handleNewProjectNote = useCallback(async () => {
-    if (!projectId) return
-    try {
-      const created = await api.createProjectNote(projectId, {
-        title: '未命名笔记',
-        body_markdown: '',
-        tags: [],
-      })
-      setProjectNoteSel((current) => ({ ...current, [projectId]: created.id }))
-      navigate(projectRoute(projectId, 'notes'))
-      await workspace.refreshNotes()
-    } catch {
-      /* 失败时停留在原视图，NotesView 会展示列表错误 */
-    }
-  }, [projectId, workspace])
-
-  const handleSelectProjectNote = useCallback(
-    (noteId: string) => {
-      if (!projectId) return
-      setProjectNoteSel((current) => ({ ...current, [projectId]: noteId }))
-      navigate(projectRoute(projectId, 'notes'))
-    },
-    [projectId],
-  )
-
   const handleNotesMutated = useCallback(() => {
     void workspace.refreshNotes()
     void refresh()
   }, [workspace, refresh])
-
-  const selectedNoteId =
-    route.kind === 'project' ? (projectNoteSel[projectId ?? ''] ?? null) : globalNoteId
 
   const handleSelectNote = useCallback(
     (noteId: string | null) => {
@@ -308,22 +280,15 @@ export function App() {
         project={activeProject}
         sessions={workspace.sessions}
         activeSessionId={workspace.activeSession?.id ?? null}
-        projectNotes={workspace.projectNotes}
-        selectedNoteId={selectedNoteId}
         onSelectProject={handleSelectProject}
         onNewProject={() => setNewProjectOpen(true)}
         onSelectSession={handleSelectSession}
         onNewSession={() => void handleNewSession()}
         onRequestDeleteSession={setSessionDeleteTarget}
-        onSelectProjectNote={handleSelectProjectNote}
-        onNewProjectNote={() => void handleNewProjectNote()}
         onGoHome={() => navigate(HOME)}
         onGoNotes={() => navigate(GLOBAL_NOTES)}
         onGoSkills={() => navigate(SKILLS)}
         onGoConfig={() => navigate(CONFIG)}
-        onGoProjectNotes={() => {
-          if (projectId) navigate(projectRoute(projectId, 'notes'))
-        }}
       />
       <div className="right">
         <TopBar

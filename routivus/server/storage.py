@@ -843,7 +843,6 @@ class WorkspaceStore:
         query: str = "",
         limit: int = 50,
         offset: int = 0,
-        include_global: bool = False,
     ) -> list[NoteRecord]:
         if scope == "project" and not project_id:
             raise ValueError("项目范围查询缺少 project_id")
@@ -856,10 +855,9 @@ class WorkspaceStore:
             # global notes and notes associated with every project.
             pass
         elif scope == "project":
-            # include_global 把"不属于任何项目"的笔记一并纳入（同一个查询、同一个索引、
-            # 同一套分页），供 agent 的 notes_list 用；默认 False，既有调用方语义不变。
-            # 注意它只在项目范围下有意义：scope="global" 本来就是不带项目过滤。
-            clauses.append("(project_id = ? OR project_id IS NULL)" if include_global else "project_id = ?")
+            # 项目范围查询**只**返回挂在这个项目下的笔记：全局笔记（project_id 为空）
+            # 不属于任何项目，也不进任何项目的会话上下文。
+            clauses.append("project_id = ?")
             args.append(project_id)
         clean_query = query.strip().casefold()
         if clean_query:
@@ -921,9 +919,20 @@ class WorkspaceStore:
             )
         return self.get_note(note_id)
 
-    def delete_note(self, note_id: str) -> bool:
+    def delete_note(self, note_id: str, *, expected_version: int | None = None) -> bool:
+        """删除一条笔记。`expected_version` 给定时做成原子操作（版本不符则不删）。
+
+        与 `update_note` 的差别：这里返回 bool 而不是抛 `NoteConflictError`，因为
+        "删 0 行"同时可能是"笔记已不在"；调用方需要区分时再查一次（见
+        `routivus/tool/notes.py` 的失败路径）。不传版本时行为与旧版一致。
+        """
         with self._lock, self._connect() as conn:
-            return conn.execute("DELETE FROM notes WHERE id = ?", (note_id,)).rowcount > 0
+            sql = "DELETE FROM notes WHERE id = ?"
+            params: list[object] = [note_id]
+            if expected_version is not None:
+                sql += " AND version = ?"
+                params.append(expected_version)
+            return conn.execute(sql, params).rowcount > 0
 
     def count_notes(self, project_id: str | None = None) -> int:
         clause = "project_id IS NULL" if project_id is None else "project_id = ?"

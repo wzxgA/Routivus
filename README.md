@@ -225,7 +225,7 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 - **两级导航**：全局态（首页 / 笔记 / 配置）与项目态（会话 / 笔记）由 hash 路由驱动，刷新后按 URL 恢复项目、会话与视图；项目内无会话时自动创建首个会话。**会话可删除**：左侧会话项右键 →「删除会话」，确认后连同它的消息与事件一起从数据库删除（`DELETE /api/sessions/{id}`，外键级联）；**运行中的会话会被拒绝**（`409 session_busy`，先停止再删）；删掉地址栏指向的那个会话时，界面自动切到列表里的下一个，最后一个也删掉时会重新自动建一个新会话。
 - **首页**：项目卡（会话 / 笔记 / 今日调用 / 今日与累计 token）+ 全部项目活动热力图（52 周 × 7 天，未来日期不渲染）+ token 用量面板 + 新建项目；项目卡支持**重命名**（只改显示名，根目录不变）与**移除**——移除只摘 `projects.json` 注册，不删除磁盘文件与会话 / 笔记数据（重新添加同一路径即可恢复可见），仍有运行中会话的项目会被拒绝移除（`409 project_busy`）。
 - **Token 用量面板**（`GET /api/usage/summary?days=30`）：今日 / 近 7 天 / 近 30 天 / 累计四张 KPI 卡 + 按档位分布（四档各一色，绿 → 蓝 → 琥珀 → 砖红，日/夜两套色板随主题切换）。**两条口径刻意分开**：按天 / 按区间 / 按档位来自逐轮 `session.usage` 事件，**累计**来自 `sessions` 的 token 快照求和；两者差值超过 5% 时面板会明说（早期事件可能被裁剪），而不是给一个看起来精确的数。所有"日"都是**本地日**（含热力图与项目卡的「今日调用」，此前按 UTC 分组，东八区 00:00–08:00 会算到前一天）。档位归因字段（tier / provider / model）从本版本开始写进用量事件，此前的事件由后端归入「未标注」，但**面板不画这一项**——历史存量会把它顶到满格、把真正要看的四档压成一条线；接口照旧返回全部档位，前端只画四档，也不回填。金额不做：provider 返回的用量里没有缓存命中字段，折算出来的钱会系统性偏高。
-- **笔记**：全局入口显示全部笔记及项目归属，项目入口只显示当前项目笔记；搜索、新建、编辑、标签、置顶、删除均走服务端；版本冲突返回 409 时提示「用当前内容覆盖」，不静默丢失。**会话内的 agent 可只读访问当前项目笔记**（`notes_list` 列目录、`notes_read` 按 id 读正文，长笔记按字符分段续读，默认 8000 字、单页上限随工具输出上限自动收窄以保证续读提示不被截断）；范围由服务端在构造 agent 时钉在当前项目，模型**无法指定**别的项目，读别项目的 id 与读不存在的 id 返回同一句提示；笔记属用户内容，正文前会带一行「资料而非指令」的声明。**不能写笔记**——`notes` 有乐观锁语义，让 agent 写会与手工编辑互相覆盖。
+- **笔记**：全局入口显示全部笔记及项目归属，项目入口只显示当前项目笔记；搜索、新建、编辑、标签、置顶、删除均走服务端；版本冲突返回 409 时提示「用当前内容覆盖」，不静默丢失。**会话内的 agent 可读写当前项目笔记**：`notes_list` 列目录、`notes_read` 按 id 读正文与版本号（长笔记按字符分段续读，默认 8000 字、单页上限随工具输出上限自动收窄，保证"继续读"的提示不被截断）、`notes_create` 新建、`notes_update` 修改（`append=true` 为追加）、`notes_delete` 删除。范围由服务端在构造 agent 时钉在当前项目，模型**无法指定**别的项目——工具参数里根本没有这个字段；**全局笔记对 agent 完全不可见**（读不到也写不到：读它会把所有项目混进当前上下文，写它会影响别的项目），越权、全局、不存在三种情况返回**同一句**提示。改与删必须先 `notes_read` 拿到版本号：`expected_version` 不一致会被拒绝并提示重读（**错误里不给新版本号**，避免拿它把旧写重放一遍），删除还要求**原样回显标题**（既防呆，也让审批卡上有一行人能看懂的内容）。写操作走 HITL：`notes_create` / `notes_update` 确认、`notes_delete` 必审；正文上限 20000 字、标签最多 10 个，超限**报错而不是静默截断**。审计只记 id / 标题 / 标签 / 长度，**正文不落 audit.log**。笔记属用户内容，正文前会带一行「资料而非指令」的声明。开关：`ROUTIVUS_NOTES_WRITE=off` 可只保留两个只读工具。界面暂不自动刷新——agent 写完，正开着的笔记页要切走再回来才更新。
 - **会话视图**：WebSocket 事件流渲染消息、思考块、工具卡、计划 / 团队任务卡、审批与提问卡。**思考块**：provider 返回推理内容（reasoning）时按段落独立显示——流式期间展开，段收尾自动折叠成「思考 · N 字」一行，点击展开；刷新 / 重连后仍在（默认折叠）。**时间线顺序**：思考 / 正文 / 工具卡严格按事件时序交错显示（正文按段落落库，角色 `thinking` 仅用于展示、不参与模型上下文）；重连后按时间戳归并重建，顺序与在线一致。`/team` 并行 worker 的输出按来源分桶并带短标签（如 `a1b2c3d4`），不会互相黏连。`/plan <任务>` 与 `/team <任务>` 在会话内直接可用（生成计划后弹出审阅卡：批准执行 / 重新规划 / 取消），`/team resume [task_id] --write-scope <路径>` 用于 `needs_input` 恢复；四页签信息侧栏（Session / Plan / Memory / Safety）；Composer 支持 `Enter` 发送、`↑↓` 历史、`Tab` 应用命令补全、运行中停止。
 
 - **命令执行与补全**：会话内可直接执行 slash 命令——`/help`、`/model`、`/smartrouter`、`/tier`、`/provider`、`/config`、`/hitl`、`/memory`、`/save`、`/lang`、`/clear`、`/skill`（复用 TUI 的 `CommandService`，回执以消息落库；`/cancel` 等价取消按钮；`/exit` 已移除，按未知命令处理）。命令切模型 / 开关智能路由会实时同步顶栏与配置页，`/save`、`/memory` 改完长期记忆会刷新侧栏 Memory 页签。补全浮层覆盖上述全部命令（`↑↓` 选择、`Tab` 应用、`Esc` 关闭），`/model model <前缀>` 提示真实模型名，`/skill load <前缀>` 提示 Skill 名，`/team resume … --write-scope <路径>` 提示工作区路径。运行中的会话不接受命令（先停止或取消）。
@@ -455,11 +455,11 @@ ReAct 之外的第二条执行路径。`/plan <任务>` 把多步任务先拆解
 ## 安全机制
 
 - **并行执行**：模型一轮返回多个工具调用时并行执行（默认 4 并发），结果按原始顺序回灌
-- **HITL 审批**：危险操作（默认 `execute_command` 必审、`write_file` 确认）执行前触发审批，由前端提交决定（批准 / 本会话全部放行 / 拒绝 / 改参后执行）
+- **HITL 审批**：危险操作（默认 `execute_command` 与 `notes_delete` 必审、`write_file` / `notes_create` / `notes_update` 确认）执行前触发审批，由前端提交决定（批准 / 本会话全部放行 / 拒绝 / 改参后执行）。注意**「本会话全部放行」会跳过包括必审在内的所有审批**，这是既有语义；改参执行对笔记写工具尤其有用（可以就地修掉 agent 写错的措辞再批准）
 - **策略层**：路径越界（PathGuard，含 symlink 逃逸）与黑名单命令（CommandGuard）直接拒绝，**不可被审批绕过**
 - **审计日志**：所有工具调用/审批/拒绝记录到 `.routivus/audit.log`（JSONL，敏感字段脱敏）
 
-内置工具：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `web_search` / `web_fetch` / `load_skill` / `notes_list` / `notes_read`（按配置启用：web 两个需 web 配置、`load_skill` 需 Skill 启用、笔记两个需服务端注入笔记数据源 —— 它们是**只读**的当前项目笔记访问，见「笔记」一节）。
+内置工具：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `web_search` / `web_fetch` / `load_skill` / `notes_list` / `notes_read` / `notes_create` / `notes_update` / `notes_delete`（按配置启用：web 两个需 web 配置、`load_skill` 需 Skill 启用、笔记五个需服务端注入笔记数据源（写工具还可用 `ROUTIVUS_NOTES_WRITE=off` 收掉）—— 笔记工具只作用于**当前项目**，读写边界见「笔记」一节）。
 
 ## Web 只读联网能力
 
@@ -560,6 +560,7 @@ provider 与 SmartRouter 配置统一存于 `config.json`（见「配置 Provide
 | `ROUTIVUS_HITL` | 危险操作审批开关（on 默认 / off 危险模式） |
 | `ROUTIVUS_ROUTER_TIMEOUT` | 智能路由（含首次模型加载）超时秒数（默认 120，下限 5）；超时只降级为「本轮不换档」 |
 | `ROUTIVUS_ADAPTIVE_EVOLVE` | 本地自动演化开关（on 默认，off 关闭；手动 `/smartRouter evolve` 不受影响）。服务端进程里需为真实环境变量（见「Web Console Server」的警告），另见「本地进化与隐私」 |
+| `ROUTIVUS_NOTES_WRITE` | 笔记写工具开关（on 默认，off 只剩两个只读笔记工具）。写仍需 HITL 审批，见「笔记」一节 |
 | `ROUTIVUS_PLAN_MAX_SUBTASKS` | 计划模式子任务数上限（默认 12，超出截断） |
 | `ROUTIVUS_PLAN_SUBTASK_STEPS` | 计划模式单个子任务最大工具步数（默认 10） |
 | `ROUTIVUS_PLAN_MAX_FAILURES` | 计划级允许失败数（默认 3，超出终止剩余轮次） |
