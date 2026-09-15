@@ -19,6 +19,7 @@ import type {
   SkillDetail,
   SkillView,
   SkillWritePayload,
+  UsageSummary,
 } from './types'
 
 // ---- 项目 ----
@@ -146,6 +147,16 @@ export const deleteProjectEntry = (
 /** 图片原始字节地址（`<img src>` 无法带 Authorization 头，走查询参数令牌）。 */
 export const projectFileRawUrl = (projectId: string, path: string) =>
   authedUrl(`${fileApiPath(projectId)}/raw?path=${encodeURIComponent(path)}`)
+
+// ---- 用量统计（方案 12）----
+
+/**
+ * 首页 token 面板：今日 / 区间 / 累计 + 按天 + 按项目 + 按档位。
+ *
+ * `days` 越界由服务端钳到 7–90（前端传错不该让首页空掉），所以这里不必自己校验。
+ */
+export const fetchUsageSummary = (days = 30, signal?: AbortSignal) =>
+  request<UsageSummary>('/usage/summary', { query: { days }, signal })
 
 // ---- 命令补全 ----
 

@@ -76,6 +76,55 @@ export interface ActivityDay {
   projects: Record<string, number>
 }
 
+/** 一个用量桶（方案 12）：三件套 + 轮次数。 */
+export interface UsageBucket {
+  prompt: number
+  completion: number
+  total: number
+  turns: number
+}
+
+export interface UsageDay extends UsageBucket {
+  date: string
+}
+
+export interface UsageProject {
+  project_id: string
+  /** 项目名由 app 层按注册表补上；未知项目为空串。 */
+  name: string
+  today: number
+  range: number
+  lifetime: number
+  turns: number
+}
+
+export interface UsageTier {
+  /** 档位名；本版本之前的事件没有归因字段，统一记作「未标注」。 */
+  tier: string
+  total: number
+  turns: number
+}
+
+/**
+ * `/api/usage/summary` 的响应（方案 12）。
+ *
+ * **两条口径刻意分开**：`daily` / `range` / `by_tier` 来自逐轮 `session.usage` 事件，
+ * `lifetime` 来自 sessions 的 token 快照求和。两者差异见 `drift`。
+ */
+export interface UsageSummary {
+  /** 聚合用的时区（"今日"按它算）。 */
+  timezone: string
+  generated_at: string
+  days: number
+  today: UsageBucket
+  range: UsageBucket
+  lifetime: UsageBucket & { sessions: number }
+  daily: UsageDay[]
+  by_project: UsageProject[]
+  by_tier: UsageTier[]
+  drift: { events_total: number; sessions_total: number; diff: number; diff_pct: number }
+}
+
 export interface NoteStats {
   total: number
   global_notes: number

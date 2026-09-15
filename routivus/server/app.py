@@ -814,7 +814,25 @@ def create_app(
 
     @router.get("/activity", response_model=list[ActivityResponse])
     async def activity(from_date: str | None = Query(default=None, alias="from"), to_date: str | None = Query(default=None, alias="to")) -> list[ActivityResponse]:
-        return [ActivityResponse(**item) for item in workspace_store.activity(from_date, to_date)]
+        """按**本地日**聚合的活动量（热力图）。日期格式非法回 422，而不是悄悄返回空。"""
+        try:
+            records = workspace_store.activity(from_date, to_date)
+        except ValueError as exc:
+            raise ApiError(422, "invalid_date", str(exc)) from exc
+        return [ActivityResponse(**item) for item in records]
+
+    @router.get("/usage/summary")
+    async def usage_summary(days: int = 30) -> dict[str, Any]:
+        """首页 token 面板（方案 12）：今日 / 区间 / 累计 + 按天 + 按项目 + 按档位。
+
+        `days` 越界由存储层钳到 7–90（前端传错不该让首页空掉）。返回体是纯数据视图，
+        项目名在这里补上——注册表在 app 层，存储层只认 project_id。
+        """
+        payload = workspace_store.usage_summary(days=days)
+        names = {record.id: record.name for record in project_registry.list()}
+        for item in payload["by_project"]:
+            item["name"] = names.get(str(item.get("project_id", "")), "")
+        return payload
 
     @router.get("/projects/{project_id}/sessions", response_model=list[SessionResponse])
     async def list_sessions(project_id: str, limit: int = 50, offset: int = 0, cursor: str | None = None) -> list[SessionResponse]:
@@ -1826,9 +1844,24 @@ def create_app(
             "router.updated",
             router_payload(result, error, meta=getattr(router, "last_meta", None)),
         )
+        # 用量归因（方案 12 §4.2）：路由结果比 settings 更准（换档可能连 provider 一起换），
+        # 所以放在这里覆盖。它只影响 session.usage 事件的附加字段，不参与任何判定。
+        forwarder.set_attrs(tier=result.tier, provider=result.provider, model=result.model)
         # 路由换档可能连 provider 一起换掉：窗口与输出上限跟着变，必须同步给界面，
         # 否则「使用率」会一直按上一档的分母算（方案 §4.4 最容易漏的一处）。
         await forwarder.emit("context.updated", context_payload(session, agent))
+
+    def model_attrs(agent: Any) -> dict[str, str]:
+        """本轮实际使用的 provider / model。
+
+        智能路由换档会改 `agent.settings`（`_attach_model` 里），所以这里取到的就是
+        "这一轮真正在用的那个"；未路由的轮（/plan、/team）也照样填得上。
+        """
+        settings = getattr(agent, "settings", None)
+        return {
+            "provider": str(getattr(settings, "provider", "") or ""),
+            "model": str(getattr(settings, "model", "") or ""),
+        }
 
     class _TurnForwarder:
         """一轮执行的共享转发器：把 agent / 计划 / 团队事件映射为会话事件。
@@ -1849,6 +1882,18 @@ def create_app(
             self.tool_started: dict[str, float] = {}
             self.tool_calls = 0
             self.tool_failures = 0
+            # 本轮实际使用的 provider / model / 档位：并进 session.usage 事件，供首页
+            # token 面板按档位归因（方案 12 §4.2）。老事件没有这几个键 → 归入「未标注」，
+            # 不猜也不回填。
+            self.attrs: dict[str, str] = {}
+
+        def set_attrs(self, **kwargs: str) -> None:
+            """补归因字段：只覆盖非空值，后设的优先（路由结果要盖掉 settings 的初值）。"""
+            self.attrs.update({key: str(value) for key, value in kwargs.items() if value})
+
+        def usage_payload(self, usage: Any) -> dict[str, Any]:
+            """用量事件载荷 = usage 三件套 + 本轮归因字段。"""
+            return {**_record_payload(usage), **self.attrs}
 
         async def emit(self, event_type: str, data: dict[str, Any]) -> None:
             await send_event(self.websocket, event_type, self.session, {**data, "request_id": self.request_id})
@@ -1961,7 +2006,7 @@ def create_app(
                 usage = getattr(item, "usage", None)
                 if usage:
                     self.apply_usage(usage)
-                    await self.emit("session.usage", _record_payload(usage))
+                    await self.emit("session.usage", self.usage_payload(usage))
             elif kind in {"context_warning", "context_compacted", "context_overflow", "budget_exceeded"}:
                 await self.emit("memory.updated", {"kind": kind, "message": text})
             elif getattr(item, "plan", None) is not None or kind.startswith("plan_"):
@@ -1975,7 +2020,7 @@ def create_app(
                 usage = getattr(item, "usage", None)
                 if usage:
                     self.apply_usage(usage)
-                    await self.emit("session.usage", _record_payload(usage))
+                    await self.emit("session.usage", self.usage_payload(usage))
 
         async def finish(self) -> None:
             """一轮正常结束：收尾所有来源的段落并收敛会话状态。
@@ -2024,7 +2069,7 @@ def create_app(
         usage = getattr(item, "usage", None)
         if usage is not None:
             forwarder.apply_usage(usage)
-            await forwarder.emit("session.usage", _record_payload(usage))
+            await forwarder.emit("session.usage", forwarder.usage_payload(usage))
 
     def _executor_kwargs(agent: Any) -> dict[str, Any]:
         """计划 / 团队执行器与 ReAct 共用的依赖（都挂在 agent 上）。"""
@@ -2081,6 +2126,9 @@ def create_app(
                 )
                 return
             bind_interactions(agent, session.id)
+            # 用量归因（方案 12 §4.2）：先记 settings 里的 provider/model，路由成功后再
+            # 由 apply_smart_routing 补 tier 并覆盖成"本轮实际用的那个"。
+            forwarder.set_attrs(**model_attrs(agent))
             # 普通轮在执行前路由换档（/plan、/team 不路由，与 TUI 一致）
             await apply_smart_routing(forwarder, agent, content, session)
             stream = agent.run(content)
@@ -2112,6 +2160,7 @@ def create_app(
                 )
                 return
             bind_interactions(agent, session.id)
+            forwarder.set_attrs(**model_attrs(agent))  # /plan 不路由，只有 provider/model
             review = plan_review_bridge(session.id)
             review.mode = "plan"
 
@@ -2145,6 +2194,7 @@ def create_app(
                 )
                 return
             bind_interactions(agent, session.id)
+            forwarder.set_attrs(**model_attrs(agent))  # /team 不路由，只有 provider/model
             review = plan_review_bridge(session.id)
             review.mode = "team"
 
@@ -2190,6 +2240,7 @@ def create_app(
             agent = session_agents.get(session.id)
             if agent is not None:
                 bind_interactions(agent, session.id)
+                forwarder.set_attrs(**model_attrs(agent))  # 续跑同样记一份归因
 
             from routivus.agent.team import ResourceClaim
 

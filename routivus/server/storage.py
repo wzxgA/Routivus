@@ -6,10 +6,10 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 from threading import RLock
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 
@@ -78,6 +78,70 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
+# ---------- 时区与用量（方案 12）----------
+
+# 事件里的 occurred_at 一律是 UTC（`_now()`），但"今天 / 某一天"必须按**用户所在
+# 时区**算：东八区用 UTC 日期分组，00:00-08:00 的活动会被算到前一天（热力图上"今天"
+# 一直是冷的）。所以：范围过滤仍用 occurred_at 的 UTC 边界（走得上索引），**分日交给
+# Python 转本地时区** —— SQLite 不认识本地时区，写死偏移在有夏令时的时区会错。
+
+
+def _local_tz() -> tzinfo:
+    """本机时区；取不到时退回 UTC（宁可差时区，也不要抛错）。"""
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def _iso(moment: datetime) -> str:
+    """与 `_now()` 同格式的 UTC ISO 串，两边能直接做字符串比较。"""
+    return moment.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _utc_bounds(start: date, end_exclusive: date, tz: tzinfo) -> tuple[str, str]:
+    """本地日期区间 [start, end_exclusive) → UTC 的 ISO 边界（含头不含尾）。"""
+    begin = datetime.combine(start, time.min, tzinfo=tz).astimezone(timezone.utc)
+    finish = datetime.combine(end_exclusive, time.min, tzinfo=tz).astimezone(timezone.utc)
+    return _iso(begin), _iso(finish)
+
+
+def _local_day(occurred_at: str, tz: tzinfo) -> str:
+    """UTC ISO 时间戳 → 本地日期（YYYY-MM-DD）。解析不了就退回原串的前 10 位。"""
+    try:
+        moment = datetime.fromisoformat(occurred_at)
+    except ValueError:
+        return occurred_at[:10]
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(tz).date().isoformat()
+
+
+def _usage_payload(data_json: str) -> dict[str, Any]:
+    """`session.usage` 事件的载荷；坏 JSON 当空字典，绝不让统计接口报错。"""
+    try:
+        payload = json.loads(data_json or "{}")
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _usage_tokens(payload: dict[str, Any]) -> dict[str, int]:
+    """从载荷里取 prompt / completion / total，缺字段按 0（老事件或只回了一部分）。"""
+    def _int(key: str) -> int:
+        try:
+            return max(0, int(payload.get(key, 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    return {"prompt": _int("prompt_tokens"), "completion": _int("completion_tokens"), "total": _int("total_tokens")}
+
+
+def _accumulate(bucket: dict[str, int], tokens: dict[str, int]) -> None:
+    """把一次用量累加进一个桶（桶的键固定：prompt / completion / total / turns）。"""
+    bucket["prompt"] += tokens["prompt"]
+    bucket["completion"] += tokens["completion"]
+    bucket["total"] += tokens["total"]
+    bucket["turns"] += 1
+
+
 def _timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
@@ -85,7 +149,7 @@ def _timestamp(value: str) -> datetime:
 class WorkspaceStore:
     """Thread-safe SQLite store for server-owned workspace data."""
 
-    VERSION = 3
+    VERSION = 4
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path).expanduser()
@@ -188,6 +252,18 @@ class WorkspaceStore:
                         PRIMARY KEY (session_id, request_id)
                     );
                     PRAGMA user_version = 3;
+                    """
+                )
+            if version < 4:
+                # 首页 token 面板（方案 12）：按"事件类型 + 时间窗"取逐轮用量。
+                # 原来的两个索引都对不上这个查询（(session_id, sequence) 不带时间、
+                # (project_id, occurred_at) 不带事件类型），少了它就得扫全表。
+                # 只加索引、不动表结构，所以是纯向上迁移。
+                conn.executescript(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_events_type_time
+                        ON events(event_type, occurred_at ASC);
+                    PRAGMA user_version = 4;
                     """
                 )
 
@@ -504,39 +580,215 @@ class WorkspaceStore:
             )
             return cursor.rowcount == 1
 
-    def activity(self, start: str | None = None, end: str | None = None) -> list[dict[str, object]]:
+    def activity(
+        self,
+        start: str | None = None,
+        end: str | None = None,
+        *,
+        tz: tzinfo | None = None,
+    ) -> list[dict[str, object]]:
+        """按**本地日**聚合事件数（热力图数据源）。
+
+        `start` / `end` 是本地日期（YYYY-MM-DD，含两端）。时间窗用 occurred_at 的 UTC
+        边界过滤（走索引），分日交给 Python 转本地时区——见文件上方关于时区的说明。
+        `tz` 仅供测试注入固定时区。
+        """
+        local_tz = tz or _local_tz()
         clauses = ["1 = 1"]
         args: list[object] = []
-        if start:
-            clauses.append("substr(occurred_at, 1, 10) >= ?")
-            args.append(start)
-        if end:
-            clauses.append("substr(occurred_at, 1, 10) <= ?")
-            args.append(end)
+        try:
+            if start:
+                begin = date.fromisoformat(start)
+                clauses.append("occurred_at >= ?")
+                args.append(_utc_bounds(begin, begin + timedelta(days=1), local_tz)[0])
+            if end:
+                finish = date.fromisoformat(end)
+                clauses.append("occurred_at < ?")
+                args.append(_utc_bounds(finish, finish + timedelta(days=1), local_tz)[1])
+        except ValueError as exc:
+            raise ValueError(f"日期格式无效：{exc}") from exc
         with self._lock, self._connect() as conn:
             rows = conn.execute(
-                f"SELECT substr(occurred_at, 1, 10) AS day, project_id, count(*) AS count FROM events WHERE {' AND '.join(clauses)} GROUP BY day, project_id ORDER BY day ASC",
+                f"SELECT occurred_at, project_id FROM events WHERE {' AND '.join(clauses)}",
                 args,
             ).fetchall()
         grouped: dict[str, dict[str, object]] = {}
         for row in rows:
-            item = grouped.setdefault(str(row["day"]), {"date": str(row["day"]), "count": 0, "projects": {}})
-            item["count"] = int(item["count"]) + int(row["count"])
+            day = _local_day(str(row["occurred_at"]), local_tz)
+            item = grouped.setdefault(day, {"date": day, "count": 0, "projects": {}})
+            item["count"] = int(item["count"]) + 1
             projects = item["projects"]
             assert isinstance(projects, dict)
-            projects[str(row["project_id"])] = int(row["count"])
-        return list(grouped.values())
+            project_id = str(row["project_id"])
+            projects[project_id] = int(projects.get(project_id, 0)) + 1
+        return [grouped[day] for day in sorted(grouped)]
 
-    def project_stats(self, project_id: str) -> dict[str, int]:
-        today = datetime.now(timezone.utc).date().isoformat()
+    def project_stats(
+        self,
+        project_id: str,
+        *,
+        tz: tzinfo | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, int]:
+        """会话数 / 笔记数 / **今日**调用数。
+
+        "今日"按本地日：原实现用 UTC 日期，东八区在 00:00-08:00 之间会把今天算成
+        昨天（与方案 12 的 token 面板同一处修正）。`tz` / `now` 仅供测试注入。
+        """
+        local_tz = tz or _local_tz()
+        today = (now.astimezone(local_tz) if now is not None else datetime.now(local_tz)).date()
+        day_start, day_end = _utc_bounds(today, today + timedelta(days=1), local_tz)
         with self._lock, self._connect() as conn:
             sessions = int(conn.execute("SELECT count(*) FROM sessions WHERE project_id = ?", (project_id,)).fetchone()[0])
             notes = int(conn.execute("SELECT count(*) FROM notes WHERE project_id = ?", (project_id,)).fetchone()[0])
             calls = int(conn.execute(
-                "SELECT count(*) FROM events WHERE project_id = ? AND event_type = 'tool.started' AND substr(occurred_at, 1, 10) = ?",
-                (project_id, today),
+                "SELECT count(*) FROM events WHERE project_id = ? AND event_type = 'tool.started' "
+                "AND occurred_at >= ? AND occurred_at < ?",
+                (project_id, day_start, day_end),
             ).fetchone()[0])
         return {"sessions": sessions, "notes": notes, "calls_today": calls}
+
+    # ---------- Token 用量（方案 12）----------
+
+    @staticmethod
+    def _usage_events_total(conn: sqlite3.Connection) -> int:
+        """全量 usage 事件的 total_tokens 之和（只用于与会话累计对账）。
+
+        走新加的 (event_type, occurred_at) 索引，扫的是"每轮一行"而不是整张 events
+        表；json1 不可用时（少见）退回 Python 逐行解析，与 count_tool_failures 同一套兜底。
+        """
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(json_extract(data_json, '$.total_tokens')), 0) "
+                "FROM events WHERE event_type = 'session.usage'"
+            ).fetchone()
+            return int(row[0] or 0)
+        except sqlite3.OperationalError:
+            total = 0
+            for item in conn.execute(
+                "SELECT data_json FROM events WHERE event_type = 'session.usage'"
+            ):
+                total += _usage_tokens(_usage_payload(str(item["data_json"])))["total"]
+            return total
+
+    def usage_summary(
+        self,
+        *,
+        days: int = 30,
+        tz: tzinfo | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """首页 token 面板的数据源：今日 / 区间 / 累计 + 按天 + 按项目 + 按档位。
+
+        **两条口径刻意分开返回**（见方案 12 §2）：
+        - 按天 / 按项目区间 / 按档位：来自逐轮事件 `session.usage`
+        - 累计：来自 `sessions` 的 token 快照求和（会话被删时两边一起减少，所以可比）
+        二者差值放在 `drift` 里交给前端判断是否提示——不合并、不猜。
+
+        `tz` / `now` 仅供测试注入固定时区与"现在"，线上走本机时区与当前时间。
+        """
+        local_tz = tz or _local_tz()
+        current = now.astimezone(local_tz) if now is not None else datetime.now(local_tz)
+        try:
+            span = max(7, min(int(days), 90))  # 越界钳制而不是报错：前端传错不该让首页空掉
+        except (TypeError, ValueError):
+            span = 30
+        today = current.date()
+        first_day = today - timedelta(days=span - 1)
+        range_start, range_end = _utc_bounds(first_day, today + timedelta(days=1), local_tz)
+
+        def _bucket() -> dict[str, int]:
+            return {"prompt": 0, "completion": 0, "total": 0, "turns": 0}
+
+        # 先铺满区间内每一天：折线的 x 轴必须完整，缺日子由前端补 0 容易漏
+        daily = {
+            (first_day + timedelta(days=offset)).isoformat(): _bucket() for offset in range(span)
+        }
+        today_bucket = _bucket()
+        by_project: dict[str, dict[str, int]] = {}
+        by_tier: dict[str, dict[str, int]] = {}
+
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT occurred_at, project_id, data_json FROM events "
+                "WHERE event_type = 'session.usage' AND occurred_at >= ? AND occurred_at < ? "
+                "ORDER BY occurred_at ASC",
+                (range_start, range_end),
+            ).fetchall()
+            lifetime_rows = conn.execute(
+                "SELECT project_id, "
+                "COALESCE(SUM(prompt_tokens), 0) AS prompt, "
+                "COALESCE(SUM(completion_tokens), 0) AS completion, "
+                "COALESCE(SUM(total_tokens), 0) AS total, "
+                "COUNT(*) AS sessions "
+                "FROM sessions GROUP BY project_id"
+            ).fetchall()
+            events_total = self._usage_events_total(conn)
+
+        today_key = today.isoformat()
+        for row in rows:
+            payload = _usage_payload(str(row["data_json"]))
+            tokens = _usage_tokens(payload)
+            day = _local_day(str(row["occurred_at"]), local_tz)
+            bucket = daily.get(day)
+            if bucket is not None:
+                _accumulate(bucket, tokens)
+            if day == today_key:
+                _accumulate(today_bucket, tokens)
+            project_id = str(row["project_id"])
+            project_bucket = by_project.setdefault(project_id, {"today": 0, "range": 0, "lifetime": 0, "turns": 0})
+            project_bucket["range"] += tokens["total"]
+            project_bucket["turns"] += 1
+            if day == today_key:
+                project_bucket["today"] += tokens["total"]
+            # 老事件没有档位字段（方案 12 §4.2 才补上），归入「未标注」而不是猜
+            tier = str(payload.get("tier") or "") or "未标注"
+            tier_bucket = by_tier.setdefault(tier, {"total": 0, "turns": 0})
+            tier_bucket["total"] += tokens["total"]
+            tier_bucket["turns"] += 1
+
+        lifetime = {"prompt": 0, "completion": 0, "total": 0, "sessions": 0}
+        for row in lifetime_rows:
+            project_id = str(row["project_id"])
+            # 没有区间用量的项目也要出现在这里：项目卡要显示「累计」那一列
+            project_bucket = by_project.setdefault(project_id, {"today": 0, "range": 0, "lifetime": 0, "turns": 0})
+            project_bucket["lifetime"] = int(row["total"] or 0)
+            lifetime["prompt"] += int(row["prompt"] or 0)
+            lifetime["completion"] += int(row["completion"] or 0)
+            lifetime["total"] += int(row["total"] or 0)
+            lifetime["sessions"] += int(row["sessions"] or 0)
+
+        range_bucket = _bucket()
+        for bucket in daily.values():
+            range_bucket["prompt"] += bucket["prompt"]
+            range_bucket["completion"] += bucket["completion"]
+            range_bucket["total"] += bucket["total"]
+            range_bucket["turns"] += bucket["turns"]
+
+        sessions_total = int(lifetime["total"])
+        diff = int(events_total) - sessions_total
+        return {
+            "timezone": str(local_tz),
+            "generated_at": current.isoformat(timespec="seconds"),
+            "days": span,
+            "today": today_bucket,
+            "range": range_bucket,
+            "lifetime": lifetime,
+            "daily": [{"date": day, **bucket} for day, bucket in sorted(daily.items())],
+            "by_project": [
+                {"project_id": project_id, **bucket} for project_id, bucket in sorted(by_project.items())
+            ],
+            "by_tier": [
+                {"tier": tier, **bucket}
+                for tier, bucket in sorted(by_tier.items(), key=lambda item: -item[1]["total"])
+            ],
+            "drift": {
+                "events_total": int(events_total),
+                "sessions_total": sessions_total,
+                "diff": diff,
+                "diff_pct": round(abs(diff) / sessions_total * 100.0, 2) if sessions_total else 0.0,
+            },
+        }
 
     # ---------- Notes ----------
 

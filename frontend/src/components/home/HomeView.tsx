@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import * as api from '../../api'
-import type { ActivityDay, Project } from '../../api/types'
-import { formatRelative, formatNumber } from '../../utils/format'
+import type { ActivityDay, Project, UsageSummary } from '../../api/types'
+import { formatRelative, formatNumber, formatTokens } from '../../utils/format'
 import { describeError } from '../../state/errors'
 import { Empty } from '../common/Empty'
 import { Heatmap } from './Heatmap'
+import { UsagePanel } from './UsagePanel'
 
 interface HomeViewProps {
   projects: Project[]
@@ -29,6 +30,8 @@ export function HomeView({
 }: HomeViewProps) {
   const [activity, setActivity] = useState<ActivityDay[]>([])
   const [activityError, setActivityError] = useState<string | null>(null)
+  const [usage, setUsage] = useState<UsageSummary | null>(null)
+  const [usageError, setUsageError] = useState<string | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -41,6 +44,31 @@ export function HomeView({
       })
     return () => controller.abort()
   }, [])
+
+  // 用量统计（方案 12）：与活动量并列取一次，失败只影响这一块
+  useEffect(() => {
+    const controller = new AbortController()
+    api
+      .fetchUsageSummary(30, controller.signal)
+      .then((summary) => {
+        setUsage(summary)
+        setUsageError(null)
+      })
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        setUsageError(describeError(err))
+      })
+    return () => controller.abort()
+  }, [])
+
+  // 项目卡里的 token 行复用同一份 summary，不额外发请求（按 project_id 索引）
+  const usageByProject = useMemo(() => {
+    const table = new Map<string, { today: number; lifetime: number }>()
+    for (const item of usage?.by_project ?? []) {
+      table.set(item.project_id, { today: item.today, lifetime: item.lifetime })
+    }
+    return table
+  }, [usage])
 
   return (
     <section className="view home">
@@ -63,6 +91,8 @@ export function HomeView({
             活动统计暂不可用：{activityError}
           </div>
         ) : null}
+
+        <UsagePanel summary={usage} error={usageError} />
 
         <Heatmap days={activity} />
 
@@ -101,6 +131,7 @@ export function HomeView({
                 <span>
                   今日调用 <b>{formatNumber(project.stats.calls_today)}</b>
                 </span>
+                <ProjectTokens usage={usageByProject.get(project.id)} />
               </div>
               {/* 卡片本身是打开项目的入口，操作按钮必须阻止冒泡，否则会连带打开 */}
               <div className="pt-acts">
@@ -144,5 +175,25 @@ export function HomeView({
         {loading ? <div className="empty">正在加载项目…</div> : null}
       </div>
     </section>
+  )
+}
+
+/**
+ * 项目卡里的 token 行（方案 12 §3.6）。
+ *
+ * 数据来自首页那次 `/api/usage/summary` 的 `by_project`，所以卡片不会多出 N 次请求；
+ * 项目还没有会话时这一项整体不出现，而不是显示两个 0。
+ */
+function ProjectTokens({ usage }: { usage?: { today: number; lifetime: number } }) {
+  if (!usage) return null
+  return (
+    <>
+      <span title="今日 token（输入 + 输出）">
+        今日 <b>{formatTokens(usage.today)}</b> tk
+      </span>
+      <span title="该项目所有会话的累计 token">
+        累计 <b>{formatTokens(usage.lifetime)}</b> tk
+      </span>
+    </>
   )
 }
