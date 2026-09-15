@@ -101,6 +101,16 @@ def shared_assets() -> _SharedAssets:
     return _shared_assets
 
 
+def loaded_assets() -> _SharedAssets | None:
+    """**已加载**的共享资产；未加载返回 None（本函数不触发加载）。
+
+    看板（`server/insights.py`）用它读"当前真正在用"的产物与校准：与 chat 完全同源、
+    零成本、零漂移。不直接调 `shared_assets()` 是因为那会顺带加载 24MB 的 ONNX 会话，
+    并重算 calibration / learned_rules —— 一个 GET 不该做这些。
+    """
+    return _shared_assets
+
+
 def reset_shared_assets() -> None:
     """丢弃共享重资产（进程级缓存失效时使用，例如产物被重新训练）。"""
     global _shared_assets, _prewarm_started

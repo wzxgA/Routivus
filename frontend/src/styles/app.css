@@ -3086,17 +3086,22 @@ button {
   color: var(--muted);
 }
 /* 档位 → 颜色：这一层只做映射，色值放在主题块（--tier-*），日/夜各一套。
-   未知档位回落 --accent，不会出现"没有颜色"的条。 */
-.usage-tier[data-tier='Basic'] {
+   未知档位回落 --accent，不会出现"没有颜色"的条。
+   路由看板的档位条（.ri-bias / .ri-gate）复用同一份映射。 */
+.usage-tier[data-tier='Basic'],
+.ri-bias[data-tier='Basic'] {
   --tier-color: var(--tier-basic);
 }
-.usage-tier[data-tier='Enhanced'] {
+.usage-tier[data-tier='Enhanced'],
+.ri-bias[data-tier='Enhanced'] {
   --tier-color: var(--tier-enhanced);
 }
-.usage-tier[data-tier='Superior'] {
+.usage-tier[data-tier='Superior'],
+.ri-bias[data-tier='Superior'] {
   --tier-color: var(--tier-superior);
 }
-.usage-tier[data-tier='Ultimate'] {
+.usage-tier[data-tier='Ultimate'],
+.ri-bias[data-tier='Ultimate'] {
   --tier-color: var(--tier-ultimate);
 }
 .usage-tier-name {
@@ -3984,5 +3989,391 @@ kbd {
   /* 侧栏在窄窗口下整块隐藏，但抽屉是"用户显式展开"的东西，只收窄不消失 */
   .files-drawer {
     flex-basis: 280px;
+  }
+}
+
+/* ================= 智能路由数据看板（方案 13）=================
+   全部走 CSS 变量，日/夜两套主题零额外规则；四档色板复用 --tier-*
+   （与首页 token 面板同源：同一个档位在两个页面上必须是同一个颜色）。 */
+
+.ri-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+.ri-toolbar-spacer {
+  flex: 1 1 auto;
+}
+.ri-stamp {
+  font-size: 11px;
+  color: var(--faint);
+  font-family: var(--mono);
+}
+
+/* 结论条：级别只体现在左边框与级别词的颜色上，底色保持卡片色 → 两套主题都不用特判 */
+.ri-diag {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 10px;
+  padding: 10px 13px;
+  margin-bottom: 12px;
+}
+.ri-diag-ok {
+  border-left-color: var(--ok);
+}
+.ri-diag-warn {
+  border-left-color: var(--warn);
+}
+.ri-diag-error {
+  border-left-color: var(--danger);
+}
+.ri-diag-head {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.ri-diag-level {
+  font-size: 12px;
+  font-weight: 700;
+}
+.ri-diag-ok .ri-diag-level {
+  color: var(--ok);
+}
+.ri-diag-warn .ri-diag-level {
+  color: var(--warn);
+}
+.ri-diag-error .ri-diag-level {
+  color: var(--danger);
+}
+.ri-diag-text {
+  font-size: 12.5px;
+  color: var(--text);
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.ri-diag-code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+.ri-diag-hints {
+  margin: 6px 0 0 18px;
+  padding: 0;
+  list-style: disc;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.ri-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+.ri-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  min-width: 0;
+}
+.ri-card-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.ri-big {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.ri-badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--beige);
+  color: var(--muted);
+}
+.ri-badge-semantic,
+.ri-badge-ok {
+  color: var(--ok-text);
+  border-color: var(--ok);
+  background: var(--ok-bg);
+}
+.ri-badge-nosem {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.ri-badge-unavailable {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.ri-code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+.ri-kv {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ri-kv > div {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+.ri-kv dt {
+  flex: 0 0 auto;
+  width: 132px;
+  font-size: 11px;
+  color: var(--faint);
+}
+.ri-kv dd {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.ri-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+.ri-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--beige);
+  border: 1px solid var(--beige-deep);
+  border-radius: 9px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+.ri-metric-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+.ri-metric-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+.ri-metric-sub {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.ri-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 8px;
+}
+.ri-sub-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.ri-errors {
+  margin-top: 10px;
+}
+.ri-error-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 2px 0;
+}
+.ri-error-count {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  color: var(--danger);
+}
+.ri-error-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ri-table-wrap {
+  max-height: 340px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.ri-table-wrap table {
+  margin: 0;
+}
+.ri-notes {
+  max-width: 320px;
+}
+.ri-note {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--beige);
+  border: 1px solid var(--beige-deep);
+  border-radius: 5px;
+  padding: 0 5px;
+  margin-right: 4px;
+}
+.ri-tag {
+  margin-left: 6px;
+  font-size: 10.5px;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.ri-up {
+  color: var(--ok);
+}
+.ri-down {
+  color: var(--accent);
+}
+.ri-warn {
+  color: var(--danger);
+}
+
+/* 档位偏置：以中线为 0，向左为负（偏弱）、向右为正（偏强），两端各占一半宽度 */
+.ri-bias {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 2px 0;
+}
+.ri-bias-name {
+  flex: 0 0 auto;
+  width: 74px;
+}
+.ri-bias-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 7px;
+  border-radius: 4px;
+  background: var(--beige-deep);
+  overflow: hidden;
+}
+.ri-bias-zero {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-strong);
+}
+.ri-bias-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--tier-color, var(--accent));
+  border-radius: 4px;
+}
+.ri-bias-fill.neg {
+  opacity: 0.75;
+}
+.ri-bias-value {
+  flex: 0 0 auto;
+  width: 52px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.ri-bias-count {
+  flex: 0 0 auto;
+  width: 52px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.ri-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ri-chip {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--beige);
+  border: 1px solid var(--beige-deep);
+  border-radius: 6px;
+  padding: 1px 7px;
+}
+.ri-chip b {
+  color: var(--text);
+}
+
+/* 门槛：未满足的点前留一个空心圆点，满足的打勾并上绿色 */
+.ri-gates {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+}
+.ri-gate {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.ri-gate-mark {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  color: var(--faint);
+}
+.ri-gate.ok .ri-gate-mark {
+  color: var(--ok);
+}
+.ri-gate-label {
+  flex: 0 0 auto;
+  width: 200px;
+  color: var(--text);
+}
+.ri-gate.ok .ri-gate-label {
+  color: var(--muted);
+}
+.ri-gate-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+
+@media (max-width: 820px) {
+  .ri-gate-label {
+    width: auto;
+  }
+  .ri-kv dt {
+    width: 104px;
   }
 }

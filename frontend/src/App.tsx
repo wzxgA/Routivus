@@ -8,6 +8,7 @@ import { ConfigView } from './components/config/ConfigView'
 import { FilesView } from './components/files/FilesView'
 import { HomeView } from './components/home/HomeView'
 import { NotesView } from './components/notes/NotesView'
+import { RouterInsightsView } from './components/router/RouterInsightsView'
 import { Nav } from './components/shell/Nav'
 import { TopBar } from './components/shell/TopBar'
 import { SkillsView } from './components/skills/SkillsView'
@@ -15,6 +16,7 @@ import {
   CONFIG,
   GLOBAL_NOTES,
   HOME,
+  ROUTER_INSIGHTS,
   SKILLS,
   navigate,
   projectRoute,
@@ -181,8 +183,11 @@ export function App() {
             error={configState.error}
             onReload={configState.reload}
             router={router}
+            onOpenRouterInsights={() => navigate(ROUTER_INSIGHTS)}
           />
         )
+      case 'router':
+        return <RouterInsightsView />
       case 'project': {
         if (workspace.error) {
           return (

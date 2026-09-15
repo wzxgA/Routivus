@@ -151,24 +151,36 @@ def _new_since(samples: list[dict[str, Any]], since_ts: float) -> int:
     return sum(1 for s in samples if float(s.get("ts", 0.0) or 0.0) > since_ts)
 
 
+def gate_thresholds(state: EvolveState) -> dict[str, float]:
+    """当前生效的门槛值（含 env 覆盖，以及"首次 / 非首次"的量级差别）。
+
+    `gate()` 与数据看板（`server/insights.py`）共用这一份，避免两处常量漂移；
+    冷却给"天"而不是秒，因为看板要显示"还有几天可以再试"。
+    """
+    return {
+        "min_per_tier": float(MIN_PER_TIER),
+        "min_total": float(MIN_TOTAL_FIRST if state.evolve_count == 0 else MIN_TOTAL),
+        "cooldown_days": _float_env("ROUTIVUS_ADAPTIVE_COOLDOWN_DAYS", COOLDOWN_DAYS),
+        "min_new": float(_int_env("ROUTIVUS_ADAPTIVE_MIN_NEW", MIN_NEW)),
+    }
+
+
 def gate(samples: list[dict[str, Any]], state: EvolveState,
          *, now: float | None = None) -> str:
     """门槛检查。返回空串表示可以进化，否则返回跳过原因码。"""
     now = now if now is not None else time.time()
     counts = per_tier_counts(samples)
     total = len(samples)
+    limits = gate_thresholds(state)
     if len(counts) < 2:
         return "not_enough_tiers"
-    if any(v < MIN_PER_TIER for v in counts.values()):
+    if any(v < limits["min_per_tier"] for v in counts.values()):
         return "not_enough_per_tier"
-    floor = MIN_TOTAL_FIRST if state.evolve_count == 0 else MIN_TOTAL
-    if total < floor:
+    if total < limits["min_total"]:
         return "not_enough_total"
-    if state.last_attempt_at and (now - state.last_attempt_at) < \
-            _float_env("ROUTIVUS_ADAPTIVE_COOLDOWN_DAYS", COOLDOWN_DAYS) * 86400.0:
+    if state.last_attempt_at and (now - state.last_attempt_at) < limits["cooldown_days"] * 86400.0:
         return "cooldown"
-    if _new_since(samples, state.last_success_at) < _int_env(
-            "ROUTIVUS_ADAPTIVE_MIN_NEW", MIN_NEW):
+    if _new_since(samples, state.last_success_at) < limits["min_new"]:
         return "not_enough_new"
     return ""
 

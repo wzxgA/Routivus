@@ -132,6 +132,194 @@ export interface NoteStats {
   by_project: Record<string, number>
 }
 
+// ---- SmartRouter 数据看板（方案 13，GET /api/router/insights）----
+
+/** 文件事实（产物 / 编码器都要一份，用来显示体积与时间戳）。 */
+export interface RouterFileFacts {
+  path: string
+  present: boolean
+  bytes: number
+  mtime: string
+}
+
+export interface RouterArtifactView extends RouterFileFacts {
+  /** semantic（语义版）/ nosem（无语义兜底）/ unavailable */
+  source: string
+  reason_code: string
+  n_samples: number | null
+  val_accuracy: number | null
+  trained_at: string
+  sem_dim: number
+  head_dim: number
+  eval_error: string
+}
+
+export interface RouterSemanticView extends RouterFileFacts {
+  available: boolean
+  reason_code: string
+  dim: number
+  calls: number
+  avg_ms: number
+}
+
+export interface RouterStatusView {
+  /** true = 读自已加载的共享资产（与 chat 同源）；false = 只按文件与依赖预判 */
+  verified: boolean
+  load_seconds: number
+  artifact: RouterArtifactView
+  semantic: RouterSemanticView
+  prev_artifact: RouterFileFacts
+}
+
+export interface RouterDiagnosisView {
+  level: 'ok' | 'warn' | 'error'
+  code: string
+  text: string
+  hints: string[]
+}
+
+export interface RouterRecentTurn {
+  ts: string
+  tier: string
+  confidence: number | null
+  score: number | null
+  hard_rule: boolean
+  notes: string[]
+  elapsed_ms: number | null
+  switched: boolean
+  error: string
+}
+
+export interface RouterRuntimeView {
+  total: number
+  routed: number
+  errors: number
+  events_since: string
+  truncated: boolean
+  by_tier: Record<string, number>
+  hard_rule: number
+  hard_rule_ratio: number
+  confidence_buckets: Record<string, number>
+  switched: number
+  latency_ms: {
+    load_p50: number | null
+    load_p95: number | null
+    route_p50: number | null
+    route_p95: number | null
+    route_max: number | null
+  }
+  error_groups: { text: string; count: number }[]
+  recent: RouterRecentTurn[]
+}
+
+export interface RouterCalibrationView {
+  degraded: boolean
+  bias: Record<string, number>
+  samples: Record<string, number>
+  threshold_adjust: number
+  total: number
+}
+
+export interface RouterRuleView {
+  feature: string
+  op: string
+  value: number
+  action: number
+  confidence: number
+  support: number
+}
+
+export interface RouterSamplesView {
+  degraded: boolean
+  feedback_lines: number
+  available_samples: number
+  weighted_total: number
+  unique_texts: number
+  by_tier: Record<string, number>
+  by_signal: Record<string, { up: number; down: number }>
+  build_stats: Record<string, number>
+  new_7d: number
+  new_30d: number
+  sem_samples: { count: number; bytes: number; max: number; newest_ts: number; oldest_ts: number }
+  semantic_head: { present: boolean; tiers: number; dim: number; train_acc: number | null }
+}
+
+export interface RouterGateView {
+  key: string
+  label: string
+  satisfied: boolean
+  detail: string
+}
+
+export interface RouterEvolveStateView {
+  last_attempt_at: number
+  last_success_at: number
+  samples_since_success: number
+  last_decision: string
+  last_reason: string
+  last_holdout_acc: number | null
+  last_baseline_acc: number | null
+  evolve_count: number
+}
+
+export interface RouterEvolveLogRow {
+  trigger?: string
+  ts?: number
+  decision?: string
+  reason?: string
+  samples?: number
+  holdout_acc?: number | null
+  baseline_acc?: number | null
+  n_train?: number
+  n_holdout?: number
+  artifact_bytes?: number | null
+}
+
+export interface RouterEvolutionView {
+  state: RouterEvolveStateView
+  auto_evolve: boolean
+  thresholds: Record<string, number>
+  cooldown_remaining_days: number
+  gates: RouterGateView[]
+  counts_by_tier: Record<string, number>
+  total_samples: number
+  new_since_success: number
+  history: RouterEvolveLogRow[]
+}
+
+/** 门槛常量（服务端下发，前端只显示、不硬编码）。 */
+export interface RouterLimits {
+  calibration_min_samples: number
+  max_bias: number
+  max_threshold_adjust: number
+  rule_min_support: number
+  rule_min_precision: number
+  rule_max_confidence: number
+  rules_max: number
+  evolve_min_per_tier: number
+  evolve_min_total: number
+  evolve_min_total_first: number
+  evolve_min_new: number
+  evolve_cooldown_days: number
+  holdout_ratio: number
+  sem_samples_max: number
+  signals: Record<string, { upgrade: boolean; weight: number }>
+}
+
+export interface RouterInsights {
+  generated_at: string
+  timezone: string
+  days: number
+  limits: RouterLimits
+  status: RouterStatusView
+  diagnosis: RouterDiagnosisView
+  runtime: RouterRuntimeView
+  calibration: RouterCalibrationView
+  rules: { degraded: boolean; items: RouterRuleView[] }
+  samples: RouterSamplesView
+  evolution: RouterEvolutionView
+}
+
 // ---- Web Console 配置接口 ----
 
 /** 单个模型的能力覆盖（config.json 的 `model_limits.<model>`）。 */

@@ -47,6 +47,7 @@ from routivus.server.files import (
     read_text_file,
     write_text_file,
 )
+from routivus.server.insights import router_insights as build_router_insights
 from routivus.server.logging_setup import install_token_redaction
 from routivus.server.memory_view import memory_payload
 from routivus.server.plan_review import PlanReviewBridge
@@ -855,6 +856,15 @@ def create_app(
         for item in payload["by_project"]:
             item["name"] = names.get(str(item.get("project_id", "")), "")
         return payload
+
+    @router.get("/router/insights")
+    async def router_insights(days: int = 30) -> dict[str, Any]:
+        """SmartRouter 数据看板（方案 13）：只读聚合，实现见 server/insights.py。
+
+        读文件、探测依赖、按需解析产物 metadata 都是同步活儿，丢到工作线程——
+        与智能路由同一条理由：别让事件循环被磁盘与 import 阻塞。
+        """
+        return await asyncio.to_thread(build_router_insights, workspace_store, days=days)
 
     @router.get("/projects/{project_id}/sessions", response_model=list[SessionResponse])
     async def list_sessions(project_id: str, limit: int = 50, offset: int = 0, cursor: str | None = None) -> list[SessionResponse]:

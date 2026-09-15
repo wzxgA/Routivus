@@ -61,6 +61,8 @@ interface ConfigViewProps {
   onReload: () => Promise<ConfigSnapshot | null>
   /** 会话里的路由状态（`App` 已有）：用来在四档表里标出"当前生效"（方案 08 §4.3）。 */
   router?: RouterState | null
+  /** 打开智能路由数据看板（方案 13）。导航里没有这页的入口，只从这张卡片进。 */
+  onOpenRouterInsights?: () => void
 }
 
 type ModalState =
@@ -71,7 +73,14 @@ type ModalState =
   | { kind: 'delete-provider'; provider: ProviderView }
   | { kind: 'tier'; tier: string }
 
-export function ConfigView({ config, loading, error, onReload, router = null }: ConfigViewProps) {
+export function ConfigView({
+  config,
+  loading,
+  error,
+  onReload,
+  router = null,
+  onOpenRouterInsights,
+}: ConfigViewProps) {
   const [modal, setModal] = useState<ModalState>({ kind: 'none' })
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -240,6 +249,11 @@ export function ConfigView({ config, loading, error, onReload, router = null }: 
               onChange={(event) => void run(() => api.setSmartRouter(event.target.checked))}
             />
           </label>
+          {onOpenRouterInsights ? (
+            <button type="button" className="btn" onClick={onOpenRouterInsights}>
+              详情 →
+            </button>
+          ) : null}
         </div>
         <div className="card-desc">
           按任务复杂度自动选择档位模型；未配置的档位回落到当前 base provider。

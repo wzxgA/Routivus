@@ -15,6 +15,7 @@ import type {
   NoteStats,
   Project,
   ProviderView,
+  RouterInsights,
   Session,
   SkillDetail,
   SkillView,
@@ -157,6 +158,15 @@ export const projectFileRawUrl = (projectId: string, path: string) =>
  */
 export const fetchUsageSummary = (days = 30, signal?: AbortSignal) =>
   request<UsageSummary>('/usage/summary', { query: { days }, signal })
+
+/**
+ * SmartRouter 数据看板（方案 13）：产物与编码器状态、结论、运行态统计、
+ * 校准与规则、样本与进化历史，一次拿全（服务端一个聚合接口）。
+ *
+ * `days` 越界同样由服务端钳到 7–90。
+ */
+export const fetchRouterInsights = (days = 30, signal?: AbortSignal) =>
+  request<RouterInsights>('/router/insights', { query: { days }, signal })
 
 // ---- 命令补全 ----
 

@@ -494,6 +494,25 @@ class WorkspaceStore:
         records.reverse()
         return records
 
+    def list_events_by_type(
+        self, event_type: str, *, since: str, until: str, limit: int = 5000
+    ) -> list[EventRecord]:
+        """按事件类型 + 时间窗**跨会话**取事件，按时间正序返回（方案 13 看板用）。
+
+        与 `list_card_events` 的差别：那个按 `session_id` 过滤（重连回放用），这里要跨
+        会话聚合。走 `idx_events_type_time(event_type, occurred_at)`；`limit` 卡在 20000，
+        调用方拿到"正好等于 limit"的结果时应标 `truncated`，而不是默认它是全量。
+        """
+        limit = max(1, min(int(limit), 20_000))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM events
+                WHERE event_type = ? AND occurred_at >= ? AND occurred_at < ?
+                ORDER BY occurred_at ASC, rowid ASC LIMIT ?""",
+                (str(event_type), str(since), str(until), limit),
+            ).fetchall()
+        return [self._event(row) for row in rows]
+
     def count_events(self, session_id: str, event_type: str) -> int:
         """某类事件的全量计数（审计展示用，不受回放窗口影响）。"""
         with self._lock, self._connect() as conn:

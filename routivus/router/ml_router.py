@@ -60,6 +60,8 @@ class MLRouter:
         # 产物来源（semantic / nosem / explicit / ""）与不可用原因码（方案 10 §4.5/§4.6）
         self._source = ""
         self._unavailable_reason = ""
+        # 成功加载的那个产物文件（看板展示体积/时间戳用）；不可用时为 None
+        self._artifact_path: Path | None = None
         # 随包兜底：默认产物缺失时首启自动落位（clone 后开箱可用）
         if artifact_path is None:
             self._ensure_bundled()
@@ -94,9 +96,11 @@ class MLRouter:
             if reason == "":
                 self._source = kind
                 self._unavailable_reason = ""
+                self._artifact_path = path
                 return
             reasons.append(reason)
         self._source = ""
+        self._artifact_path = None
         # 取最后一级的原因：它最接近"为什么最终没有可用产物"
         self._unavailable_reason = reasons[-1] if reasons else "no_artifact"
 
@@ -158,8 +162,33 @@ class MLRouter:
         return self._unavailable_reason
 
     @property
+    def artifact_path(self) -> Path | None:
+        """当前成功加载的产物路径；不可用时为 None（看板用）。"""
+        return Path(self._artifact_path) if self._artifact_path else None
+
+    @property
     def n_samples(self) -> int | None:
         return self._payload.get("n_samples") if self._payload else None
+
+    # 以下三个是产物内嵌的展示字段（看板用）：训练时间 / 训练时的验证准确率 /
+    # 本地语义头列宽。都只读 payload，缺失一律 None（老产物没有这些键）。
+    @property
+    def trained_at(self) -> float | None:
+        value = self._payload.get("trained_at") if self._payload else None
+        return float(value) if value is not None else None
+
+    @property
+    def val_accuracy(self) -> float | None:
+        value = self._payload.get("val_accuracy") if self._payload else None
+        return float(value) if value is not None else None
+
+    @property
+    def head_dim(self) -> int:
+        value = self._payload.get("head_dim", 0) if self._payload else 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
 
     @property
     def sem_dim(self) -> int:

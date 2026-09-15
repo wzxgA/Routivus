@@ -7,12 +7,15 @@ export type Route =
   | { kind: 'notes' }
   | { kind: 'skills' }
   | { kind: 'config' }
+  /** 智能路由数据看板（方案 13）：入口在配置页的 SmartRouter 卡片，导航里不单列 */
+  | { kind: 'router' }
   | { kind: 'project'; projectId: string; view: ProjectView; sessionId: string | null }
 
 export const HOME: Route = { kind: 'home' }
 export const GLOBAL_NOTES: Route = { kind: 'notes' }
 export const SKILLS: Route = { kind: 'skills' }
 export const CONFIG: Route = { kind: 'config' }
+export const ROUTER_INSIGHTS: Route = { kind: 'router' }
 
 export function projectRoute(
   projectId: string,
@@ -29,6 +32,7 @@ export function parseRoute(hash: string): Route {
   if (parts[0] === 'notes') return GLOBAL_NOTES
   if (parts[0] === 'skills') return SKILLS
   if (parts[0] === 'config') return CONFIG
+  if (parts[0] === 'router') return ROUTER_INSIGHTS
   if (parts[0] === 'p' && parts[1]) {
     const projectId = decodeURIComponent(parts[1])
     if (parts[2] === 'notes') return { kind: 'project', projectId, view: 'notes', sessionId: null }
@@ -49,6 +53,8 @@ export function routeToHash(route: Route): string {
       return '#/skills'
     case 'config':
       return '#/config'
+    case 'router':
+      return '#/router'
     case 'project': {
       const base = `#/p/${encodeURIComponent(route.projectId)}`
       if (route.view === 'notes') return `${base}/notes`
