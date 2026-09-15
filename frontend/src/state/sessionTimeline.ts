@@ -16,7 +16,7 @@ import type {
   TeamPayload,
   WsEnvelope,
 } from '../api/types'
-import { routerNotice } from '../utils/routerNotes'
+import { routerNoticeView, type RouterNoticeView } from '../utils/routerNotes'
 import { StreamBatcher, type StreamDelta } from '../utils/streamBatch'
 import { SessionSocket, type ConnState } from '../ws/sessionSocket'
 
@@ -46,6 +46,20 @@ export interface TeamItem {
   payload: TeamPayload
 }
 
+/**
+ * 对话流里的换档卡（方案 14 §4.5）：结构化载荷由 `routerNoticeView` 生成，
+ * 触发判据与旧的文字提示一致（只在 变化 / 回落 / 失败 / 冻结 / 防降级 时出现）。
+ * `fresh` 标记"在线事件插入"——回放重建的条目没有它，卡片据此走静态终态
+ * （刷新 / 重连后不重播动画）。
+ */
+export interface RouterItem {
+  kind: 'router'
+  id: string
+  view: RouterNoticeView
+  at: string
+  fresh?: boolean
+}
+
 export type TimelineItem =
   | { kind: 'user'; id: string; content: string; at: string }
   | { kind: 'agent'; id: string; content: string; at: string; streaming?: boolean; source?: string }
@@ -55,6 +69,7 @@ export type TimelineItem =
   | ToolItem
   | PlanItem
   | TeamItem
+  | RouterItem
 
 export type ThinkingItem = Extract<TimelineItem, { kind: 'thinking' }>
 export type AgentItem = Extract<TimelineItem, { kind: 'agent' }>
@@ -89,6 +104,12 @@ export interface SessionTimelineValue {
   approval: ApprovalRequestedData | null
   planReview: PlanReviewRequest | null
   router: RouterState | null
+  /**
+   * 路由中（方案 14 §4.3）：普通消息已发出、`router.updated` 未返回的瞬态。
+   * 进入 = sendMessage（非斜杠输入且开关开启）；三条回落 = ① router.updated、
+   * ② 证明本轮不路由的事件（plan / team / 命令 / 首个 delta 等）、③ 2s 兜底超时。
+   */
+  routerRouting: boolean
   memory: MemoryPayload | null
   /**
    * 当前模型的窗口 / 输出上限（快照恢复 + `context.updated` 更新）。
@@ -138,6 +159,26 @@ function messageToItem(message: Message, source?: string): TimelineItem | null {
 }
 
 // ---- 条目归约的纯函数（在线事件与快照回放共用，避免两套逻辑漂移）----------------
+
+/** `router.updated` 载荷 → RouterState（在线增量与快照回放共用同一份解析）。 */
+function parseRouterState(data: Record<string, unknown>): RouterState {
+  return {
+    enabled: Boolean(data.enabled),
+    tier: String(data.tier ?? ''),
+    tier_idx: Number(data.tier_idx ?? 0),
+    provider: String(data.provider ?? ''),
+    model: String(data.model ?? ''),
+    configured: Boolean(data.configured),
+    confidence: Number(data.confidence ?? 0),
+    hard_rule: Boolean(data.hard_rule),
+    score: typeof data.score === 'number' ? Number(data.score) : undefined,
+    notes: Array.isArray(data.notes) ? (data.notes as unknown[]).map(String) : undefined,
+    switched: typeof data.switched === 'boolean' ? Boolean(data.switched) : undefined,
+    elapsed_ms: typeof data.elapsed_ms === 'number' ? Number(data.elapsed_ms) : undefined,
+    load_ms: typeof data.load_ms === 'number' ? Number(data.load_ms) : undefined,
+    ...(data.error ? { error: String(data.error) } : {}),
+  }
+}
 
 function withMessage(items: TimelineItem[], message: Message): TimelineItem[] {
   const item = messageToItem(message)
@@ -265,6 +306,36 @@ export function useSessionTimeline(
   // 放在 ref 里而不是依赖 state，避免在 setState 的 updater 里做副作用。
   const routerRef = useRef<RouterState | null>(null)
 
+  // 「路由中」瞬态（方案 14 §4.3）：进入在 sendMessage，回落有三条
+  // （router.updated / 证明不路由的事件 / 2s 兜底超时），防 /plan 等轮次把 chip 挂死。
+  const [routerRouting, setRouterRouting] = useState(false)
+  const routerRoutingTimer = useRef<number | null>(null)
+
+  const clearRouterRouting = useCallback(() => {
+    if (routerRoutingTimer.current !== null) {
+      window.clearTimeout(routerRoutingTimer.current)
+      routerRoutingTimer.current = null
+    }
+    setRouterRouting(false)
+  }, [])
+
+  const beginRouterRouting = useCallback(() => {
+    if (routerRoutingTimer.current !== null) window.clearTimeout(routerRoutingTimer.current)
+    // 兜底（③）：正常路由 <500ms；2s 内没有回落事件说明这轮根本不路由，收回状态。
+    routerRoutingTimer.current = window.setTimeout(() => {
+      routerRoutingTimer.current = null
+      setRouterRouting(false)
+    }, 2000)
+    setRouterRouting(true)
+  }, [])
+
+  // socket effect 里要调 clearRouterRouting 但不能把它加进依赖（会导致重连），
+  // 照 updateRef / refreshMemoryRef 的做法走 ref。
+  const clearRouterRoutingRef = useRef(clearRouterRouting)
+  useEffect(() => {
+    clearRouterRoutingRef.current = clearRouterRouting
+  }, [clearRouterRouting])
+
   /** 重拉项目长期记忆条目（快照已带一份，这里用于命令改动后刷新）。 */
   const refreshMemory = useCallback(() => {
     if (!sessionId) return
@@ -324,6 +395,7 @@ export function useSessionTimeline(
     setPlanReview(null)
     setRouter(null)
     routerRef.current = null
+    clearRouterRoutingRef.current()
     let routerNoticeSeq = 0
     setMemory(null)
     setContext(null)
@@ -333,6 +405,23 @@ export function useSessionTimeline(
     // 事件归约：在线增量与快照回放共用同一套 reducer，避免两套渲染逻辑漂移。
     const applyEvent = (event: WsEnvelope) => {
         const data = (event.data ?? {}) as Record<string, unknown>
+        // 「路由中」回落（②，方案 14 §4.3）：这些事件证明本轮不走路由（/plan、/team、
+        // 斜杠命令）或路由阶段已经过去。router.updated 走自己 case 里的回落（①）。
+        // 注意**不**包含 message.created 与 session.status=running——它们在路由前到达，
+        // 清早了会让 shimmer 一闪而过。
+        switch (event.type) {
+          case 'message.delta':
+          case 'tool.started':
+          case 'plan.updated':
+          case 'plan.review':
+          case 'team.updated':
+          case 'command.executed':
+          case 'error':
+            clearRouterRoutingRef.current()
+            break
+          default:
+            break
+        }
         switch (event.type) {
           case 'session.snapshot': {
             const snapshot = data as unknown as SessionSnapshot
@@ -364,8 +453,26 @@ export function useSessionTimeline(
                   entry.event.type,
                   (entry.event.data ?? {}) as Record<string, unknown>,
                 )
-                // 非条目类副作用（router 状态）照旧走 applyEvent
-                if (entry.event.type === 'router.updated') applyEvent(entry.event)
+                // 换档卡在回放里也要在原位重建（方案 14 §4.5）。此前 router.updated 走
+                // applyEvent，它插进 items 的提示会被循环末尾的 setItems(restored) 整体
+                // 覆盖——刷新 / 重连后换档提示静默丢失。这里直接并入 restored（顺序已按
+                // 时间戳归并），且不带 fresh 标记：回放是冷渲染，不重播动画。
+                if (entry.event.type === 'router.updated') {
+                  const next = parseRouterState((entry.event.data ?? {}) as Record<string, unknown>)
+                  const view = routerNoticeView(routerRef.current, next)
+                  if (view) {
+                    restored = [
+                      ...restored,
+                      {
+                        kind: 'router',
+                        id: `router-${entry.event.sequence ?? `local-${(routerNoticeSeq += 1)}`}`,
+                        view,
+                        at: entry.at,
+                      },
+                    ]
+                  }
+                  routerRef.current = next
+                }
               }
             }
             setItems(restored)
@@ -496,6 +603,8 @@ export function useSessionTimeline(
             // 留一个空的流式块（看起来就是一条横线，且像卡住不动）。
             if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'idle') {
               clearSegments()
+              // 轮次收尾（含取消）：路由中的瞬态不该跨轮次留着
+              clearRouterRoutingRef.current()
             }
             if (status && status !== 'waiting_approval') setApproval(null)
             // 计划审阅只在运行期间有效：轮次结束（完成 / 失败 / 取消）后必须清掉，
@@ -561,32 +670,18 @@ export function useSessionTimeline(
           }
           case 'router.updated': {
             // 普通对话轮在开关开启时按复杂度换档，这里回显本轮实际使用的档位。
-            // 方案 08：带上判定依据（notes）与运行态（是否真换了模型 / 耗时），并在
-            // **变化 / 回落 / 失败 / 被稳定层拦住**时往时间线插一条轻提示。
-            const next: RouterState = {
-              enabled: Boolean(data.enabled),
-              tier: String(data.tier ?? ''),
-              tier_idx: Number(data.tier_idx ?? 0),
-              provider: String(data.provider ?? ''),
-              model: String(data.model ?? ''),
-              configured: Boolean(data.configured),
-              confidence: Number(data.confidence ?? 0),
-              hard_rule: Boolean(data.hard_rule),
-              score: typeof data.score === 'number' ? Number(data.score) : undefined,
-              notes: Array.isArray(data.notes) ? (data.notes as unknown[]).map(String) : undefined,
-              switched: typeof data.switched === 'boolean' ? Boolean(data.switched) : undefined,
-              elapsed_ms: typeof data.elapsed_ms === 'number' ? Number(data.elapsed_ms) : undefined,
-              load_ms: typeof data.load_ms === 'number' ? Number(data.load_ms) : undefined,
-              ...(data.error ? { error: String(data.error) } : {}),
-            }
+            // 方案 08：带上判定依据（notes）与运行态（是否真换了模型 / 耗时）；
+            // 方案 14 §4.5：变化 / 回落 / 失败 / 被稳定层拦住时插换档卡（结构化）。
+            clearRouterRoutingRef.current()
+            const next = parseRouterState(data)
             // 用 ref 记上一轮：不能放在 setRouter 的 updater 里算（StrictMode 会
             // 重复调用 updater，导致提示插入两次）。
-            const notice = routerNotice(routerRef.current, next)
+            const view = routerNoticeView(routerRef.current, next)
             routerRef.current = next
             setRouter(next)
-            if (notice) {
+            if (view) {
               const id = `router-${event.sequence ?? `local-${(routerNoticeSeq += 1)}`}`
-              setItems((current) => [...current, { kind: 'system', id, content: notice, at: '' }])
+              setItems((current) => [...current, { kind: 'router', id, view, at: '', fresh: true }])
             }
             return
           }
@@ -635,8 +730,11 @@ export function useSessionTimeline(
     const text = content.trim()
     if (!text) return
     setError(null)
+    // 「路由中」进入（方案 14 §4.3）：只对普通消息置位——斜杠开头的是命令 / /plan /
+    // /team，它们不参与路由；开关没开时也没有路由这一跳。
+    if (!text.startsWith('/') && routerRef.current?.enabled) beginRouterRouting()
     socketRef.current?.send({ type: 'user_message', request_id: newRequestId('msg'), content: text })
-  }, [])
+  }, [beginRouterRouting])
 
   const cancel = useCallback(() => {
     socketRef.current?.send({ type: 'cancel', request_id: newRequestId('cancel') })
@@ -719,6 +817,7 @@ export function useSessionTimeline(
     approval,
     planReview,
     router,
+    routerRouting,
     memory,
     context,
     memoryNotice,

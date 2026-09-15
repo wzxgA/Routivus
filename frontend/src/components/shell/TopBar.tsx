@@ -3,11 +3,14 @@ import type { ConfigSnapshot, Project, RouterState, Session } from '../../api/ty
 import type { Route } from '../../router'
 import { describeError } from '../../state/errors'
 import type { ThemeName } from '../../theme'
-import { routerChipLabel } from '../../utils/routerNotes'
 import type { ConnState } from '../../ws/sessionSocket'
 import { ThemeToggle } from '../common/ThemeToggle'
+import { RouterChip, type RouterMotion } from './RouterChip'
 import { RouterPopover } from './RouterPopover'
 import { Toolbar, type ToolbarItem } from './Toolbar'
+
+/** 一次性动画的持续时长（spacing 到最长的那条：chipGlow 620ms + 余量）。 */
+const MOTION_MS = 900
 
 interface TopBarProps {
   route: Route
@@ -19,6 +22,8 @@ interface TopBarProps {
   contextWindow: number
   hitl: string | null
   router: RouterState | null
+  /** 普通消息已发出、router.updated 未返回（方案 14 §4.3 的「路由中」瞬态）。 */
+  routerRouting: boolean
   terminalOpen: boolean
   filesOpen: boolean
   config: ConfigSnapshot | null
@@ -64,6 +69,7 @@ export function TopBar({
   contextWindow,
   hitl,
   router,
+  routerRouting,
   terminalOpen,
   filesOpen,
   config,
@@ -83,6 +89,58 @@ export function TopBar({
   const [switchError, setSwitchError] = useState<string | null>(null)
   const modelRef = useRef<HTMLDivElement | null>(null)
   const routerRef = useRef<HTMLDivElement | null>(null)
+
+  /**
+   * 换档动画编排（方案 14 §4.3）：按"上一轮档位 → 本轮档位"给 chip 与浮层下发一次性
+   * motion。用 ref 记上一轮、用 state 承载本次动画类——不能只看对象 identity（每次
+   * `router.updated` 都是新对象），也不能放进 setState 的 updater（StrictMode 会重复调用）。
+   */
+  const [routerMotion, setRouterMotion] = useState<RouterMotion>({ classes: '', prevTier: '' })
+  const routerTierRef = useRef('')
+  const motionTimerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!router?.enabled) {
+      routerTierRef.current = ''
+      setRouterMotion({ classes: '', prevTier: '' })
+      return
+    }
+    // 失败态不出档位徽章（shake 由 .failed 类自己播），但档位记忆要清掉：
+    // 失败后的下一次成功结果应当算"首个结果"，而不是从旧档位滑过来。
+    if (router.error) {
+      routerTierRef.current = ''
+      setRouterMotion({ classes: '', prevTier: '' })
+      return
+    }
+    const tier = router.tier || ''
+    if (!tier) return
+    const previous = routerTierRef.current
+    routerTierRef.current = tier
+    if (previous === tier) {
+      setRouterMotion({ classes: 'nudge', prevTier: previous })
+    } else if (!previous) {
+      setRouterMotion({ classes: 'pop lightup', prevTier: '' })
+    } else {
+      setRouterMotion({ classes: 'glow lightup', prevTier: previous })
+    }
+  }, [router])
+
+  // 动画播完即摘 class：否则同名动画在下一次变化时不会被重新触发（CSS 只在类名
+  // 变化时重跑 animation）。用定时器而不是 animationend——一次编排里有 2–3 个
+  // 不同时长的动画，第一个 animationend 就到了会截断后面的光晕。
+  useEffect(() => {
+    if (!routerMotion.classes) return
+    motionTimerRef.current = window.setTimeout(() => {
+      motionTimerRef.current = null
+      setRouterMotion((current) => (current.classes ? { ...current, classes: '' } : current))
+    }, MOTION_MS)
+    return () => {
+      if (motionTimerRef.current !== null) {
+        window.clearTimeout(motionTimerRef.current)
+        motionTimerRef.current = null
+      }
+    }
+  }, [routerMotion.classes])
 
   useEffect(() => {
     if (!modelOpen) return
@@ -232,20 +290,15 @@ export function TopBar({
       </span>
       {router?.enabled ? (
         <div className="router-chip-wrap" ref={routerRef}>
-          <button
-            type="button"
-            className={`chip router${router.error ? ' warn' : ''}`}
-            onClick={() => setRouterOpen((open) => !open)}
-            title={
-              router.error ||
-              `智能路由：普通对话轮按复杂度自动换档${
-                router.tier ? `，本轮 ${router.tier}` : ''
-              }${router.configured === false ? '（该档未显式配置，回落 active 模型）' : ''} — 点击查看依据`
-            }
-          >
-            {routerChipLabel(router)}
-          </button>
-          {routerOpen ? <RouterPopover router={router} tiers={config?.tiers ?? []} /> : null}
+          <RouterChip
+            router={router}
+            routing={routerRouting}
+            motion={routerMotion}
+            onToggle={() => setRouterOpen((open) => !open)}
+          />
+          {routerOpen ? (
+            <RouterPopover router={router} tiers={config?.tiers ?? []} motion={routerMotion} />
+          ) : null}
         </div>
       ) : null}
     </div>

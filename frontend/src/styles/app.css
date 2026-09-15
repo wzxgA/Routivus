@@ -798,32 +798,6 @@ button {
   font-size: 11.5px;
   color: var(--danger);
 }
-.router-tiers {
-  width: 100%;
-  margin: 8px 0 4px;
-  border-collapse: collapse;
-  font-size: 11.5px;
-}
-.router-tiers th {
-  text-align: left;
-  font-weight: 600;
-  font-size: 10.5px;
-  color: var(--faint);
-  padding: 3px 6px 3px 0;
-  border-bottom: 1px solid var(--border);
-}
-.router-tiers td {
-  padding: 4px 6px 4px 0;
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
-}
-.router-tiers tr.active td {
-  background: var(--beige);
-  font-weight: 600;
-}
-.router-tier-mark {
-  color: var(--accent);
-}
 .router-pop-section {
   margin-top: 8px;
 }
@@ -888,6 +862,622 @@ button {
 .dim {
   color: var(--faint);
 }
+
+/* ================= SmartRouter 档位视觉（方案 14）=================
+   四档色板复用 --tier-*（日/夜两套在主题块里）；映射统一走 .tiered[data-tier]。
+   房屋规则（见下方 .usage-tier 映射的注释）：11px 彩字在浅/深底上对比度都不稳，
+   所以文字保持中性色，档位色只上图形元素（边框 / ⚡ / 电量条 / 环，按 3:1 校核）。 */
+
+/* ---- 4 段档位电量条：chip / 浮层行 / 换档卡三处共用（TierLevel 组件）---- */
+.segs {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 11px;
+  flex: 0 0 auto;
+}
+.segs i {
+  display: block;
+  width: 3px;
+  border-radius: 1px;
+  background: var(--tier-color, var(--muted));
+  opacity: 0.18;
+  transition: opacity 260ms var(--ease);
+}
+.segs i:nth-child(1) {
+  height: 4px;
+}
+.segs i:nth-child(2) {
+  height: 6px;
+}
+.segs i:nth-child(3) {
+  height: 8px;
+}
+.segs i:nth-child(4) {
+  height: 11px;
+}
+.segs[data-level='1'] i:nth-child(-n + 1),
+.segs[data-level='2'] i:nth-child(-n + 2),
+.segs[data-level='3'] i:nth-child(-n + 3),
+.segs[data-level='4'] i:nth-child(-n + 4) {
+  opacity: 1;
+}
+/* 逐格点亮：只在档位变化时挂一次（每格错 60ms） */
+.segs.lightup i {
+  animation: segOn 200ms var(--ease) backwards;
+}
+.segs.lightup i:nth-child(2) {
+  animation-delay: 60ms;
+}
+.segs.lightup i:nth-child(3) {
+  animation-delay: 120ms;
+}
+.segs.lightup i:nth-child(4) {
+  animation-delay: 180ms;
+}
+@keyframes segOn {
+  from {
+    opacity: 0.18;
+    transform: scaleY(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+/* ---- 顶栏 chip 四态（方案 14 §4.3）：待路由 / 路由中 / 档位 / 失败 ---- */
+.chip.router.tier {
+  position: relative;
+  color: var(--text);
+  background: var(--card);
+  border-color: var(--tier-color, var(--border-strong));
+  transition: color 260ms var(--ease), border-color 260ms var(--ease);
+}
+.chip.router.tier .bolt {
+  color: var(--tier-color, var(--muted));
+  font-size: 11.5px;
+  line-height: 1;
+}
+.chip.router.tier .lbl {
+  font-weight: 600;
+}
+/* 待路由：⚡ 缓慢呼吸（复用既有的 breath keyframes） */
+.chip.router.tier.pending .bolt {
+  animation: breath 2s var(--ease) infinite;
+}
+/* 路由中：文字 shimmer 流光（普通消息已发出、router.updated 未返回） */
+.chip.router.tier.routing {
+  color: var(--muted);
+  border-color: var(--border-strong);
+  background: var(--beige);
+}
+.chip.router.tier.routing .lbl {
+  background: linear-gradient(90deg, var(--faint) 0%, var(--text) 45%, var(--faint) 90%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: routerShimmer 1.2s linear infinite;
+}
+@keyframes routerShimmer {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+/* 失败：shake 两下后停在灰态 */
+.chip.router.tier.failed {
+  color: var(--muted);
+  border-color: var(--border);
+  background: var(--card);
+  animation: chipShake 240ms var(--ease);
+}
+.chip.router.tier.failed .bolt {
+  color: var(--danger);
+}
+@keyframes chipShake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-2px);
+  }
+  50% {
+    transform: translateX(2px);
+  }
+  75% {
+    transform: translateX(-1px);
+  }
+}
+/* 出结果：一次性弹跳 */
+.chip.router.tier.pop {
+  animation: chipPop 180ms var(--ease);
+}
+@keyframes chipPop {
+  0% {
+    transform: scale(1);
+  }
+  55% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+/* 换档：环形光晕外扩（用伪元素而不是 box-shadow + color-mix，兼容面更宽） */
+.chip.router.tier.glow::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 999px;
+  border: 2px solid var(--tier-color, var(--accent));
+  pointer-events: none;
+  animation: chipGlow 620ms var(--ease);
+}
+@keyframes chipGlow {
+  from {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.28);
+  }
+}
+/* 同档重路由：极轻的亮度脉冲，不打扰 */
+.chip.router.tier.nudge {
+  animation: chipNudge 300ms var(--ease);
+}
+@keyframes chipNudge {
+  0% {
+    filter: brightness(1);
+  }
+  45% {
+    filter: brightness(1.25);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
+/* ---- 浮层：档位轨道（滑块高亮）+ 判定流水线 + 置信度环 ---- */
+.router-pop.slide-in {
+  animation: routerPopIn 200ms var(--ease);
+}
+@keyframes routerPopIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.track {
+  position: relative;
+  margin: 9px 0 4px;
+}
+/* 当前档位的滑块：换档时由 JS 从旧档行平滑推到新档行（方案 14 §4.4） */
+.track-hl {
+  position: absolute;
+  left: -7px;
+  right: -7px;
+  top: 0;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid var(--tier-color, var(--border-strong));
+  background: var(--beige);
+  background: color-mix(in srgb, var(--tier-color, var(--beige)) 11%, transparent);
+  pointer-events: none;
+  transition: transform 320ms var(--ease), border-color 320ms var(--ease),
+    background 320ms var(--ease);
+}
+/* 行高 30px 与 RouterPopover 的 ROW_H 是一对，改这里要同步改那边 */
+.trow {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  font-size: 11.5px;
+}
+.trow .tname {
+  flex: 0 0 auto;
+  width: 62px;
+  font-weight: 600;
+  color: var(--muted);
+  transition: color 260ms var(--ease);
+}
+.trow.on .tname {
+  color: var(--text);
+}
+.trow .tmodel {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trow .tflag {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+.trow.fallback .tflag {
+  border-style: dashed;
+}
+.trow.on .tflag {
+  border-color: var(--tier-color);
+}
+/* 判定路径流水线：notes 是有序因果链，命中节点点亮、被拦节点灰掉下沉 */
+.pipe {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  margin: 5px 0 2px;
+}
+.pipe-cell {
+  display: inline-flex;
+  align-items: center;
+}
+.pnode {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 56px;
+  padding: 5px 7px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 7px;
+}
+.pnode .cn {
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pnode .cv {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+}
+.pnode.off {
+  opacity: 0.45;
+}
+.pnode.played {
+  animation: nodeIn 260ms var(--ease) forwards;
+}
+.pnode.skip.played {
+  animation: nodeIn 260ms var(--ease) forwards, nodeSink 320ms var(--ease) 260ms forwards;
+}
+@keyframes nodeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes nodeSink {
+  to {
+    opacity: 0.5;
+    transform: translateY(2px);
+  }
+}
+.pnode.on {
+  border-style: solid;
+  border-color: var(--tier-color, var(--border-strong));
+  background: var(--beige);
+  background: color-mix(in srgb, var(--tier-color, var(--beige)) 10%, transparent);
+}
+.pnode.on .cn {
+  color: var(--text);
+  font-weight: 600;
+}
+.pnode.skip {
+  border-color: var(--border);
+}
+.pnode.skip .cn {
+  color: var(--faint);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+}
+.pipe-i {
+  color: var(--border-strong);
+  font-size: 9px;
+  padding: 0 3px;
+}
+/* 置信度环：低置信改虚线，与"低置信被拒"的语义对齐 */
+.reason-wrap {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-top: 7px;
+}
+.ring {
+  position: relative;
+  flex: 0 0 auto;
+  width: 62px;
+  height: 62px;
+}
+.ring svg {
+  display: block;
+  transform: rotate(-90deg);
+}
+.ring .rtrack {
+  stroke: var(--border);
+}
+.ring .rbar {
+  stroke: var(--tier-color, var(--accent));
+  transition: stroke-dashoffset 620ms var(--ease), stroke 300ms var(--ease);
+}
+.ring.low .rbar {
+  stroke-dasharray: 3 5;
+}
+.ring .rnum {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+.ring .rnum small {
+  font-family: var(--sans);
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--faint);
+}
+.ring.low .rnum {
+  color: var(--muted);
+}
+.reasons {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.reasons .router-notes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.reasons .router-notes li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  margin: 4px 0;
+}
+.reasons .router-notes li .mk {
+  flex: 0 0 auto;
+  font-size: 8px;
+  color: var(--tier-color, var(--accent));
+}
+.reasons .router-notes li.muted .mk {
+  color: var(--faint);
+}
+.reasons .router-notes li.played {
+  animation: noteIn 280ms var(--ease) forwards;
+}
+@keyframes noteIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ---- 对话流换档卡（方案 14 §4.5）----
+   只在 变化 / 回落 / 失败 / 冻结 / 防降级 时出现（判据与旧提示一致，不新增频率）。
+   冻结 / 防降级不画箭头：档位没变，箭头会自相矛盾。 */
+.tier-card {
+  align-self: flex-start;
+  width: 100%;
+  max-width: 430px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  position: relative;
+  overflow: hidden;
+}
+.tier-card.play {
+  animation: cardIn 200ms var(--ease);
+}
+@keyframes cardIn {
+  from {
+    opacity: 0;
+    transform: translateX(-8px) translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) translateY(0);
+  }
+}
+.tier-card.frozen {
+  border-color: var(--border-strong);
+  background: var(--card);
+  background: color-mix(in srgb, var(--tier-enhanced) 7%, var(--card));
+}
+.tier-card .tc-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.tier-card .tc-head .ico {
+  font-size: 12px;
+}
+.tier-card .tc-flow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 9px 0 7px;
+}
+.tier-card .tc-tier {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tier-card .tc-tier .n {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.tier-card .tc-old .n {
+  color: var(--muted);
+}
+.tier-card .tc-arrow {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 34px;
+  height: 12px;
+}
+.tier-card .tc-arrow .rail {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--border-strong);
+}
+.tier-card .tc-arrow .rail-fill {
+  position: absolute;
+  top: 5px;
+  left: 0;
+  height: 3px;
+  width: 100%;
+  border-radius: 2px;
+  background: var(--tier-color, var(--accent));
+}
+.tier-card .tc-arrow .head {
+  position: absolute;
+  right: -1px;
+  top: 2px;
+  font-size: 10px;
+  color: var(--tier-color, var(--accent));
+}
+.tier-card.play .tc-arrow .rail-fill {
+  animation: railDraw 240ms var(--ease) 60ms backwards;
+}
+@keyframes railDraw {
+  from {
+    width: 0;
+  }
+}
+.tier-card.play .tc-arrow .head {
+  animation: headIn 160ms var(--ease) 280ms backwards;
+}
+@keyframes headIn {
+  from {
+    opacity: 0;
+  }
+}
+.tier-card .tc-swap {
+  position: relative;
+  display: block;
+  min-height: 16px;
+}
+/* 只有"旧档"是绝对定位（它在动画里淡出，不需要占位）；新档必须留在文档流里
+   **撑开容器宽度**——两者都绝对定位会让 .tc-swap 宽度归零，新档文字溢出卡片被
+   overflow:hidden 裁掉。 */
+.tier-card .tc-swap .swap-new {
+  white-space: nowrap;
+}
+.tier-card .tc-swap .swap-old {
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: nowrap;
+}
+.tier-card.play .tc-swap .swap-old {
+  animation: swapOut 200ms var(--ease) forwards;
+}
+.tier-card.play .tc-swap .swap-new {
+  animation: swapIn 240ms var(--ease) 180ms backwards;
+}
+@keyframes swapOut {
+  to {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+}
+@keyframes swapIn {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+}
+.tier-card .tc-reason {
+  font-size: 11.5px;
+  color: var(--text);
+}
+.tier-card .tc-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tier-card .tc-meta .snum {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--text);
+}
+.tier-card .tc-meta .sbar {
+  position: relative;
+  flex: 0 1 110px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--beige-deep);
+  overflow: hidden;
+}
+.tier-card .tc-meta .sbar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--pct, 0%);
+  border-radius: 999px;
+  background: var(--tier-color, var(--accent));
+}
+.tier-card.play .tc-meta .sbar i {
+  animation: scoreFill 300ms var(--ease) 120ms backwards;
+}
+@keyframes scoreFill {
+  from {
+    width: 0;
+  }
+}
+/* 侧栏「本轮实际」徽标：边框取档位色，文字保持中性（对比度红线） */
+.router-badge.tiered {
+  color: var(--text);
+  border-color: var(--tier-color, var(--border-strong));
+  background: var(--beige);
+  background: color-mix(in srgb, var(--tier-color, var(--beige)) 10%, var(--beige));
+}
+
 @keyframes breath {
   0%,
   100% {
@@ -1214,7 +1804,8 @@ button {
 .msg-command,
 .tool,
 .thinking-block,
-.task-card {
+.task-card,
+.tier-card {
   flex-shrink: 0;
 }
 .chat-scroll::-webkit-scrollbar,
@@ -3089,19 +3680,23 @@ button {
    未知档位回落 --accent，不会出现"没有颜色"的条。
    路由看板的档位条（.ri-bias / .ri-gate）复用同一份映射。 */
 .usage-tier[data-tier='Basic'],
-.ri-bias[data-tier='Basic'] {
+.ri-bias[data-tier='Basic'],
+.tiered[data-tier='Basic'] {
   --tier-color: var(--tier-basic);
 }
 .usage-tier[data-tier='Enhanced'],
-.ri-bias[data-tier='Enhanced'] {
+.ri-bias[data-tier='Enhanced'],
+.tiered[data-tier='Enhanced'] {
   --tier-color: var(--tier-enhanced);
 }
 .usage-tier[data-tier='Superior'],
-.ri-bias[data-tier='Superior'] {
+.ri-bias[data-tier='Superior'],
+.tiered[data-tier='Superior'] {
   --tier-color: var(--tier-superior);
 }
 .usage-tier[data-tier='Ultimate'],
-.ri-bias[data-tier='Ultimate'] {
+.ri-bias[data-tier='Ultimate'],
+.tiered[data-tier='Ultimate'] {
   --tier-color: var(--tier-ultimate);
 }
 .usage-tier-name {
@@ -4375,5 +4970,61 @@ kbd {
   }
   .ri-kv dt {
     width: 104px;
+  }
+}
+
+/* ================= 减少动效（方案 14 §4.6）=================
+   跟随系统的 prefers-reduced-motion：档位视觉的一次性与循环动画整体降级为
+   **瞬时终态**（滑块直接到位、环直接画满、箭头直接显示新档），而不是"少动一点"。
+   只覆盖本方案新增的选择器，不动既有界面的过渡。 */
+@media (prefers-reduced-motion: reduce) {
+  .chip.router.tier,
+  .chip.router.tier .bolt,
+  .chip.router.tier.pop,
+  .chip.router.tier.glow,
+  .chip.router.tier.glow::after,
+  .chip.router.tier.nudge,
+  .chip.router.tier.failed,
+  .chip.router.tier.routing .lbl,
+  .segs i,
+  .segs.lightup i,
+  .router-pop.slide-in,
+  .track-hl,
+  .pnode.played,
+  .pnode.skip.played,
+  .reasons .router-notes li.played,
+  .ring .rbar,
+  .tier-card.play,
+  .tier-card.play .tc-arrow .rail-fill,
+  .tier-card.play .tc-arrow .head,
+  .tier-card.play .tc-swap .swap-old,
+  .tier-card.play .tc-swap .swap-new,
+  .tier-card.play .tc-meta .sbar i {
+    animation: none !important;
+    transition: none !important;
+  }
+  /* 光晕伪元素：动画停了就不该留着静态环（它没有"终态"可言） */
+  .chip.router.tier.glow::after {
+    content: none !important;
+  }
+  .pnode.played,
+  .reasons .router-notes li.played {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .pnode.skip.played {
+    opacity: 0.5 !important;
+    transform: none !important;
+  }
+  /* 换档卡的静态终态：只显示新档，箭头与进度条直接到位 */
+  .tier-card.play .tc-swap .swap-old {
+    display: none !important;
+  }
+  .tier-card.play .tc-swap .swap-new {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .tier-card.play .tc-meta .sbar i {
+    width: var(--pct, 0%) !important;
   }
 }

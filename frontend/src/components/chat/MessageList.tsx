@@ -4,6 +4,7 @@ import { Markdown } from '../../utils/markdown'
 import { ApprovalCard } from './ApprovalCard'
 import { PlanCard } from './PlanCard'
 import { PlanReviewCard } from './PlanReviewCard'
+import { RouterCard } from './RouterCard'
 import { SourceTag } from './SourceTag'
 import { TeamCard } from './TeamCard'
 import { ThinkingBlock } from './ThinkingBlock'
@@ -145,6 +146,9 @@ const ChatRow = memo(function ChatRow({ item }: { item: TimelineItem }) {
       return <PlanCard payload={item.payload} />
     case 'team':
       return <TeamCard payload={item.payload} />
+    case 'router':
+      // 换档卡（方案 14 §4.5）：只在档位变化 / 回落 / 失败 / 冻结 / 防降级时出现
+      return <RouterCard item={item} />
     default:
       return null
   }

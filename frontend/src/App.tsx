@@ -51,6 +51,8 @@ export function App() {
   const [filesOpen, setFilesOpen] = useState(false)
   const [hitl, setHitl] = useState<string | null>(null)
   const [router, setRouter] = useState<RouterState | null>(null)
+  // 「路由中」瞬态（方案 14 §4.3）：由 sessionTimeline 推导，只用于顶栏 chip 的 shimmer
+  const [routerRouting, setRouterRouting] = useState(false)
   // 会话当前的窗口 / 输出上限（由 ChatView 上报，含 SmartRouter 换档后的变化）
   const [liveContext, setLiveContext] = useState<ContextPayload | null>(null)
   const [connection, setConnection] = useState<ConnState>('offline')
@@ -64,6 +66,7 @@ export function App() {
       setFilesOpen(false)
       setHitl(null)
       setRouter(null)
+      setRouterRouting(false)
       setConnection('offline')
     }
   }, [route.kind])
@@ -245,6 +248,7 @@ export function App() {
             onSessionUpdate={workspace.applySessionUpdate}
             onHitlChange={setHitl}
             onRouterChange={setRouter}
+            onRouterRoutingChange={setRouterRouting}
             onContextChange={setLiveContext}
             onConnectionChange={setConnection}
           />
@@ -306,6 +310,7 @@ export function App() {
           contextWindow={contextWindow}
           hitl={hitl}
           router={router}
+          routerRouting={routerRouting}
           terminalOpen={terminalOpen}
           filesOpen={filesOpen}
           config={configState.config}

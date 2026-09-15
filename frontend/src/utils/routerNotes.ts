@@ -210,3 +210,63 @@ export function routerNotice(prev: RouterState | null, next: RouterState): strin
   }
   return null
 }
+
+/**
+ * 换档卡的结构化载荷（方案 14 §4.5）：触发判据与 `routerNotice` **完全一致**
+ * （不新增出现频率），只是把文案换成可渲染的数据；文案仍集中在 routerNotes.ts。
+ *
+ * - `up` / `down`：档位变化（卡片画箭头 + 档位换色淡入）
+ * - `first`：本会话首个路由结果（无箭头，只有目标档）
+ * - `fallback`：该档未显式配置，沿用 active 模型
+ * - `frozen`：迟滞冻结（❄ + 冷却色调，档位没变所以**不画箭头**）
+ * - `held`：防降级拦住（沿用图标，无箭头）
+ * - `error`：路由失败（沿用当前模型）
+ */
+export interface RouterNoticeView {
+  kind: 'up' | 'down' | 'first' | 'fallback' | 'frozen' | 'held' | 'error'
+  prevTier: string
+  tier: string
+  reason: string
+  /** notes 里的规则总分（`score:N`），供卡片做 count-up。 */
+  score?: number
+  error?: string
+}
+
+export function routerNoticeView(prev: RouterState | null, next: RouterState): RouterNoticeView | null {
+  if (!next.enabled) return null
+  if (next.error) {
+    return { kind: 'error', prevTier: prev?.tier ?? '', tier: '', reason: '', error: next.error }
+  }
+  if (!next.tier) return null
+
+  const previous = prev?.tier ?? ''
+  const notes = next.notes ?? []
+  const scoreNote = notes.find((note) => note.startsWith('score:'))
+  const parsedScore = scoreNote ? Number(scoreNote.slice('score:'.length)) : NaN
+  const base = {
+    prevTier: previous,
+    tier: next.tier,
+    score: Number.isFinite(parsedScore) ? parsedScore : undefined,
+  }
+
+  if (next.configured === false) {
+    return { ...base, kind: 'fallback', reason: '该档未显式配置，沿用 active 模型' }
+  }
+  if (!previous) {
+    return { ...base, kind: 'first', reason: reasonSummary(notes) }
+  }
+  if (previous !== next.tier) {
+    return {
+      ...base,
+      kind: tierIndex(next.tier) > tierIndex(previous) ? 'up' : 'down',
+      reason: reasonSummary(notes),
+    }
+  }
+  if (notes.some((note) => note.startsWith('hysteresis:frozen'))) {
+    return { ...base, kind: 'frozen', reason: '迟滞窗口内换档过多，已冻结' }
+  }
+  if (notes.some((note) => note.startsWith('anti_downgrade'))) {
+    return { ...base, kind: 'held', reason: '防降级：600s 内最多降一档' }
+  }
+  return null
+}

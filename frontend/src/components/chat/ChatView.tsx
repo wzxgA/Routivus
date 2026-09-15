@@ -37,6 +37,8 @@ interface ChatViewProps {
   onSessionUpdate: (session: Session) => void
   onHitlChange: (hitl: string | null) => void
   onRouterChange: (router: RouterState | null) => void
+  /** 「路由中」瞬态（方案 14 §4.3）：顶栏 chip 的 shimmer 靠它点亮。 */
+  onRouterRoutingChange: (routing: boolean) => void
   onContextChange: (context: ContextPayload | null) => void
   onConnectionChange: (state: ConnState) => void
 }
@@ -56,6 +58,7 @@ export function ChatView({
   onSessionUpdate,
   onHitlChange,
   onRouterChange,
+  onRouterRoutingChange,
   onContextChange,
   onConnectionChange,
 }: ChatViewProps) {
@@ -102,6 +105,11 @@ export function ChatView({
   useEffect(() => {
     onRouterChange(timeline.router)
   }, [timeline.router, onRouterChange])
+
+  // 「路由中」瞬态同步给顶栏（方案 14 §4.3）
+  useEffect(() => {
+    onRouterRoutingChange(timeline.routerRouting)
+  }, [timeline.routerRouting, onRouterRoutingChange])
 
   // 当前模型的窗口 / 输出上限同步给顶栏与侧栏：换模型、SmartRouter 换档都会变，
   // 顶栏的使用率分母必须跟着走（不再用构建期常量）。

@@ -124,7 +124,10 @@ export function SidePanel({
                 </div>
                 <div className="router-block">
                   <div className="router-block-head">
-                    <span className={`router-badge${router.error ? ' warn' : ''}`}>
+                    <span
+                      className={`router-badge tiered${router.error ? ' warn' : ''}`}
+                      data-tier={router.error ? '' : router.tier || ''}
+                    >
                       {router.error ? '路由失败' : router.tier || '待路由'}
                     </span>
                     {router.configured === false ? <span className="router-tag">回落 active</span> : null}
