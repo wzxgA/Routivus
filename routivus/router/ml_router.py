@@ -36,6 +36,25 @@ ARTIFACT_FORMAT = 1
 _DEFAULT_ARTIFACT = "router.lgb"  # 默认文件名，相对 data_dir
 
 
+def _parse_head(payload: dict) -> tuple[int, object | None]:
+    """取出产物自带的 L3 语义头，返回 ``(列数, 头本体或 None)``。
+
+    列数以**头本体的质心个数**为准，而不是声明的 ``head_dim`` —— 与
+    ``adaptive.training.load_artifact`` 同一口径（那边拿到头后也用质心个数覆盖
+    声明值）。头本体缺失或损坏时退回声明值并返回 None，由调用方补零列：与评估端
+    ``artifact_accuracy`` 的处理一致，宁可列宽对、取值退化，也不要报错。
+    """
+    declared = int(payload.get("head_dim", 0) or 0)
+    raw = payload.get("head")
+    if not isinstance(raw, dict):
+        return declared, None
+    from ..adaptive.semantic_head import SemanticHead
+    head = SemanticHead.from_dict(raw)
+    if head is None:
+        return declared, None
+    return len(head.centroids), head
+
+
 @dataclass(frozen=True)
 class MLPrediction:
     """一次可用的 ML 精判结果。"""
@@ -57,6 +76,11 @@ class MLRouter:
         # 预测需语义列；语义不可用则该级回落，继续试无语义兜底产物。
         self._semantic = semantic
         self._sem_dim = 0
+        # L3 本地语义头（只有本地进化的产物会带）：预测时必须**复现训练时追加的
+        # 那几列**，否则列数与模型不符（见 _encode）。_head_dim 以头本体的质心
+        # 个数为准，与 adaptive.training.load_artifact 同口径。
+        self._head = None
+        self._head_dim = 0
         # 产物来源（semantic / nosem / explicit / ""）与不可用原因码（方案 10 §4.5/§4.6）
         self._source = ""
         self._unavailable_reason = ""
@@ -101,6 +125,8 @@ class MLRouter:
             reasons.append(reason)
         self._source = ""
         self._artifact_path = None
+        self._head = None
+        self._head_dim = 0
         # 取最后一级的原因：它最接近"为什么最终没有可用产物"
         self._unavailable_reason = reasons[-1] if reasons else "no_artifact"
 
@@ -132,6 +158,7 @@ class MLRouter:
             # 语义版要求编码器可用；不可用则交给下一级（无语义兜底）
             if sem_dim > 0 and (self._semantic is None or not self._semantic.available):
                 return "no_semantic"
+            head_dim, head = _parse_head(payload)
         except Exception as exc:  # noqa: BLE001
             _log_load_failure(path, "bad_artifact", exc)
             return "bad_artifact"
@@ -139,6 +166,8 @@ class MLRouter:
         self._model = model
         self._feature_keys = tuple(payload.get("feature_keys") or ())
         self._sem_dim = int(sem_dim)
+        self._head_dim = head_dim
+        self._head = head
         self._payload = payload
         return ""
 
@@ -202,10 +231,13 @@ class MLRouter:
 
     # -- 预测 -----------------------------------------------------------
     def _encode(self, text: str, features: dict | None):
-        """把 text + 数值特征 拼成 (TF-IDF, 数值) 稀疏输入；无语义时即为纯规则列组合。
+        """把 text + 数值特征 拼成稀疏输入；列序与训练矩阵**严格一致**。
 
-        语义列（sem_dim>0）追加在数值列之后，顺序为
-        [TF-IDF] + [数值] + [语义512]，与 train_router 训练矩阵严格一致。
+        顺序为 ``[TF-IDF] + [数值] + [语义 sem_dim] + [语义头 head_dim]``
+        （训练端见 ``adaptive/training.py`` 的 ``build_matrix``）。最后一段是
+        L3 本地语义头给出的"每档一个概率"，只有本地进化的产物会带。**少拼一段
+        就会以** ``X has N features, but LGBMClassifier is expecting M`` 报错，
+        而且是在"加载成功、已判定可用"之后才报 —— 见 ``self._head`` 处的注释。
         """
         import numpy as np  # noqa: PLC0415
         from scipy.sparse import csr_matrix, hstack  # noqa: PLC0415
@@ -215,13 +247,19 @@ class MLRouter:
             x_text = csr_matrix((1, 0))
         row = [float((features or {}).get(k, 0.0)) for k in self._feature_keys]
         cols = [x_text, csr_matrix(np.array([row]))]
+        sem = None
         if self._sem_dim > 0:
-            import numpy as _np  # noqa: PLC0415
             sem = self._semantic.encode(text)
             if sem is None:
                 # 语义列不可得（理论上 available 已兜底，防御万一）
                 sem = [0.0] * self._sem_dim
-            cols.append(csr_matrix(_np.array([sem[:self._sem_dim]])))
+            cols.append(csr_matrix(np.array([sem[:self._sem_dim]])))
+        if self._head is not None:
+            cols.append(csr_matrix(np.array([self._head.probs(sem)])))
+        elif self._head_dim > 0:
+            # 产物声明了语义头列、但头本体缺失（旧格式 / 损坏）：补零列。
+            # 与训练端 artifact_accuracy 的处理一致（列宽对得上、不报错）。
+            cols.append(csr_matrix(np.zeros((1, self._head_dim))))
         return hstack(cols).tocsr()
 
     def predict(self, text: str, features: dict | None = None) -> MLPrediction | None:

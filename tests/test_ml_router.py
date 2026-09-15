@@ -170,3 +170,110 @@ class TestBundledBootstrap:
         # 兜底模型仅 34 样本，未见文本可能不达置信门 → decide 允许回落 None
         assert r.decide("设计生产环境分布式部署架构方案") in (None, 0, 1, 2, 3)
         assert r.predict("写个函数把两个数相加") is not None
+
+
+# ---------------------------------------------------------------------------
+# L3 语义头列（本地进化产物）：预测端必须复现训练时追加的那几列
+# ---------------------------------------------------------------------------
+
+class _StubSemantic:
+    """可用的语义编码器替身：给一个可复现的 512 维向量。"""
+
+    dim = 512
+    available = True
+    unavailable_reason = ""
+
+    def encode(self, text: str):  # noqa: ARG002
+        import numpy as np
+
+        rng = np.random.default_rng(7)
+        return rng.normal(size=512).tolist()
+
+
+def _head_samples(tiers: int = 2, per_tier: int = 10, dim: int = 512):
+    """本地样本的形态：**无原文**、有数值特征与语义向量（evolve 那条路）。"""
+    import numpy as np
+
+    from routivus.adaptive.training import FEATURE_KEYS
+
+    rng = np.random.default_rng(20260915)
+    out = []
+    for tier in range(tiers):
+        for i in range(per_tier):
+            out.append({
+                "text": "",
+                "tier": tier,
+                "weight": 1.0,
+                "features": {k: float(i) for k in FEATURE_KEYS},
+                "sem": (rng.normal(size=dim) + tier * 4.0).tolist(),
+                "text_hash": f"{tier}-{i}",
+            })
+    return out
+
+
+@pytest.mark.skipif(not _ml_available(), reason="未安装 ml extras")
+class TestSemanticHeadColumns:
+    """回归：产物带 L3 语义头时，预测必须复现"每档一个概率"那几列。
+
+    训练端（``adaptive/training.py`` 的 build_matrix）会追加这几列，评估端
+    （artifact_accuracy）也会按产物里的头复现；但预测端曾漏掉，于是产物
+    **加载成功、被判可用**，一预测就抛 ``X has N features, but LGBMClassifier
+    is expecting M`` —— 而 route() 调精判那一句没有 try/except，异常会一路冒到
+    路由调用处。本地进化第一次成功时必然踩上（门槛每档 ≥20 远高于训头所需的 8）。
+    """
+
+    def _trained(self, tmp_path):
+        from routivus.adaptive.semantic_head import train_head
+        from routivus.adaptive.training import train_and_save
+
+        samples = _head_samples()
+        head = train_head(samples)
+        assert head is not None and len(head.centroids) == 2
+        out = tmp_path / "router.lgb"
+        train_and_save(samples, out, semantic=None, head=head)
+        return out, head
+
+    def test_head_artifact_is_predictable(self, tmp_path):
+        out, head = self._trained(tmp_path)
+        r = MLRouter(out, semantic=_StubSemantic())
+
+        assert r.available
+        assert r.head_dim == len(head.centroids)
+        # 列数必须与模型期望一致 —— 这就是原来炸掉的那一处
+        assert r._encode("随便聊聊", {}).shape[1] == r._model.n_features_in_
+        assert r.predict("随便聊聊") is not None
+        assert r.decide("随便聊聊") in (None, 0, 1, 2, 3)
+
+    def test_head_artifact_through_route_does_not_raise(self, tmp_path):
+        out, _ = self._trained(tmp_path)
+        r = MLRouter(out, semantic=_StubSemantic())
+        res = route("设计生产环境分布式部署架构方案",
+                    fallback_provider="p", fallback_model="m", ml_router=r)
+        assert res.tier_idx in (0, 1, 2, 3)
+
+    def test_head_body_missing_falls_back_to_zero_columns(self, tmp_path):
+        """头本体缺失（旧格式 / 损坏）但声明了 head_dim：补零列，不抛错。"""
+        import joblib
+
+        out, head = self._trained(tmp_path)
+        payload = joblib.load(out)
+        payload["head"] = None
+        joblib.dump(payload, out)
+
+        r = MLRouter(out, semantic=_StubSemantic())
+        assert r.available
+        assert r.head_dim == len(head.centroids)  # 退回声明值
+        assert r._encode("随便聊聊", {}).shape[1] == r._model.n_features_in_
+        assert r.predict("随便聊聊") is not None
+
+    def test_artifact_without_head_unchanged(self, tmp_path):
+        """不带头的产物（/train 与随包那份）行为不变：不追加任何列。"""
+        from train_router import train_and_save
+
+        out = tmp_path / "plain.lgb"
+        train_and_save(_samples(40), out)
+        r = MLRouter(out)
+        assert r.available
+        assert r.head_dim == 0
+        assert r._encode("写个函数把两个数相加", {}).shape[1] == r._model.n_features_in_
+        assert r.predict("写个函数把两个数相加") is not None
