@@ -34,11 +34,28 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** 仓库自带虚拟环境（`uv sync` 的产物）里的解释器；不存在返回 null。 */
+function repoVenvPython(repoDir: string): string | null {
+  const candidates =
+    process.platform === 'win32'
+      ? [path.join(repoDir, '.venv', 'Scripts', 'python.exe')]
+      : [path.join(repoDir, '.venv', 'bin', 'python3'), path.join(repoDir, '.venv', 'bin', 'python')]
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
 /**
  * 解析 Python 解释器。
  *
- * 优先级：显式环境变量 → 打包内置运行时 → PATH。开发期用 PATH 上的解释器，
- * 打包后用 resources/python 里的 python-build-standalone 运行时。
+ * 优先级：显式环境变量 → 打包内置运行时 → 仓库自带 .venv（仅源码运行）→ PATH。
+ *
+ * 为什么源码运行要优先 .venv：PATH 上的 `python` 可能是 Anaconda / Microsoft Store
+ * 版 / 别的项目的 venv，依赖未必齐全——尤其 onnxruntime 的原生扩展（缺了语义编码器
+ * 会一直报 runtime_missing，ML 精判只能退到无语义兜底产物）。.venv 是本项目自己装的，
+ * 与 pyproject 声明的依赖一一对应。找不到才退回 PATH，那样至少能起来，缺件由运行期
+ * 的原因码暴露。
  */
 export function resolvePython(resourcesDir: string, packaged: boolean): string {
   const explicit = process.env.ROUTIVUS_PYTHON?.trim()
@@ -52,6 +69,9 @@ export function resolvePython(resourcesDir: string, packaged: boolean): string {
     for (const candidate of candidates) {
       if (existsSync(candidate)) return candidate
     }
+  } else {
+    const venv = repoVenvPython(resourcesDir)
+    if (venv) return venv
   }
 
   return process.platform === 'win32' ? 'python' : 'python3'
