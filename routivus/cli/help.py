@@ -94,8 +94,8 @@ DETAILS_EN = {
     ),
     "/team": (
         "A Supervisor schedules isolated Workers and reviews their results with evidence.",
-        "A failed review may pause at needs_input until the user confirms a write scope.",
-        "A Repairer may only modify its explicitly declared write scope.",
+        "A failed review requests a targeted repair with a declared write scope.",
+        "A task the Reviewer cannot scope safely fails outright (no resume).",
     ),
     "/model": (
         "With no argument or with list, show the current model and available providers.",

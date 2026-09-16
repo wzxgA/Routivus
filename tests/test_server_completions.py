@@ -1,8 +1,8 @@
 """Composer 命令补全端点（GET /api/completions）的协议级测试。
 
 补全引擎本身（`routivus/cli/completion.py`）已有独立单测，这里验的是**服务端
-接线**：白名单过滤（只提示桌面端真正会执行的命令）、按会话所属项目展开
-工作区路径候选、会话缺失时的优雅降级。
+接线**：白名单过滤（只提示桌面端真正会执行的命令）、动态值候选的取值来源、
+会话缺失时的优雅降级。
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ def test_payload_prefix_matches_whitelist_only() -> None:
 
 def test_payload_resolved_command_keeps_subcommands() -> None:
     payload = completion_payload("/team ")
-    assert [cand["insert_text"] for cand in payload["candidates"]] == ["run", "resume"]
+    assert [cand["insert_text"] for cand in payload["candidates"]] == ["run"]
 
 
 def test_payload_excludes_non_web_commands() -> None:
@@ -99,10 +99,10 @@ def test_payload_excludes_non_web_commands() -> None:
 
 
 def test_payload_replace_span_points_at_current_token() -> None:
-    payload = completion_payload("/team res")
-    assert payload["replace_start"] == len("/team ")
-    assert payload["replace_end"] == len("/team res")
-    assert payload["candidates"][0]["insert_text"] == "resume"
+    payload = completion_payload("/skill di")
+    assert payload["replace_start"] == len("/skill ")
+    assert payload["replace_end"] == len("/skill di")
+    assert payload["candidates"][0]["insert_text"] == "disable"
 
 
 # ==========================================================================
@@ -162,24 +162,8 @@ def test_dynamic_memory_id_candidates_from_agent() -> None:
 
 
 # ==========================================================================
-# 端点：项目路径候选与会话降级
+# 端点：白名单与会话降级
 # ==========================================================================
-
-
-def test_endpoint_offers_paths_for_write_scope(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-    project = _project(client)
-    session = _session(client, project)
-
-    query = "/team resume t4 --write-scope sr"
-    response = client.get(COMPLETIONS, params={"q": query, "cursor": len(query), "session_id": session["id"]})
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["is_command"] is True
-    texts = [cand["insert_text"] for cand in payload["candidates"]]
-    # 项目 root 下的 src/ 目录按前缀 "sr" 展开（拒绝规则与 .env/.git 等由引擎负责）。
-    assert "src/" in texts
-    assert all(not text.startswith("/") for text in texts)
 
 
 def test_endpoint_degrades_without_session(tmp_path: Path) -> None:

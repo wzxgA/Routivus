@@ -100,11 +100,13 @@ TEAM_PLANNER_PROMPT = (
 TEAM_REVIEWER_PROMPT = (
     "你是严格的任务审查 Agent。你不能修改文件，只能根据任务验收标准、"
     "实际工具结果和任务产物判断是否通过。只输出 JSON："
-    '{"verdict":"pass|fail|needs_input","findings":["问题"],'
+    '{"verdict":"pass|fail","findings":["问题"],'
     '"required_fixes":["定向修复要求"],'
     '"repair_scope":[{"pattern":"path/to/file","access":"write"}],'
     '"evidence":["证据"]}。'
     "verdict 为 fail 时，尽量提供最小的 repair_scope；"
+    "**无法安全确定修改文件范围时也必须给 fail**，在 findings 里说明哪个文件/目录"
+    "无法判断，不要猜测路径、也不要另造 verdict。"
     "不要把原任务的只读范围自动升级为写入范围。"
     "不要把 Worker 的主观汇报当成测试通过证据。"
 )
@@ -158,6 +160,8 @@ class Artifact:
 @dataclass
 class ReviewResult:
     task_id: str
+    # needs_input 是历史 verdict（Prompt 已改为只要求 pass|fail）。这里仍然接受它，
+    # 是为了对旧模型的输出保持宽容——执行器统一把它按"失败"落地，不再挂起等输入。
     verdict: Literal["pass", "fail", "needs_input"]
     findings: list[str] = field(default_factory=list)
     required_fixes: list[str] = field(default_factory=list)
@@ -200,10 +204,6 @@ class TeamTask:
     recovery_attempts: int = 0
     repair_attempts_started: int = 0
     repair_attempts_blocked: int = 0
-    pending_input_category: str = ""
-    pending_input_message: str = ""
-    pending_repair_scope: list[ResourceClaim] = field(default_factory=list)
-    pending_review: ReviewResult | None = None
 
 
 @dataclass
@@ -228,9 +228,8 @@ class TeamEvent:
         "task_retry_started",
         "subtask_event", "artifact_produced", "task_review_started",
         "task_review_done", "repair_requested", "team_done", "team_failed",
-        "review_output_invalid", "review_output_retry", "repair_scope_required",
-        "repair_scope_validated", "task_needs_input", "task_resume_requested",
-        "cancelled", "team_resume_requested",
+        "review_output_invalid", "review_output_retry",
+        "cancelled",
     ]
     team_id: str = ""
     plan: TeamPlan | None = None
@@ -250,7 +249,6 @@ class TeamEvent:
     previous_steps: int = 0
     retry_steps: int = 0
     preserved_artifacts: list[str] = field(default_factory=list)
-    scope_claims: list[ResourceClaim] = field(default_factory=list)
     repair_attempts_started: int = 0
     repair_attempts_blocked: int = 0
 
@@ -977,7 +975,7 @@ class TeamExecutor:
             yield event
 
     async def _execute_plan_batches(self, plan: TeamPlan, instruction: str = "") -> AsyncIterator[TeamEvent]:
-        """按批次执行团队任务；遇 needs_input/failed/超限终止。instruction 注入每个被执行 worker。"""
+        """按批次执行团队任务；遇 failed/超限终止。instruction 注入每个被执行 worker。"""
         for batch_number, batch in enumerate(plan.batches, 1):
             yield TeamEvent(
                 kind="batch_started", team_id=self.team_id, plan=plan, batch=batch,
@@ -985,9 +983,6 @@ class TeamExecutor:
             )
             async for event in self._run_batch(plan, batch, instruction=instruction):
                 yield event
-            waiting = [task for task in plan.tasks if task.status == "needs_input"]
-            if waiting:
-                return
             failed = [task for task in plan.tasks if task.status == "failed"]
             if failed:
                 blocked = self._block_dependents(plan, {task.id for task in failed})
@@ -1021,49 +1016,6 @@ class TeamExecutor:
             yield TeamEvent(kind="team_failed", team_id=self.team_id, plan=plan, message=f"Team 未完成：{done}/{len(plan.tasks)} 个任务通过")
             return
         yield TeamEvent(kind="team_done", team_id=self.team_id, plan=plan, message=f"Team 完成：{done}/{len(plan.tasks)} 个任务通过")
-
-    # ---- 断点续跑（V3）----
-
-    async def resume(self, instruction: str = "") -> AsyncIterator[TeamEvent]:
-        """Team 级断点续跑：从失败/阻塞/待办任务继续。needs_input 任务需用户先补充范围。"""
-        plan = self._last_plan
-        if plan is None:
-            yield TeamEvent(kind="team_failed", team_id=self.team_id, message="没有可恢复的 Team 计划")
-            return
-        waiting = [task for task in plan.tasks if task.status == "needs_input"]
-        if waiting:
-            task = waiting[0]
-            yield TeamEvent(
-                kind="task_needs_input", team_id=self.team_id, plan=plan, task=task,
-                role=task.owner_role, failure_category=task.pending_input_category,
-                message="；".join(
-                    filter(None, [task.pending_input_message, "任务等待输入，请先通过 /team resume 或自然语言补充范围后再继续"])
-                ),
-            )
-            return
-        done = sum(task.status == "done" for task in plan.tasks)
-        if done == len(plan.tasks):
-            yield TeamEvent(kind="team_failed", team_id=self.team_id, plan=plan, message="团队计划已全部完成，无需恢复")
-            return
-        # 重置 failed/blocked/pending/running 任务为 pending（done 保留 Artifact/result 供复用）
-        for task in plan.tasks:
-            if task.status in ("failed", "blocked", "pending", "running"):
-                task.status = "pending"
-                task.result = ""
-                task.blocked_by = []
-                task.failure_category = ""
-        plan.batches = conflict_safe_batches(plan.tasks)
-        skipped = [task.id for task in plan.tasks if task.status == "done"]
-        yield TeamEvent(
-            kind="team_resume_requested", team_id=self.team_id, plan=plan,
-            message=(
-                f"Team 恢复执行：跳过 {len(skipped)} 个已完成任务，"
-                f"重跑 {sum(1 for b in plan.batches for _ in b)} 个任务"
-                + (f"；补充指令：{instruction}" if instruction else "")
-            ),
-        )
-        async for event in self._execute_plan_batches(plan, instruction=instruction):
-            yield event
 
     async def _generate_plan(
         self, goal: str, feedback: str = "", previous: TeamPlan | None = None
@@ -1162,7 +1114,7 @@ class TeamExecutor:
                 changed = True
         return blocked
 
-    def _pause_task_for_input(
+    def _fail_task_for_unresolved_scope(
         self,
         plan: TeamPlan,
         task: TeamTask,
@@ -1171,165 +1123,26 @@ class TeamExecutor:
         category: str,
         message: str,
         review: ReviewResult | None = None,
-        scope_claims: list[ResourceClaim] | None = None,
     ) -> None:
-        """Pause safely instead of converting an unresolved decision to failure."""
-        task.status = "needs_input"
+        """Repairer 无法确定写入范围时**终态失败**。
+
+        `/team resume` 已移除（断点续跑不再支持），所以"等用户补范围"没有出口：
+        这里把无法安全确定范围的情况直接落成任务失败——依赖它的任务会被阻塞，
+        Team 走既有的失败收尾路径，不再留下永不解除的 waiting 状态。
+        """
+        task.status = "failed"
         task.failure_category = category
-        task.pending_input_category = category
-        task.pending_input_message = message
-        task.pending_repair_scope = list(scope_claims or [])
-        task.pending_review = review
         task.result = message[:TEAM_RESULT_LIMIT]
+        self._audit(
+            "team_task_failed", team_id=self.team_id, task_id=task.id,
+            role=task.owner_role, error=task.result,
+        )
         queue.put_nowait(TeamEvent(
-            kind="repair_scope_required" if category.startswith("repair_scope") else "task_needs_input",
-            team_id=self.team_id, plan=plan, task=task, role=task.owner_role,
-            failure_category=category, scope_claims=list(task.pending_repair_scope),
-            repair_attempts_started=task.repair_attempts_started,
-            repair_attempts_blocked=task.repair_attempts_blocked,
-            message=message,
+            kind="task_failed", team_id=self.team_id, plan=plan, task=task,
+            role=task.owner_role, failure_category=category, message=message,
             review=review,
         ))
 
-    async def resume_task_with_repair_scope(
-        self,
-        task_id: str,
-        claims: list[ResourceClaim],
-    ) -> AsyncIterator[TeamEvent]:
-        """Resume a paused task after revalidating an explicit write scope."""
-        plan = self._last_plan
-        if plan is None:
-            yield TeamEvent(
-                kind="team_failed", team_id=self.team_id,
-                message="没有可恢复的 Team 计划",
-            )
-            return
-        task = plan.task_by_id(task_id)
-        if task is None or task.status != "needs_input" or task.pending_review is None:
-            yield TeamEvent(
-                kind="task_needs_input", team_id=self.team_id, plan=plan, task=task,
-                failure_category="resume_invalid", message="任务不存在或当前不处于等待输入状态",
-            )
-            return
-
-        queue: asyncio.Queue[TeamEvent | None] = asyncio.Queue()
-        review = task.pending_review
-        repair_claims = [
-            ResourceClaim(claim.pattern, "write", claim.exclusive)
-            for claim in claims
-            if claim.access == "write" and claim.pattern.strip()
-        ]
-        repair = replace(
-            task,
-            id=f"{task.id}-repair-{task.repair_attempts_started + 1}",
-            title=f"修复：{task.title}",
-            description="\n".join(review.required_fixes or review.findings) or "根据审查结果修复任务",
-            owner_role="repairer",
-            allowed_tools=[],
-            allowed_tools_declared=False,
-            invalid_tools=[],
-            tool_warnings=[],
-            resource_scope_mode="targeted",
-            resource_claims=repair_claims,
-            resource_deny_patterns=list(task.resource_deny_patterns),
-            deps=[],
-            status="pending",
-            result="",
-            artifacts=[],
-            failure_category="",
-            blocked_by=[],
-            recovery_attempts=0,
-        )
-        repair_profile = self.profiles.get("repairer") or self.profiles["coder"]
-        policy_errors = validate_task_resource_policy(repair, repair_profile, self.project_root)
-        if policy_errors:
-            task.repair_attempts_blocked += 1
-            self._pause_task_for_input(
-                plan, task, queue,
-                category="repair_scope_missing" if not repair_claims else "repair_scope_unsafe",
-                message="；".join(policy_errors), review=review, scope_claims=repair_claims,
-            )
-            while not queue.empty():
-                event = queue.get_nowait()
-                if event is not None:
-                    yield event
-            return
-
-        task.status = "running"
-        task.pending_input_category = ""
-        task.pending_input_message = ""
-        task.pending_repair_scope = list(repair_claims)
-        task.repair_attempts_started += 1
-        task.attempts = task.repair_attempts_started
-        queue.put_nowait(TeamEvent(
-            kind="task_resume_requested", team_id=self.team_id, plan=plan, task=task,
-            role="repairer", scope_claims=list(repair_claims),
-            message="已确认修复范围，继续执行 Repairer",
-        ))
-        queue.put_nowait(TeamEvent(
-            kind="repair_scope_validated", team_id=self.team_id, plan=plan, task=task,
-            role="repairer", scope_claims=list(repair_claims),
-            message="Repairer 写入范围校验通过",
-        ))
-        queue.put_nowait(TeamEvent(
-            kind="repair_requested", team_id=self.team_id, plan=plan, task=repair,
-            role="repairer", attempt=task.repair_attempts_started,
-            message=repair.description,
-        ))
-        result, artifacts, agent_id, error, category = await self._execute_worker(
-            plan, repair, queue, attempt=task.repair_attempts_started,
-        )
-        if error:
-            task.status = "failed"
-            task.failure_category = category or "execution_failed"
-            task.result = error[:TEAM_RESULT_LIMIT]
-            queue.put_nowait(TeamEvent(
-                kind="agent_failed", team_id=self.team_id, plan=plan, task=repair,
-                agent_id=agent_id, role="repairer", attempt=task.repair_attempts_started,
-                failure_category=task.failure_category, message=error,
-            ))
-            queue.put_nowait(TeamEvent(
-                kind="task_failed", team_id=self.team_id, plan=plan, task=task,
-                agent_id=agent_id, role=task.owner_role,
-                failure_category=task.failure_category, message=error,
-            ))
-        else:
-            await self._publish_artifacts(
-                plan, repair, artifacts, agent_id, queue,
-                attempt=task.repair_attempts_started,
-            )
-            task.result = result[:TEAM_RESULT_LIMIT]
-            try:
-                next_review = await self._review(plan, task, artifacts, queue)
-            except Exception as exc:
-                next_review = ReviewResult(
-                    task.id, "needs_input", [f"Reviewer 执行失败：{exc}"],
-                    ["重新执行任务审查"], [], [], "review_execution_failed",
-                )
-            if next_review.verdict == "pass":
-                task.status = "done"
-                task.pending_review = None
-                queue.put_nowait(TeamEvent(
-                    kind="task_done", team_id=self.team_id, plan=plan, task=task,
-                    message=f"修复后通过：{task.result}",
-                ))
-                if all(item.status == "done" for item in plan.tasks):
-                    queue.put_nowait(TeamEvent(
-                        kind="team_done", team_id=self.team_id, plan=plan,
-                        message=f"Team 完成：{sum(item.status == 'done' for item in plan.tasks)}/{len(plan.tasks)} 个任务通过",
-                    ))
-            else:
-                self._pause_task_for_input(
-                    plan, task, queue,
-                    category=next_review.category or "review_output_invalid",
-                    message="；".join(next_review.findings or next_review.required_fixes) or "Reviewer 需要用户处理",
-                    review=next_review,
-                )
-
-        while not queue.empty():
-            event = queue.get_nowait()
-            if event is not None:
-                yield event
 
     async def _run_task(self, plan: TeamPlan, task_id: str, queue: asyncio.Queue[TeamEvent | None], instruction: str = "") -> None:
         task = plan.task_by_id(task_id)
@@ -1425,10 +1238,11 @@ class TeamExecutor:
             queue.put_nowait(TeamEvent(kind="task_done", team_id=self.team_id, plan=plan, task=task, message=task.result))
             return
         if review.verdict == "needs_input":
-            self._pause_task_for_input(
+            # Reviewer 说"需要用户决定"——但没有 /team resume 可用了，所以按失败落地
+            self._fail_task_for_unresolved_scope(
                 plan, task, queue,
                 category=review.category or "review_output_invalid",
-                message="；".join(review.findings or review.required_fixes) or "Reviewer 需要用户处理",
+                message="；".join(review.findings or review.required_fixes) or "Reviewer 需要用户处理，但断点续跑已移除",
                 review=review,
             )
             return
@@ -1437,10 +1251,13 @@ class TeamExecutor:
         for attempt in range(1, max_repairs + 1):
             repair_claims, scope_warnings = build_repair_scope(task, review)
             if not repair_claims:
-                self._pause_task_for_input(
+                # 分类优先保留 Reviewer 侧的原始原因（如 review_output_empty），
+                # 只有"审查本身没给范围"才是 repair_scope_missing。
+                self._fail_task_for_unresolved_scope(
                     plan, task, queue,
-                    category="repair_scope_missing",
-                    message="Repairer 尚未启动：没有明确的 write claim，请确认允许修改的文件范围",
+                    category=review.category or "repair_scope_missing",
+                    message="；".join(review.findings or review.required_fixes)
+                    or "Repairer 未启动：没有明确的 write claim（无法安全确定修改范围）",
                     review=review,
                 )
                 return
@@ -1482,12 +1299,11 @@ class TeamExecutor:
                     if any(error.startswith("repair_scope_missing") for error in policy_errors)
                     else "repair_scope_unsafe"
                 )
-                self._pause_task_for_input(
+                self._fail_task_for_unresolved_scope(
                     plan, task, queue,
                     category=category,
                     message="；".join(policy_errors),
                     review=review,
-                    scope_claims=repair_claims,
                 )
                 return
             task.attempts = task.repair_attempts_started + 1
@@ -1515,10 +1331,10 @@ class TeamExecutor:
                 queue.put_nowait(TeamEvent(kind="task_done", team_id=self.team_id, plan=plan, task=task, message=f"修复后通过：{task.result}"))
                 return
             if review.verdict == "needs_input":
-                self._pause_task_for_input(
+                self._fail_task_for_unresolved_scope(
                     plan, task, queue,
                     category=review.category or "review_output_invalid",
-                    message="；".join(review.findings or review.required_fixes) or "Reviewer 需要用户处理",
+                    message="；".join(review.findings or review.required_fixes) or "Reviewer 需要用户处理，但断点续跑已移除",
                     review=review,
                 )
                 return
@@ -1755,16 +1571,17 @@ class TeamExecutor:
                     role="user",
                     content=(
                         f"上一次 Reviewer 输出无效（{parsed.category}）。"
-                        "请不要重新执行任务或调用工具，只输出一个合法 JSON 对象。"
-                        "如果无法安全确定修改文件范围，请使用 verdict=needs_input，不要猜测路径。"
+                        "请不要重新执行任务或调用工具，只输出一个合法 JSON 对象，"
+                        "verdict 只能是 pass 或 fail。"
+                        "无法安全确定修改文件范围时同样给 fail，并在 findings 里说明。"
                     ),
                 ),
             ])
         return ReviewResult(
             task.id,
-            "needs_input",
+            "fail",
             ["Reviewer 未返回可解析的结构化结果"],
-            ["请选择重新审查，或补充允许 Repairer 修改的文件范围"],
+            ["重新执行任务审查；若反复失败请检查 Reviewer 的模型配置"],
             [last_error.category],
             [],
             last_error.category,

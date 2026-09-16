@@ -272,7 +272,6 @@ def test_delete_session_rejects_running_then_clears_memory_state(tmp_path: Path)
     app.state.session_agents[session["id"]] = object()
     app.state.session_approvals[session["id"]] = object()
     app.state.session_reviews[session["id"]] = object()
-    app.state.session_resumable[session["id"]] = ("plan", object())
     app.state.session_routers[session["id"]] = None
 
     assert client.delete(f"/api/sessions/{session['id']}").status_code == 204
@@ -280,7 +279,6 @@ def test_delete_session_rejects_running_then_clears_memory_state(tmp_path: Path)
         "session_agents",
         "session_approvals",
         "session_reviews",
-        "session_resumable",
         "session_routers",
     ):
         assert session["id"] not in getattr(app.state, store_name), store_name

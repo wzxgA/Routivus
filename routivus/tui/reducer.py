@@ -37,7 +37,6 @@ def _copy(state: TuiState) -> TuiState:
             for key, group in state.agent_groups.items()
         },
         agent_group_order=list(state.agent_group_order),
-        team_input_scope=list(state.team_input_scope),
         inspector=replace(
             state.inspector,
             session=replace(state.inspector.session),
@@ -938,11 +937,8 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
         )
         out.agent_groups[group_id] = replace(
             out.agent_groups[group_id],
-            status=(
-                "done" if event.review.verdict == "pass"
-                else "needs_input" if event.review.verdict == "needs_input"
-                else "failed"
-            ),
+            # 只有 pass / fail 两种去向：verdict=needs_input 在 Team 执行器里也按失败落地
+            status="done" if event.review.verdict == "pass" else "failed",
         )
         return out
     if kind in {"review_output_invalid", "review_output_retry"} and event.task:
@@ -958,30 +954,6 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
             latest_error=summary if kind == "review_output_invalid" else "",
         )
         return out
-    if kind in {"task_needs_input", "repair_scope_required"} and event.task:
-        status = "needs_input"
-        out.plan_tasks[event.task.id] = status
-        tasks = [
-            PlanTaskSnapshot(item.id, item.title, status) if item.id == event.task.id else item
-            for item in out.inspector.plan.tasks
-        ]
-        out.inspector = replace(
-            out.inspector,
-            plan=replace(
-                out.inspector.plan,
-                tasks=tuple(tasks),
-                completed_tasks=sum(item.status == "done" for item in tasks),
-                failure_count=sum(item.status == "failed" for item in tasks),
-            ),
-        )
-        out.phase = "awaiting_team_input"
-        out.team_input_task_id = event.task.id
-        out.team_input_category = event.failure_category
-        out.team_input_message = event.message or event.task.result
-        out.team_input_scope = list(event.scope_claims)
-        out.notification = out.team_input_message
-        out.notification_level = "warning"
-        return out
     if kind == "repair_requested" and event.task:
         group, group_id = _ensure_agent_group(out, event, role="repairer")
         repair_attempt = 0
@@ -995,32 +967,11 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
             latest_summary=event.message[:240] or translate(state.ui_language, "ui.team.repairer_waiting"),
         )
         return out
-    if kind == "team_resume_requested":
-        out.phase = "running"
-        out.pending_plan = None
-        if event.plan:
-            out.inspector = replace(
-                out.inspector,
-                plan_status="running",
-                plan=_plan_snapshot(event.plan, status="running", previous=out.inspector.plan),
-                session=replace(out.inspector.session, status="Working"),
-            )
-        _append(out, TranscriptItem(
-            id=f"team-resume-{len(out.transcript)}", kind="system",
-            text=event.message, turn_id=turn_id,
-        ))
-        out.notification = event.message
-        out.notification_level = "info"
-        return out
     if kind in {"team_done", "cancelled"}:
         _collapse_turn(out, turn_id, status="cancelled" if kind == "cancelled" else "done")
         _finish_agent_groups(out, "cancelled" if kind == "cancelled" else "done")
         out.phase = "idle"
         out.pending_plan = None
-        out.team_input_task_id = ""
-        out.team_input_category = ""
-        out.team_input_message = ""
-        out.team_input_scope = []
         final_status = "done" if kind == "team_done" else "cancelled"
         out.inspector = replace(
             out.inspector,
@@ -1036,10 +987,6 @@ def reduce_team_event(state: TuiState, event: TeamEvent, turn_id: str | None = N
         _finish_agent_groups(out, "failed")
         out.phase = "error"
         out.pending_plan = None
-        out.team_input_task_id = ""
-        out.team_input_category = ""
-        out.team_input_message = ""
-        out.team_input_scope = []
         out.inspector = replace(
             out.inspector,
             plan_status="failed",

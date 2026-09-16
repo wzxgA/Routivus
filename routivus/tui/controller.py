@@ -6,7 +6,6 @@ import asyncio
 import itertools
 import json
 import re
-import shlex
 import time
 from collections import deque
 from dataclasses import dataclass, replace
@@ -14,7 +13,7 @@ from typing import Awaitable, Callable, Literal
 
 from routivus.agent.plan import Plan, PlanEvent, PlanExecutor, ReviewDecision
 from routivus.agent.react import AgentEvent, ReActAgent
-from routivus.agent.team import ResourceClaim, TeamEvent, TeamExecutor, TeamPlan
+from routivus.agent.team import TeamEvent, TeamExecutor, TeamPlan
 from routivus.adaptive.feedback import FeedbackRecorder
 from routivus.adaptive.signals import capture_turn_signals
 from routivus.cli.commands import CommandContext, CommandResult, CommandService
@@ -64,18 +63,21 @@ SYSTEM_RESUME_INTENT_PROMPT = (
     "你负责判断用户输入是针对「未完成任务」的继续指令，还是全新的对话指令。\n"
     "规则：\n"
     "1. 如果用户表达继续/接着/完成刚才那个任务/恢复任务 → 输出 {\"intent\": \"resume_task\"}\n"
-    "2. 如果用户在回应任务等待的信息（例如补充允许修改的路径、回答任务提出的问题）→ 输出 {\"intent\": \"provide_input\"}\n"
-    "3. 如果用户提出与待办任务无关的新问题或新指令 → 输出 {\"intent\": \"new_chat\"}\n"
+    "2. 如果用户提出与待办任务无关的新问题或新指令 → 输出 {\"intent\": \"new_chat\"}\n"
     "无法判断时优先选 new_chat。只输出一行 JSON，不要解释。"
 )
 
 
 @dataclass
 class ResumableTask:
-    """一个可被「继续」自然语言恢复的任务执行器。同一时刻只保留最近一个。"""
+    """一个可被「继续」自然语言恢复的任务执行器。同一时刻只保留最近一个。
 
-    kind: Literal["plan", "team"]
-    executor: PlanExecutor | TeamExecutor
+    只覆盖**计划模式**：`/team` 的断点续跑（`/team resume`）已移除，Team 任务
+    不再可恢复，失败即终态。
+    """
+
+    kind: Literal["plan"]
+    executor: PlanExecutor
     goal: str
     turn_id: str
     user_cancelled: bool = False
@@ -135,7 +137,6 @@ class SessionController:
         self._approval_future: asyncio.Future[ApprovalDecision] | None = None
         self._review_future: asyncio.Future[ReviewDecision] | None = None
         self._ask_future: asyncio.Future[dict[str, str] | None] | None = None
-        self._team_executor: TeamExecutor | None = None
         self._resumable: ResumableTask | None = None
         self._confirmation: ConfirmationRequest | None = None
         self._confirmation_future: asyncio.Future[bool] | None = None
@@ -438,7 +439,6 @@ class SessionController:
             CompletionCandidate,
             CompletionContext,
             CompletionProviderRegistry,
-            path_completion_candidates,
         )
 
         reg = CompletionProviderRegistry()
@@ -504,61 +504,6 @@ class SessionController:
             ],
         )
 
-        executor = self._team_executor
-        project_root = getattr(self.agent.memory_manager, "project_root", None)
-
-        def _write_claim_patterns():
-            if executor is None or executor.plan is None:
-                return []
-            patterns: set[str] = set()
-            for task in executor.plan.tasks:
-                if task.status != "needs_input":
-                    continue
-                for claim in getattr(task, "pending_repair_scope", []):
-                    if claim.access == "write":
-                        patterns.add(ResourceClaim(claim.pattern, "write").normalized())
-            return sorted(patterns)
-
-        def _team_team_scope_candidates(ctx: CompletionContext):
-            declared: list[CompletionCandidate] = []
-            if executor is not None and executor.plan is not None:
-                for task in executor.plan.tasks:
-                    if task.status != "needs_input":
-                        continue
-                    for claim in getattr(task, "pending_repair_scope", []):
-                        path = getattr(claim, "pattern", "") or ""
-                        if path:
-                            declared.append(
-                                CompletionCandidate(path, path, detail="已声明范围", kind="scope")
-                            )
-            if project_root is None:
-                return declared
-            path_cands = path_completion_candidates(
-                ctx.raw,
-                ctx.cursor_position,
-                project_root,
-                allow_patterns=_write_claim_patterns(),
-            )
-            merged = list(declared)
-            seen = {c.insert_text for c in merged}
-            for cand in path_cands:
-                if cand.insert_text not in seen:
-                    merged.append(cand)
-                    seen.add(cand.insert_text)
-            return merged
-
-        reg.register("team_scope", lambda ctx: _team_team_scope_candidates(ctx))
-        reg.register(
-            "team_task",
-            lambda ctx: [
-                CompletionCandidate(task.id, task.id, detail=task.title, kind="value")
-                for task in (
-                    executor.plan.tasks if executor is not None and executor.plan is not None
-                    else []
-                )
-                if task.status == "needs_input"
-            ],
-        )
         return reg
 
     async def submit(self, text: str) -> bool:
@@ -584,15 +529,6 @@ class SessionController:
             self._set_state(replace(
                 self.state,
                 notification=self._t("ui.plan.review_notice"),
-                notification_level="info",
-            ))
-            return False
-        if self.state.phase == "awaiting_team_input":
-            if lowered.startswith("/team resume"):
-                return await self._resume_team_command(text)
-            self._set_state(replace(
-                self.state,
-                notification=self._t("ui.team.waiting_input"),
                 notification_level="info",
             ))
             return False
@@ -730,48 +666,12 @@ class SessionController:
             project_root=getattr(self.agent.memory_manager, "project_root", None),
             ask_requester=self.agent.ask_requester,
         )
-        self._team_executor = executor
-        self._resumable = ResumableTask(kind="team", executor=executor, goal=goal, turn_id=turn_id)
+        # Team 任务不注册为可恢复任务：`/team resume` 与"继续"式续跑都已移除
         async for event in executor.run(goal):
             self._set_state(reduce_team_event(self.state, event, turn_id))
             self._finalize_task_registry(event, turn_id)
 
-    async def _resume_team_command(self, text: str) -> bool:
-        executor = self._team_executor
-        if executor is None:
-            self._set_state(replace(self.state, notification=self._t("ui.team.no_resumable"), notification_level="warning"))
-            return False
-        try:
-            parts = shlex.split(text)
-        except ValueError as exc:
-            self._set_state(replace(self.state, notification=self._t("ui.team.resume_invalid", error=exc), notification_level="error"))
-            return False
-        if len(parts) < 5 or parts[0].lower() != "/team" or parts[1].lower() != "resume":
-            self._set_state(replace(self.state, notification=self._t("ui.team.resume_usage"), notification_level="info"))
-            return False
-        task_id = parts[2]
-        claims: list[ResourceClaim] = []
-        index = 3
-        while index < len(parts):
-            if parts[index] != "--write-scope" or index + 1 >= len(parts):
-                self._set_state(replace(self.state, notification=self._t("ui.team.resume_usage"), notification_level="info"))
-                return False
-            claims.append(ResourceClaim(parts[index + 1], "write"))
-            index += 2
-        current = asyncio.current_task()
-        self._active_task = current
-        self._set_state(replace(self.state, phase="running", notification=self._t("ui.team.resuming")))
-        try:
-            async for event in executor.resume_task_with_repair_scope(task_id, claims):
-                self._set_state(reduce_team_event(self.state, event, self._active_turn_id))
-        finally:
-            if self._active_task is current:
-                self._active_task = None
-            if self.state.phase == "running":
-                self._set_state(replace(self.state, phase="idle"))
-        return True
-
-    # ---- V3：任务自然语言断点续跑 ----
+    # ---- V3：任务自然语言断点续跑（仅计划模式；Team 断点续跑已移除）----
 
     _RESUME_KEYWORDS = ("继续", "接着", "继续执行", "continue", "go on", "做完", "把它完成", "恢复任务")
 
@@ -779,6 +679,10 @@ class SessionController:
         """存在可恢复任务时尝试路由；返回 True 表示输入已被消费为恢复动作。"""
         task = self._resumable
         if task is None or task.user_cancelled:
+            return False
+        # Team 侧的断点续跑（/team resume + "继续"）已移除：Team 任务不再可恢复，
+        # 输入照常走普通对话 / 新任务，不会被这个入口吃掉。
+        if task.kind != "plan":
             return False
         if task.resume_count >= self.settings.task_max_resumes:
             self._set_state(replace(
@@ -790,11 +694,9 @@ class SessionController:
         if intent == "new_chat":
             # 与任务无关的新指令，走主 agent 普通对话
             return False
-        if intent == "provide_input":
-            return await self._resume_with_scope(task, text)
         return await self._do_resume(task, text)
 
-    async def _classify_resume_intent(self, text: str, task: ResumableTask) -> Literal["resume_task", "new_chat", "provide_input"]:
+    async def _classify_resume_intent(self, text: str, task: ResumableTask) -> Literal["resume_task", "new_chat"]:
         """LLM 意图识别；关闭或失败时回退关键词白名单。"""
         if self.settings.resume_intent_llm and task.executor.llm is not None:
             try:
@@ -809,11 +711,11 @@ class SessionController:
                         parts.append(event.text)
                 parsed = json.loads("".join(parts))
                 kind = parsed.get("intent")
-                if kind in ("resume_task", "new_chat", "provide_input"):
+                if kind in ("resume_task", "new_chat"):
                     return kind
             except Exception:
                 pass
-        return "resume_task" if self._is_resume_keyword(text) else ("provide_input" if self._is_provide_input_keyword(text) else "new_chat")
+        return "resume_task" if self._is_resume_keyword(text) else "new_chat"
 
     @staticmethod
     def _is_resume_keyword(text: str) -> bool:
@@ -823,14 +725,8 @@ class SessionController:
                 return True
         return False
 
-    @staticmethod
-    def _is_provide_input_keyword(text: str) -> bool:
-        lowered = text.lower()
-        patterns = ("允许修改", "允许写", "修改范围", "范围", "write-scope", "write scope", "可以改")
-        return any(pattern in lowered for pattern in patterns)
-
     async def _do_resume(self, task: ResumableTask, instruction: str) -> bool:
-        """执行断点续跑：追加轮次、跑 executor.resume()。"""
+        """执行断点续跑：追加轮次、跑 executor.resume()（仅计划模式）。"""
         current = asyncio.current_task()
         turn_id = self._begin_turn()
         if turn_id is None:
@@ -845,14 +741,9 @@ class SessionController:
         task.turn_id = turn_id
         self._active_task = current
         try:
-            if task.kind == "team":
-                async for event in task.executor.resume(instruction):  # type: ignore[union-attr]
-                    self._set_state(reduce_team_event(self.state, event, turn_id))
-                    self._finalize_task_registry(event, turn_id, task=task)
-            else:
-                async for event in task.executor.resume(instruction):  # type: ignore[union-attr]
-                    self._set_state(reduce_plan_event(self.state, event, turn_id))
-                    self._finalize_task_registry(event, turn_id, task=task)
+            async for event in task.executor.resume(instruction):  # type: ignore[union-attr]
+                self._set_state(reduce_plan_event(self.state, event, turn_id))
+                self._finalize_task_registry(event, turn_id, task=task)
         except asyncio.CancelledError:
             self._set_state(replace(self.state, phase="idle", notification=self._t("ui.task.cancelled")))
             raise
@@ -863,57 +754,6 @@ class SessionController:
             if self.state.active_turn_id == turn_id and self.state.phase == "running":
                 self._set_state(replace(self.state, phase="idle"))
         return True
-
-    async def _resume_with_scope(self, task: ResumableTask, text: str) -> bool:
-        """needs_input 场景：从用户自然语言里提取写入范围，过安全校验后恢复 Repairer（fail-closed）。"""
-        if task.kind != "team":
-            self._set_state(replace(self.state, notification=self._t("ui.team.scope_only"), notification_level="info"))
-            return False
-        claims = self._extract_scope_claims(text)
-        if not claims:
-            self._set_state(replace(
-                self.state,
-                notification=self._t("ui.team.scope_prompt"),
-                notification_level="warning",
-            ))
-            return True
-        # 先定位 needs_input 任务
-        plan = getattr(task.executor, "_last_plan", None)
-        task_id = ""
-        if plan is not None:
-            for t in plan.tasks:
-                if t.status == "needs_input":
-                    task_id = t.id
-                    break
-        if not task_id:
-            self._set_state(replace(self.state, notification=self._t("ui.team.no_scope_waiting"), notification_level="warning"))
-            return True
-        current = asyncio.current_task()
-        self._active_task = current
-        self._set_state(replace(self.state, phase="running", notification=self._t("ui.team.validating_scope")))
-        try:
-            async for event in task.executor.resume_task_with_repair_scope(task_id, claims):  # type: ignore[union-attr]
-                self._set_state(reduce_team_event(self.state, event, self._active_turn_id))
-                # 校验失败会回到 needs_input；校验通过后继续跑剩余批次
-                if event.kind in {"team_done", "team_failed", "cancelled"}:
-                    self._finalize_task_registry(event, self._active_turn_id, task=task)
-        finally:
-            if self._active_task is current:
-                self._active_task = None
-            if self.state.phase == "running":
-                self._set_state(replace(self.state, phase="idle"))
-        return True
-
-    @staticmethod
-    def _extract_scope_claims(text: str) -> list[ResourceClaim]:
-        # 提取 `允许修改 X` / `修改范围 X` / `--write-scope X` 后面的项目内路径片段
-        claims: list[ResourceClaim] = []
-        import re as _re
-        for m in _re.finditer(r"(?:允许修改|修改范围|可以改|--write-scope)\s*[:：]?\s*([A-Za-z0-9_./\\*-]+)", text):
-            pattern = m.group(1).strip('"\'，。；:：')
-            if pattern and " " not in pattern:
-                claims.append(ResourceClaim(pattern, "write"))
-        return claims
 
     def _finalize_task_registry(self, event, turn_id: str, *, task: ResumableTask | None = None) -> None:
         """根据终态事件分类维护可恢复任务注册表 + 摘要回填。"""
@@ -933,7 +773,7 @@ class SessionController:
             # 用户取消会经 cancel() 清除；此处兜底（系统 fail-closed 取消保留）
             if entry.turn_id == turn_id:
                 self._resumable = None
-        elif kind in ("plan_resume_requested", "team_resume_requested"):
+        elif kind == "plan_resume_requested":
             # 恢复流自身不改变注册表可恢复状态
             pass
 
@@ -941,7 +781,7 @@ class SessionController:
         plan = getattr(task.executor, "_last_plan", None)
         if plan is None:
             return f"目标：{task.goal}"
-        lines = [f"类型：{'/team' if task.kind == 'team' else '/plan'}", f"目标：{plan.goal}"]
+        lines = ["类型：/plan", f"目标：{plan.goal}"]
         for t in plan.tasks:
             status = getattr(t, "status", "?")
             title = getattr(t, "title", getattr(t, "description", ""))

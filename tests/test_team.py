@@ -254,7 +254,7 @@ def test_review_output_parser_fails_closed_for_empty_and_missing_scope():
     assert valid.repair_scope == [ResourceClaim("src/a.py", "write")]
 
 
-async def test_invalid_reviewer_output_pauses_without_creating_repairer(tmp_path, settings):
+async def test_invalid_reviewer_output_fails_task_without_creating_repairer(tmp_path, settings):
     plan = json.dumps({"tasks": [{
         "id": "t1", "title": "实现登录", "description": "实现登录",
         "deps": [], "owner_role": "coder", "acceptance_criteria": ["完成实现"],
@@ -281,17 +281,18 @@ async def test_invalid_reviewer_output_pauses_without_creating_repairer(tmp_path
 
     events = await collect(executor, "实现登录")
 
-    task = next(event.plan.task_by_id("t1") for event in events if event.kind == "task_needs_input")
-    assert task.status == "needs_input"
+    # Reviewer 输出不可解析 → 重试耗尽后按 fail 落地；没有可声明的写入范围，
+    # 任务**终态失败**（不再挂起等用户补范围），失败分类保留 Reviewer 侧原因。
+    task = next(event.plan.task_by_id("t1") for event in events if event.kind == "task_failed")
+    assert task.status == "failed"
     assert task.failure_category == "review_output_empty"
     assert not any(event.kind == "repair_requested" for event in events)
-    assert not any(event.kind == "task_failed" for event in events)
-    assert not any(event.kind == "team_failed" for event in events)
+    assert any(event.kind == "team_failed" for event in events)
     assert any(event.kind == "review_output_retry" for event in events)
     assert task.repair_attempts_started == 0
 
 
-async def test_missing_repair_scope_does_not_consume_repair_quota(tmp_path, settings):
+async def test_missing_repair_scope_fails_task_without_consuming_repair_quota(tmp_path, settings):
     plan = json.dumps({"tasks": [{
         "id": "t1", "title": "调研认证", "description": "读取认证代码",
         "deps": [], "owner_role": "researcher", "resource_scope_mode": "read_discovery",
@@ -322,61 +323,16 @@ async def test_missing_repair_scope_does_not_consume_repair_quota(tmp_path, sett
 
     events = await collect(executor, "调研认证")
 
-    task = next(event.plan.task_by_id("t1") for event in events if event.kind == "repair_scope_required")
-    assert task.status == "needs_input"
+    # Reviewer 说 fail 但没声明 repair_scope：直接判失败，不占用修复配额
+    task = next(event.plan.task_by_id("t1") for event in events if event.kind == "task_failed")
+    assert task.status == "failed"
+    assert task.failure_category == "repair_scope_missing"
     assert task.repair_attempts_started == 0
     assert task.repair_attempts_blocked == 0
     assert not any(event.kind == "repair_requested" for event in events)
 
 
-async def test_user_scope_resume_starts_repairer_and_finishes_task(tmp_path, settings):
-    plan = json.dumps({"tasks": [{
-        "id": "t1", "title": "实现登录", "description": "实现登录",
-        "deps": [], "owner_role": "coder", "acceptance_criteria": ["完成实现"],
-    }]}, ensure_ascii=False)
-    client = TeamScriptClient(
-        worker_scripts={
-            "t1": [("初始实现", [])],
-            "t1-repair-1": [("修复完成", [])],
-        },
-    )
-    review_count = 0
-
-    async def task_review(task, artifacts):
-        nonlocal review_count
-        review_count += 1
-        if review_count == 1:
-            return ReviewResult(task.id, "fail", ["需要修复"], ["修复问题"], [])
-        return ReviewResult(task.id, "pass", [], [], ["修复后通过"])
-
-    original = client.stream_chat
-
-    async def stream_chat(messages, tools=None):
-        if messages and "团队任务规划器" in messages[0].content:
-            yield StreamEvent(kind="content", text=plan)
-            yield StreamEvent(kind="done")
-            return
-        async for event in original(messages, tools):
-            yield event
-
-    client.stream_chat = stream_chat  # type: ignore[method-assign]
-    executor = TeamExecutor(
-        llm=client, tools=build_registry(base_dir=tmp_path), settings=settings,
-        reviewer=approve_team, task_reviewer=task_review, project_root=tmp_path,
-    )
-
-    first_events = await collect(executor, "实现登录")
-    assert any(event.kind == "repair_scope_required" for event in first_events)
-
-    resumed = [event async for event in executor.resume_task_with_repair_scope(
-        "t1", [ResourceClaim("src/auth.py", "write")]
-    )]
-    task = next(event.plan.task_by_id("t1") for event in resumed if event.kind == "team_done")
-    assert task.status == "done"
-    assert any(event.kind == "repair_requested" for event in resumed)
-    assert any(event.kind == "agent_started" and event.role == "repairer" for event in resumed)
-    assert task.repair_attempts_started == 1
-
+def test_conflict_safe_batches_serializes_write_conflicts():
     conflicting = [
         TeamTask("a", "A", "", [], resource_claims=[]),
         TeamTask("b", "B", "", [], resource_claims=[]),
@@ -568,29 +524,6 @@ def test_team_events_keep_role_and_task_progress_in_tui_state():
     state = reduce_team_event(state, TeamEvent("task_started", team_id="team-1", plan=plan, task=tasks[0], role="coder"), "turn-1")
     assert state.plan_tasks["t1"] == "running"
     assert any("coder/t1" in item.text for item in state.transcript)
-
-
-def test_team_needs_input_is_visible_without_becoming_failure():
-    from routivus.agent.team import TeamEvent, TeamPlan
-
-    tasks, _ = parse_team_tasks(json.dumps({"tasks": [{
-        "id": "t1", "title": "修复认证", "description": "修复问题", "deps": [],
-        "owner_role": "coder", "acceptance_criteria": ["通过验证"],
-    }]}))
-    plan = TeamPlan("修复认证", tasks, [["t1"]])
-    state = TuiState(active_turn_id="turn-1")
-    state = reduce_team_event(
-        state,
-        TeamEvent("task_needs_input", team_id="team-1", plan=plan, task=tasks[0],
-                  failure_category="repair_scope_missing", message="请确认写入范围"),
-        "turn-1",
-    )
-
-    assert state.phase == "awaiting_team_input"
-    assert state.plan_tasks["t1"] == "needs_input"
-    assert state.inspector.plan.failure_count == 0
-    assert state.team_input_task_id == "t1"
-    assert state.notification == "请确认写入范围"
 
 
 def test_team_agent_events_are_isolated_in_default_collapsed_groups():
@@ -787,24 +720,8 @@ async def test_writable_step_limit_is_not_automatically_retried(tmp_path, settin
     assert not any(event.kind == "task_retry_started" for event in events)
 
 
-async def collect_team_resume(executor: TeamExecutor, instruction: str = "") -> list:
-    return [event async for event in executor.resume(instruction)]
-
-
-async def test_team_resume_without_plan_fails(tmp_path, settings):
-    """尚未执行/生成计划就 resume → team_failed。"""
-    client = TeamScriptClient(worker_scripts={})
-    executor = TeamExecutor(
-        llm=client, tools=build_registry(base_dir=tmp_path), settings=settings,
-        reviewer=approve_team, project_root=tmp_path,
-    )
-    events = await collect_team_resume(executor)
-    assert [event.kind for event in events] == ["team_failed"]
-    assert "没有可恢复" in events[0].message
-
-
-async def test_team_resume_reruns_failed_and_blocked_skips_done(tmp_path, settings):
-    """断点续跑：重跑失败的 t1、重跑被阻塞的 t2、跳过已完成的独立任务 t3。"""
+async def test_team_failure_blocks_dependents_and_skips_done(tmp_path, settings):
+    """失败传播：t1 失败 → t2 被阻塞，同批已完成的 t3 保留 done（无续跑，失败即终态）。"""
     settings.plan_max_failures = 0
     plan_json = json.dumps({"tasks": [
         {
@@ -851,35 +768,28 @@ async def test_team_resume_reruns_failed_and_blocked_skips_done(tmp_path, settin
 
         def create(self, profile, task):
             self.calls[task.id] = self.calls.get(task.id, 0) + 1
-            # 首轮仅 t1 失败 → 阻塞 t2；t2 初次运行也让它失败以验证续跑跳过 done
-            if task.id == "t1" and self.calls["t1"] == 1:
+            if task.id == "t1":
                 return FailingAgent()
             return SuccessAgent()
-
-    factory = Factory()
 
     async def review_pass(task, artifacts):
         return ReviewResult(task.id, "pass", [], [], ["测试通过"])
 
     executor = TeamExecutor(
         llm=PlannerClient(), tools=build_registry(base_dir=tmp_path), settings=settings,
-        reviewer=approve_team, task_reviewer=review_pass, agent_factory=factory,
+        reviewer=approve_team, task_reviewer=review_pass, agent_factory=Factory(),
         project_root=tmp_path,
     )
 
-    first = await collect(executor, "测试失败传播")
-    assert any(event.kind == "task_failed" and event.task.id == "t1" for event in first)
-    blocked = next(event for event in first if event.kind == "task_blocked" and event.task.id == "t2")
+    events = await collect(executor, "测试失败传播")
+    assert any(event.kind == "task_failed" and event.task.id == "t1" for event in events)
+    blocked = next(event for event in events if event.kind == "task_blocked" and event.task.id == "t2")
     assert blocked.task.status == "blocked"
     # t3 与 t1 同批并行，t1 失败前 t3 已完成
-    done_t3 = next(event for event in first if event.kind == "task_done" and event.task.id == "t3")
+    done_t3 = next(event for event in events if event.kind == "task_done" and event.task.id == "t3")
     assert done_t3.task.status == "done"
-    assert first[-1].kind == "team_failed"
-
-    resumed = await collect_team_resume(executor, "补充指令")
-    assert any(event.kind == "team_resume_requested" for event in resumed)
-    started = [event.task.id for event in resumed if event.kind == "task_started"]
-    # t1 重跑、t2 解除阻塞重跑；t3 已 done 跳过
-    assert "t1" in started and "t2" in started and "t3" not in started
-    assert resumed[-1].kind == "team_done"
-    assert all(task.status == "done" for task in executor._last_plan.tasks)
+    # 失败即终态：不再有续跑事件，Team 直接收尾
+    assert events[-1].kind == "team_failed"
+    assert not any(event.kind in {"team_resume_requested", "task_needs_input"} for event in events)
+    statuses = {task.id: task.status for task in executor._last_plan.tasks}
+    assert statuses["t1"] == "failed" and statuses["t2"] == "blocked" and statuses["t3"] == "done"

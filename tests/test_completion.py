@@ -159,9 +159,9 @@ def test_p1_no_candidates_for_plain_text():
     assert completion_candidates("实现登录模块") == []
 
 
-def test_p1_subcommand_completion_for_team():
-    candidates = completion_candidates("/team res")
-    assert [c.insert_text for c in candidates] == ["resume"]
+def test_p1_subcommand_completion_for_skill():
+    candidates = completion_candidates("/skill di")
+    assert [c.insert_text for c in candidates] == ["disable"]
     assert candidates[0].kind == "subcommand"
 
 
@@ -172,27 +172,15 @@ def test_p1_subcommand_completion_for_mcp():
 
 
 def test_p1_subcommand_completion_offers_all_when_prefix_unmatched():
+    # /team 只剩一个子命令（run）：前缀对不上时仍列出全部子命令
     candidates = completion_candidates("/team xyz")
-    assert [c.insert_text for c in candidates] == ["run", "resume"]
-
-
-def test_p1_static_option_completion_after_subcommand():
-    # /team resume <task>  ->  --write-scope is a declared option.
-    candidates = completion_candidates("/team resume t4 --write-s")
-    assert [c.insert_text for c in candidates] == ["--write-scope "]
-    assert candidates[0].kind == "option"
-
-
-def test_p1_static_option_completion_uno_typed():
-    # A blank argument slot after the subcommand still surfaces the option.
-    candidates = completion_candidates("/team resume t4 ", cursor_position=len("/team resume t4 "))
-    assert any(c.insert_text == "--write-scope " for c in candidates)
+    assert [c.insert_text for c in candidates] == ["run"]
 
 
 def test_p1_blank_argument_slot_offers_all_subcommands():
     # An empty second-token slot surfaces every subcommand of the command.
     candidates = completion_candidates("/team ", cursor_position=len("/team "))
-    assert [c.insert_text for c in candidates] == ["run", "resume"]
+    assert [c.insert_text for c in candidates] == ["run"]
 
 
 def test_p1_apply_completion_replaces_current_token():
@@ -205,11 +193,11 @@ def test_p1_apply_completion_replaces_current_token():
 
 def test_p1_apply_completion_option_adds_trailing_space():
     value, cursor = apply_completion(
-        "/team resume t4 --write-s",
+        "/train --y",
         None,
-        CompletionCandidate("--write-scope", "--write-scope ", kind="option"),
+        CompletionCandidate("--yes", "--yes ", kind="option"),
     )
-    assert value == "/team resume t4 --write-scope "
+    assert value == "/train --yes "
     assert cursor == len(value)
 
 
@@ -249,10 +237,6 @@ def _registry():
     reg.register(
         "memory_id", lambda ctx: [CompletionCandidate("1", "1", kind="value")]
     )
-    reg.register(
-        "team_scope",
-        lambda ctx: [CompletionCandidate(v, v, kind="value") for v in ("xg/auth/", "xg/lib/")],
-    )
     return reg
 
 
@@ -282,15 +266,6 @@ def test_p2_dynamic_memory_id_candidates():
 
     got = dynamic_candidates("/memory delete 1", None, _registry())
     assert [c.insert_text for c in got] == ["1"]
-
-
-def test_p2_dynamic_team_scope_option_value():
-    from routivus.cli.completion import dynamic_candidates
-
-    got = dynamic_candidates(
-        "/team resume t4 --write-scope xg/a", None, _registry()
-    )
-    assert [c.insert_text for c in got] == ["xg/auth/", "xg/lib/"]
 
 
 def test_p2_dynamic_result_is_capped():
@@ -323,118 +298,3 @@ def test_p2_dynamic_failing_provider_degrades_to_empty():
     reg = CompletionProviderRegistry()
     reg.register("mcp", boom)
     assert dynamic_candidates("/mcp restart lo", None, reg) == []
-
-
-# ---------------------------------------------------------------------------
-# P3: workspace path completion
-# ---------------------------------------------------------------------------
-
-
-def _make_workspace(root):
-    for rel in ("xg/auth/login.py", "xg/auth/signup.py", "xg/lib/util.py", "src/main.rs"):
-        path = root / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("")
-    (root / ".env").write_text("KEY=secret")
-    (root / "xg" / "secret.pem").write_text("key")
-    (root / "xg" / "auth" / ".hidden").write_text("")
-    return root
-
-
-def test_p3_normalize_path_value_strips_quotes_and_dots():
-    from routivus.cli.completion import normalize_path_value
-
-    assert normalize_path_value("xg/auth") == "xg/auth"
-    assert normalize_path_value("./xg/") == "xg"
-    assert normalize_path_value("'xg/auth'") == "xg/auth"
-    assert normalize_path_value("") == ""
-    assert normalize_path_value("/usr/etc") == "usr/etc"
-    assert normalize_path_value("..") is None
-    assert normalize_path_value("xg/../../etc") is None
-    assert normalize_path_value("C:/Windows") is None
-
-
-def test_p3_enumerate_workspace_names_lists_dirs_and_files(tmp_path):
-    from routivus.cli.completion import enumerate_workspace_names
-
-    root = _make_workspace(tmp_path)
-    names = enumerate_workspace_names(root, "xg/a")
-    # Only the immediate children of the listed directory are offered; deeper
-    # files are reached by completing the directory first.
-    assert "xg/auth/" in names
-    assert "xg/auth/login.py" not in names
-    assert all(name.startswith("xg/a") for name in names)
-
-
-def test_p3_enumerate_root_level_omits_hidden_and_sensitive(tmp_path):
-    from routivus.cli.completion import enumerate_workspace_names
-
-    root = _make_workspace(tmp_path)
-    names = enumerate_workspace_names(root, "")
-    assert "src/" in names
-    assert "xg/" in names
-    assert ".env" not in names
-    assert ".git" not in names
-
-
-def test_p3_deny_patterns_filter_sensitive_files(tmp_path):
-    from routivus.cli.completion import enumerate_workspace_names
-
-    root = _make_workspace(tmp_path)
-    names = enumerate_workspace_names(root, "xg/")
-    assert "xg/auth/" in names
-    assert "xg/lib/" in names
-    assert "xg/secret.pem" not in names
-
-
-def test_p3_traversal_and_absolute_never_escape_workspace(tmp_path):
-    from routivus.cli.completion import enumerate_workspace_names, path_completion_candidates
-
-    root = _make_workspace(tmp_path)
-    assert enumerate_workspace_names(root, "..") == []
-    assert enumerate_workspace_names(root, "xg/../../") == []
-    assert path_completion_candidates("/team resume t1 --write-scope ..", None, root) == []
-
-
-def test_p3_allow_patterns_constrain_scope_hints(tmp_path):
-    from routivus.cli.completion import enumerate_workspace_names
-
-    root = _make_workspace(tmp_path)
-    names = enumerate_workspace_names(root, "xg/", allow_patterns=("xg/lib/**",))
-    assert "xg/lib/" in names
-    assert "xg/auth/" not in names
-
-
-def test_p3_result_cap(tmp_path):
-    from routivus.cli.completion import enumerate_workspace_names
-
-    root = _make_workspace(tmp_path)
-    names = enumerate_workspace_names(root, "xg/a", limit=1)
-    assert len(names) == 1
-
-
-def test_p3_path_completion_line(tmp_path):
-    from routivus.cli.completion import path_completion_candidates
-
-    root = _make_workspace(tmp_path)
-    cands = path_completion_candidates("/team resume t1 --write-scope xg/a", None, root)
-    assert any(c.kind == "path" for c in cands)
-    assert all(c.insert_text.startswith("xg/a") for c in cands)
-    assert not any(c.insert_text.endswith(".pem") for c in cands)
-
-
-def test_p3_apply_completion_keeps_trailing_tokens_and_cursor():
-    from routivus.cli.completion import apply_completion, CompletionCandidate
-
-    line = "/team resume t1 --write-scope xg/au extra"
-    cursor_idx = line.index("xg/au")
-    value, cursor = apply_completion(
-        line,
-        cursor_idx,
-        CompletionCandidate("xg/auth/", "xg/auth/", detail="路径", kind="path"),
-    )
-    assert value == "/team resume t1 --write-scope xg/auth/ extra"
-    # The line keeps the trailing token " extra" and the cursor is placed at
-    # the end of the inserted token, not the end of the line.
-    assert cursor == value.index("xg/auth/") + len("xg/auth/")
-    assert value[cursor:] == " extra"

@@ -1,12 +1,9 @@
 """Web Console Composer 的 slash 命令补全（只读、无副作用）。
 
 把 `routivus/cli/completion.py` 的纯补全引擎接到 REST 端点上：静态候选
-（命令 → 子命令 → 选项）直接复用引擎；动态候选按两种来源展开——
-
-- 工作区路径（`/team resume … --write-scope <路径>`）：按会话所属项目的 root_path
-- 动态值（`/model dee` 的模型名、`/memory delete` 的记忆 ID）：按会话 agent 的
-  ConfigManager / memory_manager 实时生成（与 TUI 的
-  `tui/controller.py:completion_registry` 同构）
+（命令 → 子命令 → 选项）直接复用引擎；动态候选（`/model dee` 的模型名、
+`/memory delete` 的记忆 ID）按会话 agent 的 ConfigManager / memory_manager
+实时生成（与 TUI 的 `tui/controller.py:completion_registry` 同构）。
 
 白名单与命令执行通道保持同步：`server/app.py` 的命令分派真正执行哪些命令，
 这里就提示哪些（见 plans/enhancement/01-web-slash-commands.md §3 的矩阵）。
@@ -15,7 +12,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 # Web Console 会话内真正会分派的顶层命令（保持与 app.py 的命令分派同步）。
@@ -119,7 +115,6 @@ def completion_payload(
     raw: str,
     cursor: int | None = None,
     *,
-    project_root: Path | None = None,
     manager: Any = None,
     agent: Any = None,
     limit: int = 20,
@@ -152,7 +147,7 @@ def completion_payload(
 
     command = ctx.command.lower()
     if command in allowed:
-        # 白名单命令内部：静态层（子命令 / 选项）+ 动态值层 + 动态路径层。
+        # 白名单命令内部：静态层（子命令 / 选项）+ 动态值层。
         candidates = list(engine.completion_candidates(raw, cursor))
         try:
             candidates.extend(
@@ -160,10 +155,6 @@ def completion_payload(
             )
         except Exception:  # noqa: BLE001 - 动态层失败不拖垮静态候选
             pass
-        if project_root is not None:
-            candidates.extend(
-                engine.path_completion_candidates(raw, cursor, project_root)
-            )
     elif command not in known:
         # 还在敲顶层命令 token（例如 "/mo"）：只在白名单里做前缀匹配。
         candidates = [

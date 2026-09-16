@@ -74,8 +74,8 @@ SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
         category="workflow",
         details=(
             "由 Supervisor 调度隔离上下文的 Worker，并对任务结果进行证据化审查。",
-            "Reviewer 审查失败且缺少修复范围时，任务会进入 needs_input。",
-            "用户确认允许修改的文件范围后，可以恢复 Repairer，不会重新执行原任务。",
+            "Reviewer 审查未通过时，会按它声明的 repair_scope 定向修复；",
+            "无法安全确定修复范围的任务直接判失败（不挂起等人补范围）。",
             "Repairer 只允许修改明确声明的 write scope，不能把只读范围升级为写入权限。",
         ),
         subcommands=(
@@ -84,16 +84,9 @@ SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
                 "/team <任务>",
                 "创建并执行一个 Team 任务",
             ),
-            SlashSubcommandSpec(
-                "resume",
-                "/team resume <任务ID> --write-scope <范围>",
-                "确认写入范围后恢复暂停的 Repairer",
-                options=("--write-scope",),
-            ),
         ),
         examples=(
             "/team 实现一个带测试的登录模块",
-            "/team resume t4 --write-scope routivus/auth/*.py",
         ),
     ),
     SlashCommandSpec(

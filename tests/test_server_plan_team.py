@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from routivus.agent.plan import Plan, PlanEvent, PlanTask, ReviewDecision
 from routivus.agent.react import AgentEvent
-from routivus.agent.team import ResourceClaim, TeamEvent, TeamPlan, TeamTask
+from routivus.agent.team import TeamEvent, TeamPlan, TeamTask
 from routivus.server import ProjectRegistry, create_app
 from routivus.server.config import ServerConfig
 from routivus.server.storage import WorkspaceStore
@@ -108,7 +108,7 @@ class _ScriptedPlanExecutor:
 
 
 class _ScriptedTeamExecutor:
-    """替身 TeamExecutor：批准后停在 needs_input，用于验证 /team resume 路由。"""
+    """替身 TeamExecutor：批准后直接判任务失败（不再有 needs_input 等待）。"""
 
     instances: list["_ScriptedTeamExecutor"] = []
 
@@ -116,8 +116,6 @@ class _ScriptedTeamExecutor:
         self.reviewer = kwargs.get("reviewer")
         self.project_root = kwargs.get("project_root")
         self.decision: ReviewDecision | None = None
-        self.resumed: list[tuple[str, list[ResourceClaim]]] = []
-        self.resume_instructions: list[str] = []
         _ScriptedTeamExecutor.instances.append(self)
 
     async def run(self, goal: str) -> AsyncIterator[TeamEvent]:
@@ -133,31 +131,16 @@ class _ScriptedTeamExecutor:
             return
         yield TeamEvent(kind="approved", team_id="team-1", plan=plan, message="团队计划已批准")
         yield TeamEvent(kind="batch_started", team_id="team-1", plan=plan, batch=["t1"], message="第 1 轮 / 共 2 轮")
-        plan.tasks[0].status = "needs_input"
+        plan.tasks[0].status = "failed"
         yield TeamEvent(
-            kind="task_needs_input",
+            kind="task_failed",
             team_id="team-1",
             plan=plan,
             task=plan.tasks[0],
             role="coder",
             failure_category="repair_scope_missing",
-            message="需要显式写入范围",
+            message="无法安全确定修改范围",
         )
-
-    async def resume(self, instruction: str = "") -> AsyncIterator[TeamEvent]:
-        self.resume_instructions.append(instruction)
-        yield TeamEvent(kind="team_done", team_id="team-1", plan=_team_plan("resume"), message="Team 完成")
-
-    async def resume_task_with_repair_scope(
-        self, task_id: str, claims: list[ResourceClaim]
-    ) -> AsyncIterator[TeamEvent]:
-        self.resumed.append((task_id, list(claims)))
-        plan = _team_plan("repair")
-        yield TeamEvent(
-            kind="task_resume_requested", team_id="team-1", plan=plan, task=plan.tasks[0],
-            message=f"恢复 {task_id}",
-        )
-        yield TeamEvent(kind="team_done", team_id="team-1", plan=plan, message="Team 完成")
 
 
 @pytest.fixture(autouse=True)
@@ -478,51 +461,16 @@ def test_team_turn_card_shape_and_review(tmp_path: Path) -> None:
         tail = _receive_until(socket, _completed)
 
     kinds = _kinds(_cards(tail, "team.updated"))
-    assert kinds == ["approved", "batch_started", "task_needs_input"]
-    needs_input = [card for card in _cards(tail, "team.updated") if card["kind"] == "task_needs_input"]
-    assert needs_input[0]["role"] == "coder"
-    assert needs_input[0]["failure_category"] == "repair_scope_missing"
+    assert kinds == ["approved", "batch_started", "task_failed"]
+    failed = [card for card in _cards(tail, "team.updated") if card["kind"] == "task_failed"]
+    assert failed[0]["role"] == "coder"
+    assert failed[0]["failure_category"] == "repair_scope_missing"
     executor = _ScriptedTeamExecutor.instances[0]
     assert executor.project_root is not None
 
 
-def test_team_resume_routes_write_scope_to_executor(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-    project = _project(client)
-    session = _session(client, project)
-
-    with client.websocket_connect(_ws(project, session)) as socket:
-        socket.receive_json()
-        socket.send_json({"type": "user_message", "request_id": "r1", "content": "/team 改造检索层"})
-        events = _receive_until(socket, lambda item: item.get("type") == "plan.review")
-        review_id = events[-1]["data"]["review_id"]
-        socket.send_json({
-            "type": "plan_decision",
-            "request_id": "d1",
-            "review_id": review_id,
-            "action": "execute",
-        })
-        _receive_until(socket, _completed)
-
-        # 写入范围必须显式声明，且只作用于声明的模式
-        socket.send_json({
-            "type": "user_message",
-            "request_id": "r2",
-            "content": "/team resume t1 --write-scope src/retrieval --write-scope tests/retrieval",
-        })
-        tail = _receive_until(socket, _completed)
-
-    kinds = _kinds(_cards(tail, "team.updated"))
-    assert kinds == ["task_resume_requested", "team_done"]
-    executor = _ScriptedTeamExecutor.instances[-1]
-    assert len(executor.resumed) == 1
-    task_id, claims = executor.resumed[0]
-    assert task_id == "t1"
-    assert [claim.pattern for claim in claims] == ["src/retrieval", "tests/retrieval"]
-    assert {claim.access for claim in claims} == {"write"}
-
-
-def test_team_resume_without_prior_team_run_is_rejected(tmp_path: Path) -> None:
+def test_team_resume_is_rejected_as_unknown_command(tmp_path: Path) -> None:
+    """`/team resume` 已移除：明确报未知命令，不能落进 /team 被当成新任务重跑。"""
     client = _client(tmp_path)
     project = _project(client)
     session = _session(client, project)
@@ -534,62 +482,29 @@ def test_team_resume_without_prior_team_run_is_rejected(tmp_path: Path) -> None:
             "request_id": "r1",
             "content": "/team resume t1 --write-scope src",
         })
-        events = _receive_until(socket, _is_error("no_resumable_team"))
+        event = socket.receive_json()
 
-    assert events and _error_code(events[-1]) == "no_resumable_team"
+    assert _error_code(event) == "unknown_command"
+    # 没有真的起一轮 Team：不返回任何 team.updated 卡片
+    assert event["type"] == "error"
 
 
-def test_team_resume_usage_errors_are_reported(tmp_path: Path) -> None:
+def test_team_requires_goal_and_rejects_bare_resume(tmp_path: Path) -> None:
     client = _client(tmp_path)
     project = _project(client)
     session = _session(client, project)
 
     with client.websocket_connect(_ws(project, session)) as socket:
         socket.receive_json()
-        socket.send_json({"type": "user_message", "request_id": "r1", "content": "/team resume --write-scope"})
-        missing_value = socket.receive_json()
-        assert _error_code(missing_value) == "invalid_resume"
+        socket.send_json({"type": "user_message", "request_id": "r1", "content": "/team resume"})
+        bare_resume = socket.receive_json()
+        assert _error_code(bare_resume) == "unknown_command"
 
-        socket.send_json({"type": "user_message", "request_id": "r2", "content": "/team resume t1 t2"})
-        two_ids = socket.receive_json()
-        assert _error_code(two_ids) == "invalid_resume"
-
-        socket.send_json({"type": "user_message", "request_id": "r3", "content": "/team resume --bogus x"})
-        unknown = socket.receive_json()
-        assert _error_code(unknown) == "invalid_resume"
-
-        socket.send_json({"type": "user_message", "request_id": "r4", "content": "/team"})
+        socket.send_json({"type": "user_message", "request_id": "r2", "content": "/team"})
         no_goal = socket.receive_json()
         assert _error_code(no_goal) == "missing_goal"
 
     assert client.get(f"/api/sessions/{session['id']}/messages").json() == []
-
-
-def test_team_resume_without_scope_uses_resume(tmp_path: Path) -> None:
-    """不带 --write-scope 时走 executor.resume()（续跑失败 / 阻塞任务）。"""
-    client = _client(tmp_path)
-    project = _project(client)
-    session = _session(client, project)
-
-    with client.websocket_connect(_ws(project, session)) as socket:
-        socket.receive_json()
-        socket.send_json({"type": "user_message", "request_id": "r1", "content": "/team 改造检索层"})
-        events = _receive_until(socket, lambda item: item.get("type") == "plan.review")
-        socket.send_json({
-            "type": "plan_decision",
-            "request_id": "d1",
-            "review_id": events[-1]["data"]["review_id"],
-            "action": "execute",
-        })
-        _receive_until(socket, _completed)
-
-        socket.send_json({"type": "user_message", "request_id": "r2", "content": "/team resume 继续跑剩下的"})
-        tail = _receive_until(socket, _completed)
-
-    executor = _ScriptedTeamExecutor.instances[-1]
-    assert executor.resume_instructions == ["继续跑剩下的"]
-    assert executor.resumed == []
-    assert "team_done" in _kinds(_cards(tail, "team.updated"))
 
 
 # ==========================================================================

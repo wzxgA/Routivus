@@ -8,7 +8,6 @@ import inspect
 import json
 import logging
 import os
-import shlex
 import sqlite3
 import tempfile
 import time
@@ -460,7 +459,7 @@ def _task_card_payload(item: Any, *, mode: str) -> dict[str, Any]:
         attempt = int(getattr(item, "attempt", 0) or 0)
         if attempt:
             data["attempt"] = attempt
-        # needs_input / repair_scope_required 的原因分类：前端据此解释为何需要补写入范围。
+        # 失败原因分类（如 repair_scope_missing / task_failed）：前端据此解释失败原因。
         category = str(getattr(item, "failure_category", "") or "")
         if category:
             data["failure_category"] = category
@@ -471,8 +470,9 @@ def _parse_task_command(content: str) -> tuple[str, str, dict[str, Any]]:
     """把用户输入解析为 (turn_kind, goal, options)。
 
     前缀约定与 TUI 保持一致（`routivus/tui/controller.py:358-367`）：
-    `/plan <任务>`、`/team <任务>`、`/team resume ...`，其余一律普通对话。
-    返回的 turn_kind ∈ {"chat", "plan", "team", "team_resume"}。
+    `/plan <任务>`、`/team <任务>`，其余一律普通对话。
+    返回的 turn_kind ∈ {"chat", "plan", "team", "team_resume"}；`team_resume` 只用于
+    把已移除的 `/team resume` 拦下来回一条明确错误，不是可执行回合。
     """
     text = content.strip()
     lowered = text.lower()
@@ -481,39 +481,9 @@ def _parse_task_command(content: str) -> tuple[str, str, dict[str, Any]]:
     if lowered.startswith("/team"):
         rest = text[len("/team") :].strip()
         if rest.lower() == "resume" or rest.lower().startswith("resume "):
-            return "team_resume", rest, _parse_resume_options(rest)
+            return "team_resume", rest, {}
         return "team", rest, {}
     return "chat", text, {}
-
-
-def _parse_resume_options(rest: str) -> dict[str, Any]:
-    """解析 `/team resume [task_id] [--write-scope <路径>]...`。
-
-    用法错误一律以 `error` 字段返回（调用方回一条可读错误），不猜测用户意图：
-    写入范围必须显式声明，这是 fail closed 的前提。
-    """
-    try:
-        parts = shlex.split(rest)[1:]  # 丢掉 "resume"
-    except ValueError as exc:
-        return {"error": f"命令解析失败: {exc}"}
-    task_id = ""
-    claims: list[str] = []
-    index = 0
-    while index < len(parts):
-        token = parts[index]
-        if token == "--write-scope":
-            if index + 1 >= len(parts):
-                return {"error": "用法: /team resume [task_id] --write-scope <路径>"}
-            claims.append(parts[index + 1])
-            index += 2
-            continue
-        if token.startswith("--"):
-            return {"error": f"未知选项: {token}（用法: /team resume [task_id] --write-scope <路径>）"}
-        if task_id:
-            return {"error": "只能指定一个 task_id（用法: /team resume [task_id] --write-scope <路径>）"}
-        task_id = token
-        index += 1
-    return {"task_id": task_id, "claims": claims}
 
 
 def _event_payload(event: EventRecord) -> dict[str, Any]:
@@ -682,9 +652,8 @@ def create_app(
     app.state.session_agents = {}
     app.state.running_tasks = {}
     app.state.session_approvals = {}
-    # 计划 / 团队审阅桥接，以及会话内最近一个可续跑的计划执行器（供 /team resume）。
+    # 计划 / 团队审阅桥接（计划模式的人工审阅往返）。
     app.state.session_reviews = {}
-    app.state.session_resumable = {}
     # 会话级 SmartRouter 运行态（惰性创建；None 表示该会话已确认不可用）
     app.state.session_routers = {}
     # 项目级长期记忆库句柄（按项目根缓存，惰性打开；见 project_memory）
@@ -920,7 +889,6 @@ def create_app(
         session_agents.pop(session_id, None)
         session_approvals.pop(session_id, None)
         session_reviews.pop(session_id, None)
-        session_resumable.pop(session_id, None)
         session_routers.pop(session_id, None)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -953,23 +921,13 @@ def create_app(
         """Composer 的 slash 命令补全候选（只读、无副作用、永不 404）。
 
         提示 Web 端真正会执行的命令（白名单见 completions.py）；传入 session_id
-        时按其所属项目 root_path 提供动态路径候选，并从会话 agent 的
-        ConfigManager / memory_manager 生成动态值候选（/model 的模型名、
-        /memory 的记忆 ID）。会话/项目缺失时优雅降级为静态候选。
+        时从会话 agent 的 ConfigManager / memory_manager 生成动态值候选
+        （/model 的模型名、/memory 的记忆 ID）。会话缺失时优雅降级为静态候选。
         """
-        project_root: Path | None = None
         session_agent = session_agents.get(session_id) if session_id else None
-        if session_id:
-            try:
-                session = require_session(session_id)
-                project = require_project(session.project_id)
-                project_root = Path(project.root_path).resolve()
-            except (ApiError, ProjectRegistryError):
-                project_root = None
         return completion_payload(
             q,
             cursor,
-            project_root=project_root,
             manager=getattr(session_agent, "config_manager", None),
             agent=session_agent,
         )
@@ -1557,7 +1515,6 @@ def create_app(
     connections: dict[str, list[WebSocket]] = app.state.ws_connections
     session_approvals: dict[str, ApprovalBridge] = app.state.session_approvals
     session_reviews: dict[str, PlanReviewBridge] = app.state.session_reviews
-    session_resumable: dict[str, tuple[str, Any]] = app.state.session_resumable
     session_routers: dict[str, SessionRouter | None] = app.state.session_routers
     project_memories: dict[str, MemoryManager] = app.state.project_memories
     terminals: dict[str, TerminalSession] = app.state.terminals
@@ -2120,13 +2077,6 @@ def create_app(
         """计划 / 团队执行器的必需依赖；测试或嵌入方注入的简易 agent 可能没有。"""
         return [name for name in ("llm", "tools", "settings") if getattr(agent, name, None) is None]
 
-    def _first_needs_input_task(executor: Any) -> str:
-        plan = getattr(executor, "_last_plan", None)
-        for task in getattr(plan, "tasks", None) or []:
-            if str(getattr(task, "status", "")) == "needs_input":
-                return str(getattr(task, "id", ""))
-        return ""
-
     async def handle_turn_cancelled(websocket: WebSocket | None, session: SessionRecord, request_id: str) -> None:
         _cancel_bridges(session.id)
         updated = workspace_store.update_session(session.id, status="cancelled")
@@ -2199,7 +2149,6 @@ def create_app(
             from routivus.agent.plan import PlanExecutor
 
             executor = PlanExecutor(**_executor_kwargs(agent), reviewer=review.review)
-            session_resumable[session.id] = ("plan", executor)
             async for event in executor.run(goal):
                 await forward_task_event(event, forwarder, mode="plan")
             await forwarder.finish()
@@ -2233,7 +2182,6 @@ def create_app(
             from routivus.agent.team import TeamExecutor
 
             executor = TeamExecutor(**_executor_kwargs(agent), reviewer=review.review, project_root=Path(project.root_path))
-            session_resumable[session.id] = ("team", executor)
             async for event in executor.run(goal):
                 await forward_task_event(event, forwarder, mode="team")
             await forwarder.finish()
@@ -2242,62 +2190,6 @@ def create_app(
             raise
         except Exception as exc:
             await handle_turn_failure(websocket, session, request_id, exc, label="team turn")
-
-    async def run_team_resume_turn(
-        websocket: WebSocket | None,
-        project: Any,
-        session: SessionRecord,
-        options: dict[str, Any],
-        request_id: str = "",
-    ) -> None:
-        """`/team resume [task_id] [--write-scope <路径>]...`：Team 断点续跑。
-
-        写入范围必须显式声明（由执行器再次校验），这是 fail closed 的前提。
-        """
-        forwarder = _TurnForwarder(websocket, session, request_id)
-        stored = session_resumable.get(session.id)
-        if stored is None or stored[0] != "team":
-            await forwarder.close_with(
-                "idle",
-                error="没有可恢复的 Team 计划（需要先在本会话跑过一次 /team）",
-                code="no_resumable_team",
-            )
-            return
-        parse_error = str(options.get("error", "") or "")
-        if parse_error:
-            await forwarder.close_with("idle", error=parse_error, code="invalid_resume")
-            return
-        executor = stored[1]
-        try:
-            agent = session_agents.get(session.id)
-            if agent is not None:
-                bind_interactions(agent, session.id)
-                forwarder.set_attrs(**model_attrs(agent))  # 续跑同样记一份归因
-
-            from routivus.agent.team import ResourceClaim
-
-            task_id = str(options.get("task_id", "") or "")
-            claims = [ResourceClaim(pattern, "write") for pattern in options.get("claims", []) or []]
-            if claims:
-                target = task_id or _first_needs_input_task(executor)
-                if not target:
-                    await forwarder.close_with(
-                        "idle",
-                        error="没有处于 needs_input 的任务可恢复；如需续跑失败任务请直接发送 /team resume",
-                        code="no_pending_task",
-                    )
-                    return
-                stream = executor.resume_task_with_repair_scope(target, claims)
-            else:
-                stream = executor.resume(task_id)
-            async for event in stream:
-                await forward_task_event(event, forwarder, mode="team")
-            await forwarder.finish()
-        except asyncio.CancelledError:
-            await handle_turn_cancelled(websocket, session, request_id)
-            raise
-        except Exception as exc:
-            await handle_turn_failure(websocket, session, request_id, exc, label="team resume turn")
 
     def _turn_coroutine(
         websocket: WebSocket | None,
@@ -2309,13 +2201,11 @@ def create_app(
         content: str,
         request_id: str,
     ) -> Any:
-        """按输入前缀选择回合执行器：`/plan`、`/team`、`/team resume` 或普通对话。"""
+        """按输入前缀选择回合执行器：`/plan`、`/team` 或普通对话。"""
         if turn_kind == "plan":
             return run_plan_turn(websocket, project, session, goal, request_id)
         if turn_kind == "team":
             return run_team_turn(websocket, project, session, goal, request_id)
-        if turn_kind == "team_resume":
-            return run_team_resume_turn(websocket, project, session, options, request_id)
         return run_agent_turn(websocket, project, session, content, request_id)
 
     async def perform_cancel(websocket: WebSocket | None, session: SessionRecord, request_id: str) -> SessionRecord:
@@ -2525,30 +2415,6 @@ def create_app(
                 pending["approval"] = pending_payload
             if review_payload:
                 pending["plan_review"] = review_payload
-            # 3) Team 断点续跑：needs_input 的任务不在事件里（它靠内存执行器），
-            #    补一条非 start 的 team.updated 让前端重建/更新团队卡。
-            resumable = session_resumable.get(session.id)
-            resumable_executor = resumable[1] if resumable else None
-            resumable_plan = getattr(resumable_executor, "plan", None)
-            if resumable_plan is not None:
-                waiting = [
-                    task
-                    for task in getattr(resumable_plan, "tasks", []) or []
-                    if str(getattr(task, "status", "")) == "needs_input"
-                ]
-                if waiting:
-                    replay_events.append(
-                        {
-                            "type": "team.updated",
-                            "sequence": snapshot["last_sequence"],
-                            "data": {
-                                "kind": "team_needs_input",
-                                "message": f"{len(waiting)} 个任务等待确认写入范围（/team resume …）",
-                                "plan": _plan_card_view(resumable_plan, mode="team"),
-                                "team_id": str(getattr(resumable_executor, "team_id", "") or ""),
-                            },
-                        }
-                    )
             snapshot["replay"] = replay_events
             snapshot["pending"] = pending
             # 审计计数改用全量 SQL COUNT：不再受回放窗口影响（方案 07 §4.6b）。
@@ -2673,8 +2539,13 @@ def create_app(
                 if turn_kind in {"plan", "team"} and not goal:
                     await send_event(websocket, "error", session, {"code": "missing_goal", "message": f"用法: /{turn_kind} <任务描述>", "request_id": request_id})
                     continue
-                if turn_kind == "team_resume" and options.get("error"):
-                    await send_event(websocket, "error", session, {"code": "invalid_resume", "message": str(options["error"]), "request_id": request_id})
+                if turn_kind == "team_resume":
+                    # 断点续跑已移除：明确拒绝，别让它落进 /team 被当成新任务重跑一遍
+                    await send_event(websocket, "error", session, {
+                        "code": "unknown_command",
+                        "message": "未知命令：/team resume（断点续跑已移除；如需重跑请直接发送 /team <任务>）",
+                        "request_id": request_id,
+                    })
                     continue
                 # slash 命令通道（plans/enhancement/01-web-slash-commands.md）：
                 # /cancel 别名等价于 cancel 消息（必须在运行中也可用）；其余命令
