@@ -1,4 +1,4 @@
-﻿"""OpenAI-compatible Chat Completions 实现（httpx SSE 流式 + tool calling 增量聚合）。
+"""OpenAI-compatible Chat Completions 实现（httpx SSE 流式 + tool calling 增量聚合）。
 
 所有 provider（GLM / DeepSeek / Kimi / OpenAI 兼容）共享此模板。
 """
