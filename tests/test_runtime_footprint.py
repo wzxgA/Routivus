@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import sqlite3
+import tracemalloc
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -21,6 +22,12 @@ from routivus.agent.react import AgentEvent
 from routivus.server import ProjectRegistry, create_app
 from routivus.server.config import ServerConfig
 from routivus.server.storage import WorkspaceStore
+from routivus.tool.builtin import (
+    IGNORED_DIRS,
+    MAX_GREP_FILE_BYTES,
+    MAX_READ_BYTES,
+    build_registry,
+)
 
 
 class _ScriptedAgent:
@@ -436,3 +443,108 @@ def test_startup_maintenance_purges_unread_events(tmp_path: Path) -> None:
 
     assert store.count_events(session.id, "message.delta") == 0
     assert store.count_events(session.id, "tool.started") == 1
+
+
+# ==========================================================================
+# §5.6 工具读取上限
+# ==========================================================================
+
+
+def _registry(base: Path):
+    return build_registry(base_dir=base)
+
+
+def test_ignored_dirs_cover_tool_artifacts() -> None:
+    """测试产物目录不再被扫 —— 它们曾让 grep 白读上百 MB（90 MB 的模型文件）。"""
+    for name in (".routivus-sem-test", ".pytest-tmp", ".pytest-opt", ".mypy_cache", "node_modules", ".git"):
+        assert name in IGNORED_DIRS, name
+
+
+def test_read_file_rejects_binary_without_decoding(tmp_path: Path) -> None:
+    blob = tmp_path / "model.onnx"
+    blob.write_bytes(b"\x00\x01\x02" + b"\xff" * 4096)
+
+    result = _registry(tmp_path).execute("read_file", {"path": "model.onnx"})
+
+    assert not result.ok
+    assert "二进制" in result.error
+    assert str(blob.stat().st_size) in result.error
+
+
+def test_read_file_small_file_still_reports_total_lines(tmp_path: Path) -> None:
+    """小文件保持原行为（报告总行数 + 显示区间），只是不再整读。"""
+    target = tmp_path / "note.txt"
+    target.write_text("\n".join(f"line {i}" for i in range(1, 11)) + "\n", encoding="utf-8")
+
+    result = _registry(tmp_path).execute("read_file", {"path": "note.txt", "offset": 3, "limit": 2})
+
+    assert result.ok
+    assert "共 10 行" in result.output
+    assert "3→line 3" in result.output and "4→line 4" in result.output
+    assert "5→" not in result.output
+
+
+def test_read_file_memory_bounded_on_large_file(tmp_path: Path) -> None:
+    """核心断言：内存峰值只与"要显示的行数"有关，与文件多大无关。
+
+    改造前是"整读 → errors=replace 解码 → splitlines"：3 MB 的文件会同时产生
+    解码字符串、每行一个 str 对象、行列表三份内存，峰值能到几十 MB。现在超过
+    MAX_READ_BYTES 的文本文件读满所需行数就停，峰值是个常数。
+    """
+    big = tmp_path / "big.log"
+    with big.open("w", encoding="utf-8") as handle:
+        for _ in range(100_000):  # 每行 31 字节 → 约 3 MB，大于 MAX_READ_BYTES
+            handle.write("x" * 30 + "\n")
+    assert big.stat().st_size > MAX_READ_BYTES
+
+    tracemalloc.start()
+    try:
+        result = _registry(tmp_path).execute("read_file", {"path": "big.log", "limit": 50})
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert result.ok
+    # 提前停读：没有为了"共 N 行"把 3 MB 读完
+    assert "读到第 50 行即停" in result.output
+    assert peak < 2 * 1024 * 1024
+
+
+def test_grep_skips_binary_and_oversize(tmp_path: Path) -> None:
+    """含匹配内容的二进制 / 超大文件也要跳过，不能因为"能匹配上"就整个读进来。"""
+    (tmp_path / "keep.py").write_text("needle here\n", encoding="utf-8")
+    (tmp_path / "blob.bin").write_bytes(b"\x00needle\x00")
+    big = tmp_path / "big.txt"
+    with big.open("w", encoding="utf-8") as handle:
+        handle.write("needle\n")
+        handle.seek(MAX_GREP_FILE_BYTES + 1)
+        handle.write("x")
+
+    result = _registry(tmp_path).execute("grep_code", {"pattern": "needle"})
+
+    assert result.ok
+    assert "keep.py:1" in result.output
+    assert "blob.bin" not in result.output
+    assert "big.txt" not in result.output
+
+
+def test_grep_reports_skipped_count(tmp_path: Path) -> None:
+    (tmp_path / "blob.bin").write_bytes(b"\x00needle\x00")
+
+    result = _registry(tmp_path).execute("grep_code", {"pattern": "needle"})
+
+    assert result.ok
+    assert "跳过 1 个" in result.output
+
+
+def test_grep_does_not_enter_ignored_dirs(tmp_path: Path) -> None:
+    hidden = tmp_path / ".routivus-sem-test"
+    hidden.mkdir()
+    (hidden / "model.bin").write_bytes(b"\x00needle\x00")
+    (tmp_path / "ok.py").write_text("needle\n", encoding="utf-8")
+
+    result = _registry(tmp_path).execute("grep_code", {"pattern": "needle"})
+
+    assert result.ok
+    assert "ok.py:1" in result.output
+    assert ".routivus-sem-test" not in result.output

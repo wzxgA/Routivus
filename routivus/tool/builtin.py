@@ -23,10 +23,26 @@ from routivus.web.models import WebConfig
 from routivus.web.search import WebSearchService
 from routivus.skill.registry import SkillRegistry
 
-IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".pytest_cache", "dist", "build", ".idea", ".vscode"}
+IGNORED_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv", ".pytest_cache", "dist", "build", ".idea", ".vscode",
+    # 测试 / 工具链产物（Optimization 01 §5.6）：上面那份名单漏掉了这些，于是项目里
+    # 实际存在的 `.routivus-sem-test/`（含 90 MB 模型文件）与 `.pytest-tmp/` 会被
+    # grep_code / glob_files 一并扫进去。这里是**按目录名精确匹配**（不是 glob），
+    # 所以只列确定的工具产物目录名，不猜。
+    ".pytest-tmp", ".pytest-opt", ".routivus-sem-test", ".mypy_cache", ".ruff_cache",
+    ".tox", ".nox", ".cache", ".eggs", ".next", ".turbo", ".parcel-cache", "htmlcov",
+}
 DEFAULT_TIMEOUT = 60
 MAX_GREP_RESULTS = 200
 MAX_LIST_ENTRIES = 500
+
+# 读取保护（Optimization 01 §5.6）。此前 `read_file` / `grep_code` 都是
+# "整读 → errors="replace" 解码 → splitlines()"，而项目里可能躺着 90 MB 的模型文件：
+# 字节被解码成字符串时放大 2~4 倍，splitlines 再复制一份行列表，峰值能顶到几 GB。
+# 三道闸：二进制嗅探（根本不解码）、单文件大小上限、逐行流式（内存只与输出行数有关）。
+MAX_READ_BYTES = 2 * 1024 * 1024  # read_file：超过它就不再为"共 N 行"读到底
+MAX_GREP_FILE_BYTES = 4 * 1024 * 1024  # grep_code：超过它整份跳过
+BINARY_SNIFF_BYTES = 8192  # 嗅探窗口（与 server/files.py 的同名常量同口径）
 
 
 def build_registry(
@@ -293,22 +309,62 @@ def _relpath(base: Path, path: str) -> str:
 
 # ---------- 工具实现 ----------
 
+def _is_binary_file(path: Path, *, sniff: int = BINARY_SNIFF_BYTES) -> bool:
+    """按首块字节判断是否二进制（含 NUL 即认定）。
+
+    只看字节、不看后缀：后缀可以撒谎，而 NUL 在文本里几乎不会出现。读不到时保守
+    返回 False —— 交给后面的文本读取去报 OSError，不在这里吞掉真实错误。
+    """
+    try:
+        with path.open("rb") as handle:
+            return b"\x00" in handle.read(sniff)
+    except OSError:
+        return False
+
+
 def _read_file(base: Path, args: dict) -> ToolResult:
     path = _resolve(base, str(args.get("path", "")))
     if not path.is_file():
         return ToolResult(tool_call_id="", name="read_file", ok=False, error=f"文件不存在: {path}")
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        size = path.stat().st_size
+    except OSError as e:
+        return ToolResult(tool_call_id="", name="read_file", ok=False, error=str(e))
+    if _is_binary_file(path):
+        # 不解码：二进制经 errors="replace" 会被撑成 2~4 倍的字符串，且对模型没意义
+        return ToolResult(
+            tool_call_id="", name="read_file", ok=False,
+            error=f"二进制文件（{size} 字节），不支持文本读取: {path}",
+        )
+
+    offset = max(1, int(args.get("offset", 1)))
+    limit = max(1, int(args.get("limit", 500)))
+    want_until = offset + limit - 1
+
+    # 逐行流式：内存只与"要显示的行数"有关，与文件多大无关。
+    # （此前是整读 + splitlines 再切片：读 90 MB 只为输出 500 行。）
+    selected: list[str] = []
+    total_lines: int | None = 0  # None 表示未知——大文件提前停读，见下面的分支
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for lineno, raw in enumerate(handle, start=1):
+                total_lines = lineno
+                if offset <= lineno <= want_until:
+                    selected.append(raw.rstrip("\r\n"))
+                elif lineno > want_until and size > MAX_READ_BYTES:
+                    # 要显示的行已经取全。小文件继续读到尾，只是为了报告"共 N 行"；
+                    # 大文件不值得为一个行数白读几十 MB。
+                    total_lines = None
+                    break
     except OSError as e:
         return ToolResult(tool_call_id="", name="read_file", ok=False, error=str(e))
 
-    lines = text.splitlines()
-    offset = max(1, int(args.get("offset", 1)))
-    limit = max(1, int(args.get("limit", 500)))
-    selected = lines[offset - 1 : offset - 1 + limit]
     numbered = "\n".join(f"{i}→{line}" for i, line in enumerate(selected, start=offset))
-    header = f"文件: {path}（共 {len(lines)} 行，显示 {offset}-{offset + len(selected) - 1}）\n"
-    return ToolResult(tool_call_id="", name="read_file", ok=True, output=header + numbered)
+    if total_lines is None:
+        head = f"文件: {path}（大于 {MAX_READ_BYTES // (1024 * 1024)} MB，读到第 {want_until} 行即停）"
+    else:
+        head = f"文件: {path}（共 {total_lines} 行，显示 {offset}-{offset + len(selected) - 1}）"
+    return ToolResult(tool_call_id="", name="read_file", ok=True, output=f"{head}\n{numbered}")
 
 
 def _write_file(base: Path, args: dict) -> ToolResult:
@@ -371,24 +427,38 @@ def _grep_code(base: Path, args: dict) -> ToolResult:
 
     hits: list[str] = []
     scanned = 0
+    skipped = 0
     for filepath in globlib.glob(str(root / file_glob), recursive=True):
         p = Path(filepath)
         if not p.is_file() or any(part in IGNORED_DIRS for part in p.parts):
             continue
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            if p.stat().st_size > MAX_GREP_FILE_BYTES:
+                skipped += 1
+                continue
         except OSError:
             continue
-        scanned += 1
+        if _is_binary_file(p):
+            # 二进制直接跳过：解码它要放大 2~4 倍内存，而它的匹配结果对模型没意义
+            skipped += 1
+            continue
         rel = _relpath(base, filepath)
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            if regex.search(line):
-                hits.append(f"{rel}:{lineno}: {line.strip()}")
-                if len(hits) >= MAX_GREP_RESULTS:
-                    hits.append(f"... (结果超过 {MAX_GREP_RESULTS} 条已截断)")
-                    return ToolResult(tool_call_id="", name="grep_code", ok=True, output="\n".join(hits))
+        try:
+            # 逐行流式：不再把整个文件读成字符串再 splitlines —— 那会同时占住
+            # "原始字节 + 解码后的字符串 + 行列表" 三份内存，文件一大就是几倍。
+            with p.open("r", encoding="utf-8", errors="replace") as handle:
+                for lineno, line in enumerate(handle, start=1):
+                    if regex.search(line):
+                        hits.append(f"{rel}:{lineno}: {line.strip()}")
+                        if len(hits) >= MAX_GREP_RESULTS:
+                            hits.append(f"... (结果超过 {MAX_GREP_RESULTS} 条已截断)")
+                            return ToolResult(tool_call_id="", name="grep_code", ok=True, output="\n".join(hits))
+        except (OSError, UnicodeError):
+            continue
+        scanned += 1
     if not hits:
-        return ToolResult(tool_call_id="", name="grep_code", ok=True, output=f"(扫描 {scanned} 个文件，无匹配)")
+        note = f"，跳过 {skipped} 个二进制 / 超大文件" if skipped else ""
+        return ToolResult(tool_call_id="", name="grep_code", ok=True, output=f"(扫描 {scanned} 个文件{note}，无匹配)")
     return ToolResult(tool_call_id="", name="grep_code", ok=True, output="\n".join(hits))
 
 
