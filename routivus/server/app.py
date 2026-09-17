@@ -12,7 +12,7 @@ import sqlite3
 import tempfile
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -464,8 +464,9 @@ _ROUTER_EVENT_TYPE = "router.updated"
 # （`list_card_events` 的类型过滤正好给它一个独立窗口，不会被卡片事件挤掉）。
 _TEAM_SNAPSHOT_EVENT = "team.snapshot"
 
-# 卡片回放窗口：按类型过滤后取最近 N 条。事件表里 message.delta 占绝对多数
-# （每个 token 一行），全量窗口会被流式增量挤占，长会话重连会丢最新卡片（07 §4.6b）。
+# 卡片回放窗口：按类型过滤后取最近 N 条。高频事件已不再挤占窗口——message.delta
+# 改为只广播、不落库（Optimization 01 §5.1），此前它每 token 一条会把卡片挤出窗口，
+# 长会话重连就丢最新卡片（07 §4.6b）。
 _REPLAY_CARD_LIMIT = 1000
 
 # 思考段落库上限（字符）：超出截断并标注。只影响展示，不进 agent 上下文（07 §4.9）。
@@ -606,6 +607,33 @@ def _event_payload(event: EventRecord) -> dict[str, Any]:
     }
 
 
+# 只广播、不落库的事件类型（plans/Optimization/01-runtime-resource-footprint.md §5.1）。
+# 判定标准是"落库之后无人读"：它们都不在 `_REPLAY_EVENT_TYPES` 里（重连回放用不上），
+# 正文也已由 `message.segment` 落到 messages 表，前端只在 WS 实时消费。
+# `message.delta` 每 token 一条，占事件表条数的 73%，是磁盘 IOPS 的主因。
+_EPHEMERAL_EVENT_TYPES = frozenset({"message.delta"})
+
+
+def _ephemeral_payload(
+    event_type: str, session: SessionRecord, data: dict[str, Any] | None
+) -> dict[str, Any]:
+    """瞬时事件的载荷：字段与 `_event_payload` 对齐，但没有 event_id / sequence。
+
+    `sequence` 为 None 是刻意的：前端 `ws/sessionSocket.ts` 只在 sequence 是 number 时
+    参与去重与 lastSequence 推进，缺失即直接透传——正是"不占序号"想要的语义。该处是
+    **严格递增**检测而非连续性校验，所以序号出现空洞也不影响后续事件。
+    """
+    return {
+        "type": event_type,
+        "event_id": "",
+        "sequence": None,
+        "session_id": session.id,
+        "project_id": session.project_id,
+        "occurred_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+        "data": data or {},
+    }
+
+
 def _build_default_agent(
     project: Any,
     session: SessionRecord,
@@ -708,6 +736,14 @@ async def _terminal_lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
             await terminal.close("server_shutdown")
         except Exception:  # pragma: no cover - 退出路径尽力而为
             logger.debug("terminal shutdown failed terminal_id=%s", terminal.spec.terminal_id, exc_info=True)
+    # 共享长连接随进程收尾。不显式关也不影响功能（OS 会回收），但关掉能让 -wal/-shm
+    # 干净落盘，也避免个别平台在进程退出时留下句柄告警（Optimization 01 §5.2）。
+    store = getattr(app.state, "workspace_store", None)
+    if store is not None:
+        try:
+            store.close()
+        except Exception:  # pragma: no cover - 退出路径尽力而为
+            logger.debug("workspace store close failed", exc_info=True)
 
 
 def create_app(
@@ -1705,8 +1741,21 @@ def create_app(
         if not connections[session_id]:
             connections.pop(session_id, None)
 
-    async def send_event(websocket: WebSocket | None, event_type: str, session: SessionRecord, data: dict[str, Any] | None = None) -> None:
-        payload = await emit(event_type, session, data)
+    async def send_event(
+        websocket: WebSocket | None,
+        event_type: str,
+        session: SessionRecord,
+        data: dict[str, Any] | None = None,
+        *,
+        persist: bool = True,
+    ) -> None:
+        # persist=False：只广播、不落库（见 `_EPHEMERAL_EVENT_TYPES`）。高频流式增量
+        # 走这条路，省掉"每条一次完整事务"——它们占了事件表 73% 的行数，且没有读者。
+        payload = (
+            await emit(event_type, session, data)
+            if persist
+            else _ephemeral_payload(event_type, session, data)
+        )
         peers = list(connections.get(session.id, []))
         if not peers and websocket is not None:
             peers = [websocket]
@@ -2021,7 +2070,15 @@ def create_app(
             return payload
 
         async def emit(self, event_type: str, data: dict[str, Any]) -> None:
-            await send_event(self.websocket, event_type, self.session, {**data, "request_id": self.request_id})
+            # 流式增量只广播、不落库（Optimization 01 §5.1）：它占事件表条数的 73%，
+            # 却没有任何读取方——不在重连回放类型里，前端也只在 WS 上实时消费。
+            await send_event(
+                self.websocket,
+                event_type,
+                self.session,
+                {**data, "request_id": self.request_id},
+                persist=event_type not in _EPHEMERAL_EVENT_TYPES,
+            )
 
         async def _flush_segment(self, source: str) -> None:
             """把某来源的当前段收尾：落库 + 广播 message.segment（先落库、后发事件）。
@@ -2657,8 +2714,9 @@ def create_app(
             # 卡片恢复（plans/enhancement 的重连方案）：
             # 1) replay = 历史里的卡片类事件，前端按序喂给同一套 reducer；
             # 2) pending = 内存桥里仍挂起的审批 / 计划审阅，恢复成"可继续应答"的卡片。
-            # 回放窗口按类型取"最近 N 张卡片"：事件表里 message.delta 占绝对多数，
-            # 全量窗口会被流式增量挤占，长会话重连会丢最新卡片（方案 07 §4.6b）。
+            # 回放窗口按类型取"最近 N 张卡片"：高频事件不再挤占窗口（message.delta 已
+            # 改为只广播、不落库，Optimization 01 §5.1），长会话重连仍能拿到最新卡片
+            # （方案 07 §4.6b）。
             snapshot["last_sequence"] = workspace_store.latest_event_sequence(session.id)
             replay_events = _replay_card_events(
                 workspace_store.list_card_events(

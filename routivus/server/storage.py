@@ -154,15 +154,56 @@ class WorkspaceStore:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path).expanduser()
         self._lock = RLock()
+        # 共享长连接（惰性建立，见 `_connect`）。全部数据访问都在 `self._lock` 串行化
+        # 之下，所以单连接是安全的；每次访问新建连接的固定开销实测占单次事务的 62%
+        # （9.0 ms → 3.4 ms，见 plans/Optimization/01-runtime-resource-footprint.md §5.2）。
+        self._conn: sqlite3.Connection | None = None
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=5.0)
+    def _open(self) -> sqlite3.Connection:
+        # check_same_thread=False：连接跨线程复用（创建它的可能是启动线程，用的是
+        # 事件循环线程），互斥改由 self._lock 保证 —— 这也是它比 sqlite3 自带的
+        # 线程校验更严格的地方（后者只保证"同一线程"，不保证"同时只有一个"）。
+        conn = sqlite3.connect(self.db_path, timeout=5.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
+
+    def _connect(self) -> sqlite3.Connection:
+        """返回共享长连接。签名与"每次新建"时代一致，调用点无需改动。
+
+        `with conn` 仍是事务上下文（正常退出 commit、异常 rollback），只是不再承担
+        "关闭连接"的职责。**由此得出一条硬约束：不允许嵌套 `with self._connect()`**
+        —— 内层退出时会把外层尚未提交的事务一并提交。原实现里唯一的嵌套
+        （`count_tool_failures` 的 json1 回退分支）已改为在连接块之外执行。
+        """
+        conn = self._conn
+        if conn is not None:
+            try:
+                # 一次纯内存探活：长连接若因磁盘错误 / 被外部关闭而失效，不重建的话
+                # 后续每个请求都会连带失败。调用方此时已持 _lock，重建是串行的。
+                conn.execute("SELECT 1")
+                return conn
+            except sqlite3.Error:
+                self._conn = None
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+        self._conn = self._open()
+        return self._conn
+
+    def close(self) -> None:
+        """关闭共享连接（进程退出时调用）。关闭后再访问会自动重建，不会失效。"""
+        with self._lock:
+            conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
 
     def _initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -475,9 +516,11 @@ class WorkspaceStore:
     ) -> list[EventRecord]:
         """最近 limit 条指定类型的卡片事件，按 sequence 正序返回。
 
-        事件表里 message.delta 占绝对多数（每个 token 一行），按类型过滤后再取
-        "最近 N 条"，回放窗口才不会被流式增量挤占——否则长会话重连后丢最新卡片
-        （方案 07 §4.6b）。无匹配类型时返回空表。
+        按类型过滤后再取"最近 N 条"，回放窗口才不会被高频事件挤占——否则长会话
+        重连后丢最新卡片（方案 07 §4.6b）。历史上 message.delta 占事件表的绝大多数
+        （每个 token 一行），现已改为**只广播、不落库**（Optimization 01 §5.1）；
+        类型过滤仍然保留：老库里还存有大量 delta，且将来任何高频事件都不该挤掉卡片。
+        无匹配类型时返回空表。
         """
         types = tuple(dict.fromkeys(str(item) for item in event_types if str(item)))
         if not types:
@@ -523,6 +566,7 @@ class WorkspaceStore:
 
     def count_tool_failures(self, session_id: str) -> int:
         """tool.completed 且 ok=false 的全量计数；json1 不可用时退回 Python 扫描。"""
+        row = None
         with self._lock, self._connect() as conn:
             try:
                 row = conn.execute(
@@ -531,10 +575,14 @@ class WorkspaceStore:
                     AND COALESCE(json_extract(data_json, '$.ok'), 1) = 0""",
                     (session_id,),
                 ).fetchone()
-                return int(row[0])
             except sqlite3.OperationalError:
-                records = self.list_card_events(session_id, ("tool.completed",), limit=1000)
-                return sum(1 for item in records if not bool(item.data.get("ok", False)))
+                row = None  # json1 不可用，走下面的 Python 回退
+        if row is not None:
+            return int(row[0])
+        # 回退必须在连接块**之外**：共享长连接下，嵌套 `with self._connect()` 会让
+        # 内层退出时提前提交外层事务（见 `_connect` 的文档串）。
+        records = self.list_card_events(session_id, ("tool.completed",), limit=1000)
+        return sum(1 for item in records if not bool(item.data.get("ok", False)))
 
     def latest_session(self, project_id: str) -> SessionRecord | None:
         records = self.list_sessions(project_id, limit=1)
