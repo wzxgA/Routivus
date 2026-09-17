@@ -26,6 +26,57 @@ def _head_tail(text: str, limit: int) -> str:
     return text[:left] + marker + text[-right:]
 
 
+def _repair_tool_pairs(messages: list[Message]) -> list[Message]:
+    """补齐孤立的 tool 回执；这是发给模型的**视图层**修补，不写回 history。
+
+    背景：`ReActAgent.run` 是"先把 assistant(tool_calls) 记进 history，执行完工具再补
+    tool 消息"。所以取消 / 异常落在审批、提问、工具执行这三处 await 上时，history 末尾
+    会剩下没有回执的 tool_calls——而 OpenAI 兼容 API 要求每个 `tool_call_id` 都必须有
+    对应的 tool 消息，缺一条就整个请求被拒：
+
+        insufficient tool messages following tool_calls message
+
+    又因为 agent 是会话级复用的（`server/app.py:ensure_session_agent`），这个残缺会被
+    之后每一轮原样发出去，表现为"点过一次停止，这个会话就永远 400"。
+
+    在这里修而不是逐个中断点补：一处覆盖所有中断路径（取消 / 异常 / 将来新增的），
+    也不用在每个 `try/except` 里记得收尾。**不写回 history** 是因为补出来的回执是虚构
+    的，混进"真实发生过的记录"会污染落库、展示与后续压缩。
+    """
+    repaired: list[Message] = []
+    index = 0
+    total = len(messages)
+    while index < total:
+        message = messages[index]
+        if message.role != "assistant" or not message.tool_calls:
+            # 反向孤立：前面没有 tool_calls 的 tool 消息同样会被 API 拒（400），丢掉
+            if message.role != "tool":
+                repaired.append(message)
+            index += 1
+            continue
+
+        repaired.append(message)
+        index += 1
+        # 吃掉紧随其后的 tool 消息，按 tool_call_id 建索引（同一 id 重复时保留第一条）
+        answered: dict[str, Message] = {}
+        while index < total and messages[index].role == "tool":
+            answered.setdefault(messages[index].tool_call_id, messages[index])
+            index += 1
+        for call in message.tool_calls:
+            existing = answered.get(call.id)
+            if existing is not None:
+                repaired.append(existing)
+            else:
+                repaired.append(
+                    Message(
+                        role="tool",
+                        content="ERROR: 工具未执行（本轮被中断、取消或异常终止）",
+                        tool_call_id=call.id,
+                    )
+                )
+    return repaired
+
+
 class ConversationContext:
     """保留兼容历史列表的上下文管理器。
 
@@ -88,7 +139,10 @@ class ConversationContext:
                 )
             )
         messages.extend(self.history[1:])
-        return messages
+        # 最后一个动作：补齐中断留下的孤立 tool_calls（见 _repair_tool_pairs）。
+        # 放在这里而不是 run() 里，是为了让 `estimate_request_tokens` 算的也是
+        # 真正会发出去的那一份（含补出来的回执）。
+        return _repair_tool_pairs(messages)
 
     def _message_tokens(self, message: Message) -> int:
         total = 4 + self.settings.estimate_tokens(message.content)
