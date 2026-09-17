@@ -93,6 +93,10 @@ interface MessageListProps {
   ) => void
   onAnswerAsk: (answers: Record<string, string> | null) => void
   onDecideReview: (action: 'execute' | 'cancel' | 'replan', feedback?: string) => void
+  /** Team 续跑（方案 15 §4.4）：带 scope 是补范围救任务，不带是整轮续跑。 */
+  onTeamResume: (options: { taskId?: string; scope?: string[] }) => void
+  /** 会话里刚说了句"继续"：把团队卡的按钮亮一下（不自动执行）。 */
+  resumeHint: boolean
 }
 
 /**
@@ -102,7 +106,15 @@ interface MessageListProps {
  * 可靠性前提：`sessionTimeline` 里所有对 item 的更新都是新建对象（`map` 出新对象、
  * `upsertTaskCard` 返回新数组），没有原地改字段——**原地改会让 memo 静默失效**。
  */
-const ChatRow = memo(function ChatRow({ item }: { item: TimelineItem }) {
+const ChatRow = memo(function ChatRow({
+  item,
+  onTeamResume,
+  resumeHint,
+}: {
+  item: TimelineItem
+  onTeamResume: (options: { taskId?: string; scope?: string[] }) => void
+  resumeHint: boolean
+}) {
   switch (item.kind) {
     case 'user':
       return <div className="msg-user">{item.content}</div>
@@ -145,7 +157,7 @@ const ChatRow = memo(function ChatRow({ item }: { item: TimelineItem }) {
     case 'plan':
       return <PlanCard payload={item.payload} />
     case 'team':
-      return <TeamCard payload={item.payload} />
+      return <TeamCard payload={item.payload} onResume={onTeamResume} highlight={resumeHint} />
     case 'router':
       // 换档卡（方案 14 §4.5）：只在档位变化 / 回落 / 失败 / 冻结 / 防降级时出现
       return <RouterCard item={item} />
@@ -161,11 +173,13 @@ export function MessageList({
   onResolveApproval,
   onAnswerAsk,
   onDecideReview,
+  onTeamResume,
+  resumeHint,
 }: MessageListProps) {
   return (
     <>
       {items.map((item) => (
-        <ChatRow key={item.id} item={item} />
+        <ChatRow key={item.id} item={item} onTeamResume={onTeamResume} resumeHint={resumeHint} />
       ))}
       {approval ? (
         <ApprovalCard

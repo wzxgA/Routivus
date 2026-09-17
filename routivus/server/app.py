@@ -358,7 +358,37 @@ def _wants_session_scope(payload: dict[str, Any]) -> bool:
 # 把 `agent_event` 这类内部结构、以及 ReviewResult 里的证据长文塞进每一帧。
 
 
-def _task_card_view(task: Any, *, mode: str) -> dict[str, Any]:
+def _scope_candidates(plan: Any, task: Any) -> list[str]:
+    """失败任务的写入范围候选（方案 15 §4.6）。
+
+    **只做保守的结构化提取**，不调 LLM、不从自由文本里正则抠路径——候选里出现一个
+    不存在的路径，用户点了只会被服务端拒掉，比"少几个候选"更糟。来源两处：
+
+    1. 该任务**已声明**的 read/write claims（它本来就是读这些才失败，扩成 write 是最
+       小合理猜测）；
+    2. 同计划里其它任务声明的 **write** 范围（参照同伴）。
+
+    候选 ≠ 授权：勾选与否由用户决定，服务端还会再过一遍资源策略校验。
+    """
+    out: list[str] = []
+
+    def add(pattern: Any) -> None:
+        text = str(pattern or "").replace("\\", "/").strip()
+        if text and text not in out:
+            out.append(text)
+
+    for claim in getattr(task, "resource_claims", None) or []:
+        add(getattr(claim, "pattern", ""))
+    for other in getattr(plan, "tasks", None) or []:
+        if other is task:
+            continue
+        for claim in getattr(other, "resource_claims", None) or []:
+            if str(getattr(claim, "access", "")) == "write":
+                add(getattr(claim, "pattern", ""))
+    return out[:8]
+
+
+def _task_card_view(task: Any, *, mode: str, plan: Any = None) -> dict[str, Any]:
     """单个子任务的卡片视图（PlanTask 与 TeamTask 共用基础字段）。"""
     view: dict[str, Any] = {
         "id": str(getattr(task, "id", "")),
@@ -375,6 +405,24 @@ def _task_card_view(task: Any, *, mode: str) -> dict[str, Any]:
         criteria = [str(item) for item in getattr(task, "acceptance_criteria", None) or []]
         if criteria:
             view["acceptance_criteria"] = criteria
+        # 断点续跑（方案 15 §4.5）：任务的资源声明要下发，前端才能渲染"允许修改范围"的
+        # 候选项；失败分类下沉到任务级，卡片能逐任务解释原因。全部是可选字段——
+        # 既有前端契约只增不改。
+        claims = getattr(task, "resource_claims", None) or []
+        if claims:
+            view["resource_claims"] = [
+                {
+                    "pattern": str(getattr(claim, "pattern", "")),
+                    "access": str(getattr(claim, "access", "read")),
+                }
+                for claim in claims
+            ]
+        category = str(getattr(task, "failure_category", "") or "")
+        if category:
+            view["failure_category"] = category
+        if bool(getattr(task, "needs_scope", False)):
+            view["needs_scope"] = True
+            view["scope_candidates"] = _scope_candidates(plan, task)
     return view
 
 
@@ -382,7 +430,10 @@ def _plan_card_view(plan: Any, *, mode: str) -> dict[str, Any]:
     """整份计划（Plan 与 TeamPlan 共用 goal / tasks / batches 三元组）。"""
     return {
         "goal": str(getattr(plan, "goal", "")),
-        "tasks": [_task_card_view(task, mode=mode) for task in getattr(plan, "tasks", None) or []],
+        "tasks": [
+            _task_card_view(task, mode=mode, plan=plan)
+            for task in getattr(plan, "tasks", None) or []
+        ],
         "batches": [
             [str(task_id) for task_id in batch] for batch in getattr(plan, "batches", None) or []
         ],
@@ -400,6 +451,12 @@ _REPLAY_EVENT_TYPES = (
 
 # router.updated 是状态类事件：回放里只保留最后一条（见 _replay_card_events）。
 _ROUTER_EVENT_TYPE = "router.updated"
+
+# Team 的可恢复快照（方案 15 §4.2）：任务图 + 各任务状态 + 续跑计数。**刻意不进**
+# `_REPLAY_EVENT_TYPES`——那是给前端重建卡片的，快照是服务端内部状态（前端只需
+# `team.updated`），全量回放它会白白撑大每帧载荷。读取时按类型取最近一条即可
+# （`list_card_events` 的类型过滤正好给它一个独立窗口，不会被卡片事件挤掉）。
+_TEAM_SNAPSHOT_EVENT = "team.snapshot"
 
 # 卡片回放窗口：按类型过滤后取最近 N 条。事件表里 message.delta 占绝对多数
 # （每个 token 一行），全量窗口会被流式增量挤占，长会话重连会丢最新卡片（07 §4.6b）。
@@ -447,7 +504,7 @@ def _task_card_payload(item: Any, *, mode: str) -> dict[str, Any]:
         data["batch"] = [str(task_id) for task_id in batch]
     task = getattr(item, "task", None)
     if task is not None:
-        data["task"] = _task_card_view(task, mode=mode)
+        data["task"] = _task_card_view(task, mode=mode, plan=plan)
     if mode == "team":
         data["team_id"] = str(getattr(item, "team_id", "") or "")
         agent_id = str(getattr(item, "agent_id", "") or "")
@@ -463,7 +520,52 @@ def _task_card_payload(item: Any, *, mode: str) -> dict[str, Any]:
         category = str(getattr(item, "failure_category", "") or "")
         if category:
             data["failure_category"] = category
+        # 断点续跑（方案 15 §4.4）：收尾事件带上"还能不能续、已续过几次"，
+        # 前端据此决定团队卡上要不要给「继续」按钮。
+        if bool(getattr(item, "resumable", False)):
+            data["resumable"] = True
+        count = int(getattr(item, "resume_count", 0) or 0)
+        if count:
+            data["resume_count"] = count
     return data
+
+
+def _parse_scope_claims(raw: Any) -> tuple[list[Any], str]:
+    """解析 `team_resume` 的 `scope`（方案 15 §4.7）→ (claims, error)。
+
+    接受 `["a/**", …]` 与 `[{pattern, access}, …]` 两种形态（后者便于前端带上
+    access）。**结构非法直接回错误**而不是当成空范围——空范围会被当成"这不是权限类
+    续跑"，把用户的意图悄悄换成另一种行为。
+    """
+    from routivus.agent.team import ResourceClaim
+
+    if raw is None:
+        return [], ""
+    if not isinstance(raw, list):
+        return [], "scope 必须是数组"
+    claims: list[Any] = []
+    for item in raw:
+        if isinstance(item, str):
+            pattern, access = item.strip(), "write"
+        elif isinstance(item, dict):
+            pattern = str(item.get("pattern", "")).strip()
+            access = (str(item.get("access", "write")).strip().lower() or "write")
+        else:
+            return [], "scope 的每一项必须是字符串或 {pattern, access} 对象"
+        if not pattern:
+            continue
+        if access not in {"read", "write"}:
+            return [], f"未知的 access：{access}"
+        claims.append(ResourceClaim(pattern, access))
+    return claims, ""
+
+
+def _first_needs_scope_task(plan: Any) -> str:
+    """第一个"补个范围就能救"的失败任务（`needs_scope` 由执行器标记）。"""
+    for task in getattr(plan, "tasks", None) or []:
+        if bool(getattr(task, "needs_scope", False)) and str(getattr(task, "status", "")) == "failed":
+            return str(getattr(task, "id", "") or "")
+    return ""
 
 
 def _parse_task_command(content: str) -> tuple[str, str, dict[str, Any]]:
@@ -2158,6 +2260,17 @@ def create_app(
         except Exception as exc:
             await handle_turn_failure(websocket, session, request_id, exc, label="plan turn")
 
+    def _write_team_snapshot(session_id: str, project_id: str, data: dict[str, Any]) -> None:
+        """把执行器的可恢复快照落库（方案 15 §4.2）。
+
+        快照只是"能续跑"的附加能力：写失败只记日志，绝不打断正在跑的任务
+        （执行器那一侧也已经兜了异常）。
+        """
+        try:
+            workspace_store.append_event(session_id, project_id, _TEAM_SNAPSHOT_EVENT, data)
+        except Exception:  # noqa: BLE001 - 快照失败不影响任务
+            logger.warning("team snapshot 落库失败 session_id=%s", session_id, exc_info=True)
+
     async def run_team_turn(websocket: WebSocket | None, project: Any, session: SessionRecord, goal: str, request_id: str = "") -> None:
         """`/team <任务>`：Supervisor 调度隔离 Worker，并对结果做证据化审查。"""
         forwarder = _TurnForwarder(websocket, session, request_id)
@@ -2181,7 +2294,12 @@ def create_app(
 
             from routivus.agent.team import TeamExecutor
 
-            executor = TeamExecutor(**_executor_kwargs(agent), reviewer=review.review, project_root=Path(project.root_path))
+            executor = TeamExecutor(
+                **_executor_kwargs(agent),
+                reviewer=review.review,
+                project_root=Path(project.root_path),
+                on_snapshot=lambda data: _write_team_snapshot(session.id, project.id, data),
+            )
             async for event in executor.run(goal):
                 await forward_task_event(event, forwarder, mode="team")
             await forwarder.finish()
@@ -2190,6 +2308,108 @@ def create_app(
             raise
         except Exception as exc:
             await handle_turn_failure(websocket, session, request_id, exc, label="team turn")
+
+    async def run_team_resume_turn(
+        websocket: WebSocket | None,
+        project: Any,
+        session: SessionRecord,
+        payload: dict[str, Any],
+        request_id: str = "",
+    ) -> None:
+        """团队卡上的「继续」（方案 15 §4.4）：从快照重建任务图接着跑，**不重新规划**。
+
+        两种形态：
+        - 不带 `scope`：续跑整轮（非权限类失败 / 取消）——done 跳过、其余重跑；
+        - 带 `scope`：救那个"补个范围就能好"的任务，修好后自动接着跑剩余批次。
+
+        写入范围由**用户勾选**产生，这里只做协议形状校验；资源策略校验（越界 / 黑名单 /
+        只读升写）在执行器构造 Repairer 任务时再做一次——那是唯一进入执行的通路，
+        fail closed。
+        """
+        forwarder = _TurnForwarder(websocket, session, request_id)
+        try:
+            agent = await ensure_session_agent(project, session)
+            if agent is None:
+                await forwarder.close_with("failed", error="Agent 尚未配置", code="agent_unavailable")
+                return
+            missing = _missing_executor_deps(agent)
+            if missing:
+                await forwarder.close_with(
+                    "failed",
+                    error=f"当前 Agent 不支持团队模式（缺少 {', '.join(missing)}）",
+                    code="team_unavailable",
+                )
+                return
+
+            from routivus.agent.team import TeamExecutor, team_plan_from_snapshot
+
+            snapshots = workspace_store.list_card_events(session.id, (_TEAM_SNAPSHOT_EVENT,), limit=1)
+            if not snapshots:
+                await forwarder.close_with(
+                    "idle",
+                    error="没有可续跑的 Team 任务（需要先在本会话跑过一次 /team）",
+                    code="no_resumable_team",
+                )
+                return
+            data = snapshots[-1].data
+            plan = team_plan_from_snapshot(data)
+            if plan is None:
+                await forwarder.close_with(
+                    "idle", error="Team 快照不可解析，无法续跑", code="invalid_snapshot"
+                )
+                return
+
+            limit = max(0, int(getattr(agent.settings, "task_max_resumes", 3)))
+            resume_count = max(0, int(data.get("resume_count", 0) or 0))
+            if resume_count >= limit:
+                await forwarder.close_with(
+                    "idle",
+                    error=f"续跑次数已达上限（{limit} 次），请重新发起 /team",
+                    code="resume_quota_exceeded",
+                )
+                return
+
+            claims, scope_error = _parse_scope_claims(payload.get("scope"))
+            if scope_error:
+                await forwarder.close_with("idle", error=scope_error, code="invalid_scope")
+                return
+            instruction = str(payload.get("instruction", "") or "").strip()
+            task_id = str(payload.get("task_id", "") or "").strip()
+
+            bind_interactions(agent, session.id)
+            forwarder.set_attrs(**model_attrs(agent))  # 续跑同样记一份归因
+            executor = TeamExecutor(
+                **_executor_kwargs(agent),
+                # 续跑不重新规划，用不到计划审阅回调；任务级审查仍走 LLM（`_review` 的默认路径）。
+                reviewer=None,
+                project_root=Path(project.root_path),
+                team_id=str(data.get("team_id", "") or "") or None,
+                resume_plan=plan,
+                resume_count=resume_count,
+                on_snapshot=lambda snap: _write_team_snapshot(session.id, project.id, snap),
+            )
+
+            if claims:
+                target = task_id or _first_needs_scope_task(plan)
+                if not target:
+                    await forwarder.close_with(
+                        "idle",
+                        error="没有等待确认写入范围的任务；如需续跑失败任务，请直接点「继续」",
+                        code="no_pending_task",
+                    )
+                    return
+                stream = executor.resume_task_with_repair_scope(target, claims)
+            else:
+                stream = executor.resume(instruction)
+
+            async for event in stream:
+                await forward_task_event(event, forwarder, mode="team")
+            await forwarder.finish()
+        except asyncio.CancelledError:
+            await handle_turn_cancelled(websocket, session, request_id)
+            raise
+        except Exception as exc:
+            await handle_turn_failure(websocket, session, request_id, exc, label="team resume turn")
 
     def _turn_coroutine(
         websocket: WebSocket | None,
@@ -2511,6 +2731,23 @@ def create_app(
                     if not resolved:
                         await send_event(websocket, "error", session, {"code": "approval_not_accepted", "message": "该审批已不再等待应答", "request_id": request_id})
                     continue
+                if message_type == "team_resume":
+                    # 团队卡上的「继续」（方案 15 §4.4）：走与 /team 相同的互斥与幂等规则。
+                    task = running_tasks.get(session.id)
+                    if task and not task.done():
+                        await send_event(websocket, "error", session, {"code": "session_busy", "message": "会话正在运行", "request_id": request_id})
+                        continue
+                    if not request_is_new(session.id, request_id):
+                        await send_event(websocket, "error", session, {"code": "duplicate_request", "request_id": request_id})
+                        continue
+                    updated = workspace_store.update_session(session.id, status="running")
+                    if updated:
+                        session = updated
+                        await send_event(websocket, "session.status", session, {"status": "running", "request_id": request_id})
+                    running_tasks[session.id] = asyncio.create_task(
+                        run_team_resume_turn(websocket, project, session, payload, request_id)
+                    )
+                    continue
                 if message_type == "plan_decision":
                     if not request_is_new(session.id, request_id):
                         await send_event(websocket, "error", session, {"code": "duplicate_request", "request_id": request_id})
@@ -2540,10 +2777,11 @@ def create_app(
                     await send_event(websocket, "error", session, {"code": "missing_goal", "message": f"用法: /{turn_kind} <任务描述>", "request_id": request_id})
                     continue
                 if turn_kind == "team_resume":
-                    # 断点续跑已移除：明确拒绝，别让它落进 /team 被当成新任务重跑一遍
+                    # 续跑不再是命令行形态（方案 15 §2 非目标）：让用户在团队卡上点，
+                    # 那里能勾范围；否则它会被当成新任务重跑一遍，白烧一遍预算。
                     await send_event(websocket, "error", session, {
                         "code": "unknown_command",
-                        "message": "未知命令：/team resume（断点续跑已移除；如需重跑请直接发送 /team <任务>）",
+                        "message": "未知命令：/team resume（续跑请在团队卡上点「继续」，权限类失败可直接勾选允许修改的范围）",
                         "request_id": request_id,
                     })
                     continue

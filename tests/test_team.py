@@ -22,6 +22,7 @@ from routivus.agent.team import (
     normalize_team_tool_names,
     parse_review_output,
     parse_team_tasks,
+    team_plan_from_snapshot,
     validate_task_resource_policy,
 )
 from routivus.llm.client import LlmClient
@@ -793,3 +794,214 @@ async def test_team_failure_blocks_dependents_and_skips_done(tmp_path, settings)
     assert not any(event.kind in {"team_resume_requested", "task_needs_input"} for event in events)
     statuses = {task.id: task.status for task in executor._last_plan.tasks}
     assert statuses["t1"] == "failed" and statuses["t2"] == "blocked" and statuses["t3"] == "done"
+
+
+# ==========================================================================
+# 断点续跑（方案 15）：快照 / resume / 范围救援
+# ==========================================================================
+
+
+RESUME_PLAN = json.dumps({"tasks": [
+    {
+        "id": "t1", "title": "根任务", "description": "执行根任务", "deps": [],
+        "owner_role": "coder", "acceptance_criteria": ["成功"],
+    },
+    {
+        "id": "t2", "title": "依赖任务", "description": "执行依赖任务", "deps": ["t1"],
+        "owner_role": "coder", "acceptance_criteria": ["成功"],
+    },
+    {
+        "id": "t3", "title": "独立任务", "description": "执行独立任务", "deps": [],
+        "owner_role": "researcher", "allowed_tools": ["read_file"],
+        "resource_scope_mode": "read_discovery",
+        "resource_claims": [{"pattern": "README.md", "access": "read"}],
+        "acceptance_criteria": ["成功"],
+    },
+]}, ensure_ascii=False)
+
+
+class ScriptedPlanner(LlmClient):
+    """只回一份固定计划。Worker 与审查都由替身接管，所以不会有别的 LLM 调用。"""
+
+    def __init__(self, plan_json: str) -> None:
+        self.plan_json = plan_json
+        self.requests: list[list] = []
+
+    async def stream_chat(self, messages, tools=None) -> AsyncIterator[StreamEvent]:
+        self.requests.append(list(messages))
+        yield StreamEvent(kind="content", text=self.plan_json)
+        yield StreamEvent(kind="done")
+
+
+class _OkAgent:
+    def __init__(self) -> None:
+        self.messages = [Message(role="assistant", content="完成")]
+
+    async def run(self, prompt):
+        yield AgentEvent(kind="done")
+
+
+class _FailingAgent:
+    messages: list = []
+
+    async def run(self, prompt):
+        yield AgentEvent(kind="error", text="模拟 Worker 失败")
+
+
+class _FlakyFactory:
+    """指定任务第一次失败（模拟 Worker 挂），之后成功；其余任务直接成功。"""
+
+    def __init__(self, fail_ids: tuple[str, ...] = ("t1",)) -> None:
+        self.fail_ids = set(fail_ids)
+        self.calls: dict[str, int] = {}
+
+    def create(self, profile, task):
+        count = self.calls[task.id] = self.calls.get(task.id, 0) + 1
+        if task.id in self.fail_ids and count == 1:
+            return _FailingAgent()
+        return _OkAgent()
+
+
+async def _review_pass(task, artifacts):
+    return ReviewResult(task.id, "pass", [], [], ["通过"])
+
+
+async def test_snapshot_written_and_resume_skips_done(tmp_path, settings):
+    """快照在三个时机落盘且足以重建任务图；续跑跳过已完成、重跑失败与被阻塞的。"""
+    settings.plan_max_failures = 0
+    snapshots: list[dict] = []
+    factory = _FlakyFactory()
+    executor = TeamExecutor(
+        llm=ScriptedPlanner(RESUME_PLAN), tools=build_registry(base_dir=tmp_path),
+        settings=settings, reviewer=approve_team, task_reviewer=_review_pass,
+        agent_factory=factory, project_root=tmp_path, on_snapshot=snapshots.append,
+    )
+
+    first = await collect(executor, "改造检索层")
+    failed = next(event for event in first if event.kind == "team_failed")
+    assert failed.resumable is True and failed.resume_count == 0
+
+    reasons = [snap["reason"] for snap in snapshots]
+    assert reasons[0] == "started"
+    assert "batch" in reasons and reasons[-1] == "team_failed"
+    assert all(snap["team_id"] == executor.team_id for snap in snapshots)
+
+    rebuilt = team_plan_from_snapshot(snapshots[-1])
+    assert rebuilt is not None
+    assert [task.id for task in rebuilt.tasks] == ["t1", "t2", "t3"]
+    assert rebuilt.task_by_id("t1").status == "failed"
+    assert rebuilt.task_by_id("t2").status == "blocked"
+    assert rebuilt.task_by_id("t3").status == "done"
+
+    resumed = [event async for event in executor.resume()]
+    assert resumed[0].kind == "team_resume_requested"
+    assert "跳过 1 个已完成任务" in resumed[0].message
+    assert resumed[0].resume_count == 1
+    assert resumed[-1].kind == "team_done"
+    # 已完成的任务没有被重跑；失败的与被阻塞的都重跑了
+    assert factory.calls["t3"] == 1
+    assert factory.calls["t1"] == 2 and factory.calls["t2"] == 1
+
+
+async def test_resume_is_capped_by_quota(tmp_path, settings):
+    """配额（task_max_resumes）跨轮有效：用完就不再允许续跑。"""
+    settings.plan_max_failures = 0
+    settings.task_max_resumes = 1
+    factory = _FlakyFactory(fail_ids=())  # 首轮失败由审查结果制造
+    reviews = {"n": 0}
+
+    async def always_fail(task, artifacts):
+        reviews["n"] += 1
+        return ReviewResult(task.id, "fail", ["仍未通过"], ["继续修"], [])
+
+    executor = TeamExecutor(
+        llm=ScriptedPlanner(RESUME_PLAN), tools=build_registry(base_dir=tmp_path),
+        settings=settings, reviewer=approve_team, task_reviewer=always_fail,
+        agent_factory=factory, project_root=tmp_path,
+    )
+
+    first = await collect(executor, "改造检索层")
+    assert next(event for event in first if event.kind == "team_failed").resumable is True
+
+    second = [event async for event in executor.resume()]
+    terminal = next(event for event in second if event.kind == "team_failed")
+    assert terminal.resumable is False  # 配额已用完，卡上不该再给按钮
+
+    third = [event async for event in executor.resume()]
+    assert [event.kind for event in third] == ["team_failed"]
+    assert "上限" in third[0].message
+
+
+async def test_resume_with_repair_scope_rescues_task(tmp_path, settings):
+    """权限类失败：用户确认范围后只重跑那个任务，修好后自动接着跑完剩余批次。"""
+    plan = json.dumps({"tasks": [{
+        "id": "t1", "title": "改造分页", "description": "改造分页逻辑", "deps": [],
+        "owner_role": "coder", "allowed_tools": ["write_file"],
+        "resource_claims": [{"pattern": "a.txt", "access": "read"}],
+        "acceptance_criteria": ["通过"],
+    }]}, ensure_ascii=False)
+    reviews = {"n": 0}
+
+    async def review(task, artifacts):
+        reviews["n"] += 1
+        if reviews["n"] == 1:
+            return ReviewResult(task.id, "fail", ["分页边界没处理"], ["修复边界"], [])
+        return ReviewResult(task.id, "pass", [], [], ["通过"])
+
+    executor = TeamExecutor(
+        llm=ScriptedPlanner(plan), tools=build_registry(base_dir=tmp_path),
+        settings=settings, reviewer=approve_team, task_reviewer=review,
+        agent_factory=_FlakyFactory(fail_ids=()), project_root=tmp_path,
+    )
+
+    first = await collect(executor, "改造分页")
+    task = executor._last_plan.task_by_id("t1")
+    assert task.status == "failed"
+    assert task.failure_category == "repair_scope_missing"
+    assert task.needs_scope is True  # 前端据此给"选择修改范围"的入口
+    assert not any(event.kind == "repair_requested" for event in first)
+
+    rescued = [event async for event in executor.resume_task_with_repair_scope(
+        "t1", [ResourceClaim("a.txt", "write")]
+    )]
+    kinds = [event.kind for event in rescued]
+    assert "repair_requested" in kinds
+    assert any(event.kind == "agent_started" and event.role == "repairer" for event in rescued)
+    assert rescued[-1].kind == "team_done"
+    assert task.status == "done" and task.needs_scope is False
+    assert task.repair_attempts_started == 1
+
+
+async def test_resume_with_unsafe_or_empty_scope_is_rejected(tmp_path, settings):
+    """越界范围与空范围都 fail closed：任务保持失败、不启动 Repairer、仍可再救。"""
+    plan = json.dumps({"tasks": [{
+        "id": "t1", "title": "改造分页", "description": "改造分页逻辑", "deps": [],
+        "owner_role": "coder", "allowed_tools": ["write_file"],
+        "resource_claims": [{"pattern": "a.txt", "access": "read"}],
+        "acceptance_criteria": ["通过"],
+    }]}, ensure_ascii=False)
+
+    async def review_fail(task, artifacts):
+        return ReviewResult(task.id, "fail", ["分页边界没处理"], ["修复边界"], [])
+
+    executor = TeamExecutor(
+        llm=ScriptedPlanner(plan), tools=build_registry(base_dir=tmp_path),
+        settings=settings, reviewer=approve_team, task_reviewer=review_fail,
+        agent_factory=_FlakyFactory(fail_ids=()), project_root=tmp_path,
+    )
+
+    await collect(executor, "改造分页")
+
+    unsafe = [event async for event in executor.resume_task_with_repair_scope(
+        "t1", [ResourceClaim("../outside.txt", "write")]
+    )]
+    assert unsafe[-1].kind == "task_failed"
+    assert unsafe[-1].failure_category == "repair_scope_unsafe"
+    assert not any(event.kind == "repair_requested" for event in unsafe)
+
+    empty = [event async for event in executor.resume_task_with_repair_scope("t1", [])]
+    assert empty[-1].failure_category == "repair_scope_missing"
+
+    task = executor._last_plan.task_by_id("t1")
+    assert task.status == "failed"
+    assert task.needs_scope is True  # 还能用合法的范围再救一次

@@ -166,6 +166,8 @@ export function ChatView({
                 onResolveApproval={timeline.resolveApproval}
                 onAnswerAsk={timeline.answerAsk}
                 onDecideReview={timeline.resolvePlanReview}
+                onTeamResume={timeline.resumeTeam}
+                resumeHint={timeline.resumeHint}
               />
             </ErrorBoundary>
           )}

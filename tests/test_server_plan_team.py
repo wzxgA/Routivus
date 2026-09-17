@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from routivus.agent.plan import Plan, PlanEvent, PlanTask, ReviewDecision
 from routivus.agent.react import AgentEvent
-from routivus.agent.team import TeamEvent, TeamPlan, TeamTask
+from routivus.agent.team import ResourceClaim, TeamEvent, TeamPlan, TeamTask
 from routivus.server import ProjectRegistry, create_app
 from routivus.server.config import ServerConfig
 from routivus.server.storage import WorkspaceStore
@@ -108,14 +108,23 @@ class _ScriptedPlanExecutor:
 
 
 class _ScriptedTeamExecutor:
-    """替身 TeamExecutor：批准后直接判任务失败（不再有 needs_input 等待）。"""
+    """替身 TeamExecutor：批准后直接判任务失败（不再有 needs_input 等待）。
+
+    续跑相关（方案 15）：`resume()` / `resume_task_with_repair_scope()` 记录调用参数，
+    并回放一条恢复事件 + 终态，用来验证服务端的接线（真正的语义在 test_team.py）。
+    """
 
     instances: list["_ScriptedTeamExecutor"] = []
 
     def __init__(self, **kwargs: Any) -> None:
         self.reviewer = kwargs.get("reviewer")
         self.project_root = kwargs.get("project_root")
+        self.plan = kwargs.get("resume_plan")
+        self.resume_count = int(kwargs.get("resume_count", 0) or 0)
+        self.on_snapshot = kwargs.get("on_snapshot")
         self.decision: ReviewDecision | None = None
+        self.resume_instructions: list[str] = []
+        self.rescued: list[tuple[str, list[str]]] = []
         _ScriptedTeamExecutor.instances.append(self)
 
     async def run(self, goal: str) -> AsyncIterator[TeamEvent]:
@@ -141,6 +150,26 @@ class _ScriptedTeamExecutor:
             failure_category="repair_scope_missing",
             message="无法安全确定修改范围",
         )
+
+    async def resume(self, instruction: str = "") -> AsyncIterator[TeamEvent]:
+        self.resume_instructions.append(instruction)
+        plan = self.plan or _team_plan("resume")
+        yield TeamEvent(
+            kind="team_resume_requested", team_id="team-1", plan=plan,
+            message="从断点继续", resume_count=self.resume_count + 1,
+        )
+        yield TeamEvent(kind="team_done", team_id="team-1", plan=plan, message="Team 完成")
+
+    async def resume_task_with_repair_scope(
+        self, task_id: str, claims: list[Any]
+    ) -> AsyncIterator[TeamEvent]:
+        self.rescued.append((task_id, [claim.pattern for claim in claims]))
+        plan = self.plan or _team_plan("resume")
+        yield TeamEvent(
+            kind="team_resume_requested", team_id="team-1", plan=plan, task=plan.tasks[0],
+            role="repairer", message=f"已确认修复范围：{task_id}",
+        )
+        yield TeamEvent(kind="team_done", team_id="team-1", plan=plan, message="Team 完成")
 
 
 @pytest.fixture(autouse=True)
@@ -505,6 +534,160 @@ def test_team_requires_goal_and_rejects_bare_resume(tmp_path: Path) -> None:
         assert _error_code(no_goal) == "missing_goal"
 
     assert client.get(f"/api/sessions/{session['id']}/messages").json() == []
+
+
+# ==========================================================================
+# Team 断点续跑（方案 15）：快照 → 团队卡「继续」→ 执行器
+# ==========================================================================
+
+
+class _PendingTask:
+    """占位"正在跑的轮次"：服务端的互斥判断只看 `done()`。"""
+
+    def done(self) -> bool:
+        return False
+
+
+def _insert_snapshot(
+    client: TestClient,
+    project: dict,
+    session: dict,
+    *,
+    resume_count: int = 0,
+    needs_scope: bool = False,
+) -> None:
+    """往 events 表塞一条可恢复快照（服务端读取时取最近一条）。"""
+    from routivus.agent.team import TeamPlan, TeamTask, team_snapshot_data
+
+    plan = TeamPlan(
+        goal="改造检索层",
+        tasks=[
+            TeamTask(
+                "t1", "改造检索层", "改造检索层", [], owner_role="coder",
+                status="failed", failure_category="repair_scope_missing",
+                needs_scope=needs_scope, result="无法安全确定修改范围",
+                resource_claims=[ResourceClaim("routivus/web/**", "read")],
+            ),
+            TeamTask("t2", "补测试", "补测试", ["t1"], owner_role="tester", status="pending"),
+        ],
+        batches=[["t1"], ["t2"]],
+    )
+    client.app.state.workspace_store.append_event(
+        session["id"],
+        project["id"],
+        "team.snapshot",
+        team_snapshot_data(plan, team_id="team-9", resume_count=resume_count),
+    )
+
+
+def test_team_resume_without_snapshot_is_rejected(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    session = _session(client, project)
+
+    with client.websocket_connect(_ws(project, session)) as socket:
+        socket.receive_json()
+        socket.send_json({"type": "team_resume", "request_id": "r1"})
+        events = _receive_until(socket, _is_error("no_resumable_team"))
+
+    assert _error_code(events[-1]) == "no_resumable_team"
+
+
+def test_team_resume_rebuilds_plan_from_snapshot(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    session = _session(client, project)
+    _insert_snapshot(client, project, session)
+
+    with client.websocket_connect(_ws(project, session)) as socket:
+        socket.receive_json()
+        socket.send_json({"type": "team_resume", "request_id": "r1", "instruction": "继续"})
+        tail = _receive_until(socket, _completed)
+
+    assert _kinds(_cards(tail, "team.updated")) == ["team_resume_requested", "team_done"]
+    executor = _ScriptedTeamExecutor.instances[-1]
+    # 任务图来自快照（**没有重新规划**）：goal 与任务状态都对得上
+    assert executor.plan is not None
+    assert executor.plan.goal == "改造检索层"
+    assert [task.id for task in executor.plan.tasks] == ["t1", "t2"]
+    assert executor.plan.task_by_id("t1").status == "failed"
+    assert executor.resume_count == 0
+    assert executor.resume_instructions == ["继续"]
+
+
+def test_team_resume_with_scope_rescues_task(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    session = _session(client, project)
+    _insert_snapshot(client, project, session, needs_scope=True)
+
+    with client.websocket_connect(_ws(project, session)) as socket:
+        socket.receive_json()
+        socket.send_json({
+            "type": "team_resume",
+            "request_id": "r1",
+            # 不指定 task_id：服务端挑第一个"补个范围就能救"的任务
+            "scope": [{"pattern": "routivus/web/**", "access": "write"}],
+        })
+        tail = _receive_until(socket, _completed)
+
+    assert _kinds(_cards(tail, "team.updated")) == ["team_resume_requested", "team_done"]
+    executor = _ScriptedTeamExecutor.instances[-1]
+    assert executor.rescued == [("t1", ["routivus/web/**"])]
+    assert executor.resume_instructions == []
+
+
+def test_team_resume_rejects_malformed_scope(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    session = _session(client, project)
+    _insert_snapshot(client, project, session)
+
+    with client.websocket_connect(_ws(project, session)) as socket:
+        socket.receive_json()
+        socket.send_json({"type": "team_resume", "request_id": "r1", "scope": "not-a-list"})
+        malformed = _receive_until(socket, _is_error("invalid_scope"))
+
+    assert _error_code(malformed[-1]) == "invalid_scope"
+
+
+def test_team_resume_rejects_over_quota(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    session = _session(client, project)
+    # 配额（task_max_resumes 默认 3）已用完的快照：连快照重建都不做，直接拒
+    _insert_snapshot(client, project, session, resume_count=3)
+
+    with client.websocket_connect(_ws(project, session)) as socket:
+        socket.receive_json()
+        socket.send_json({"type": "team_resume", "request_id": "r1"})
+        quota = _receive_until(socket, _is_error("resume_quota_exceeded"))
+
+    assert _error_code(quota[-1]) == "resume_quota_exceeded"
+
+
+def test_team_resume_rejects_duplicate_and_busy(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    session = _session(client, project)
+    # 无快照：第一轮会以 no_resumable_team 收尾，正好用来让第一个 request_id 被消费
+    with client.websocket_connect(_ws(project, session)) as socket:
+        socket.receive_json()
+        socket.send_json({"type": "team_resume", "request_id": "r1"})
+        _receive_until(socket, _is_error("no_resumable_team"))
+        socket.send_json({"type": "team_resume", "request_id": "r1"})
+        duplicate = _receive_until(socket, _is_error("duplicate_request"))
+
+    assert _error_code(duplicate[-1]) == "duplicate_request"
+
+    # 会话正在跑：续跑也要先停
+    client.app.state.running_tasks[session["id"]] = _PendingTask()
+    with client.websocket_connect(_ws(project, session)) as socket:
+        socket.receive_json()
+        socket.send_json({"type": "team_resume", "request_id": "r2"})
+        busy = _receive_until(socket, _is_error("session_busy"))
+
+    assert _error_code(busy[-1]) == "session_busy"
 
 
 # ==========================================================================

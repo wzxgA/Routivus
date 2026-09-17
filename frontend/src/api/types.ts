@@ -663,6 +663,14 @@ export interface TeamTask {
   owner_role: string
   status?: string
   acceptance_criteria?: string[]
+  /** 该任务声明的资源范围（方案 15 §4.5）：续跑时用来给出"允许修改"的候选。 */
+  resource_claims?: { pattern: string; access: string }[]
+  /** 任务级失败分类（卡上逐任务解释原因）。 */
+  failure_category?: string
+  /** 「无法安全确定写入范围」而失败：可以在卡上补一个范围救回来。 */
+  needs_scope?: boolean
+  /** 写入范围候选（服务端保守提取，勾选才产生授权）。 */
+  scope_candidates?: string[]
 }
 
 export interface TeamPayload {
@@ -676,6 +684,13 @@ export interface TeamPayload {
   role?: string
   attempt?: number
   failure_category?: string
+  /**
+   * 这轮还能不能续跑（方案 15 §4.4）：收尾事件（team_failed / cancelled）携带。
+   * 前端据此在团队卡上给「继续」按钮——不在前端自己推断，避免与服务端配额判断漂移。
+   */
+  resumable?: boolean
+  /** 这个 Team 任务已经续跑过几次（超上限时服务端会拒）。 */
+  resume_count?: number
 }
 
 /**

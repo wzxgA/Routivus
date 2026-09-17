@@ -123,6 +123,16 @@ export interface SessionTimelineValue {
   error: string | null
   refreshMemory: () => void
   sendMessage: (content: string) => void
+  /**
+   * Team 续跑（方案 15 §4.4）：带 `scope` = 补一个写入范围救那个任务；不带 = 整轮续跑。
+   * 授权永远由用户点出来（卡上的勾选/确认），这里只负责把结构化结果发出去。
+   */
+  resumeTeam: (options: { taskId?: string; scope?: string[] }) => void
+  /**
+   * 会话里刚说了句"继续"（方案 15 §4.9）：用来把团队卡上的按钮亮一下——
+   * **只唤起、不执行**，避免把"继续"的歧义（也可能是在聊上一个问题）变成一次续跑。
+   */
+  resumeHint: boolean
   cancel: () => void
   resolveApproval: (
     decision: 'approve' | 'reject',
@@ -159,6 +169,16 @@ function messageToItem(message: Message, source?: string): TimelineItem | null {
 }
 
 // ---- 条目归约的纯函数（在线事件与快照回放共用，避免两套逻辑漂移）----------------
+
+/** 「像不像一句续跑指令」的保守判定（方案 15 §4.9）：短输入 + 命中关键词。 */
+const RESUME_HINT_WORDS = ['继续', '接着', '恢复任务', '往下跑', 'continue', 'go on']
+
+function looksLikeResume(text: string): boolean {
+  const lowered = text.toLowerCase()
+  if (!RESUME_HINT_WORDS.some((word) => lowered.includes(word))) return false
+  // 长句一律当正常对话：只有短指令才值得把按钮亮起来（避免"继续修 X 顺便改 Y"被误判）
+  return text.length <= 16
+}
 
 /** `router.updated` 载荷 → RouterState（在线增量与快照回放共用同一份解析）。 */
 function parseRouterState(data: Record<string, unknown>): RouterState {
@@ -336,6 +356,18 @@ export function useSessionTimeline(
     clearRouterRoutingRef.current = clearRouterRouting
   }, [clearRouterRouting])
 
+  // 「继续」唤起（方案 15 §4.9）：说了句"继续"就把团队卡的按钮亮几秒，**不执行**。
+  const [resumeHint, setResumeHint] = useState(false)
+  const resumeHintTimer = useRef<number | null>(null)
+  const flashResumeHint = useCallback(() => {
+    if (resumeHintTimer.current !== null) window.clearTimeout(resumeHintTimer.current)
+    resumeHintTimer.current = window.setTimeout(() => {
+      resumeHintTimer.current = null
+      setResumeHint(false)
+    }, 6000)
+    setResumeHint(true)
+  }, [])
+
   /** 重拉项目长期记忆条目（快照已带一份，这里用于命令改动后刷新）。 */
   const refreshMemory = useCallback(() => {
     if (!sessionId) return
@@ -396,6 +428,11 @@ export function useSessionTimeline(
     setRouter(null)
     routerRef.current = null
     clearRouterRoutingRef.current()
+    if (resumeHintTimer.current !== null) {
+      window.clearTimeout(resumeHintTimer.current)
+      resumeHintTimer.current = null
+    }
+    setResumeHint(false)
     let routerNoticeSeq = 0
     setMemory(null)
     setContext(null)
@@ -726,6 +763,11 @@ export function useSessionTimeline(
     }
   }, [projectId, sessionId])
 
+  // 当前是否存在可续跑的 Team 卡（收尾事件带 `resumable`）：用来决定"继续"要不要亮按钮。
+  const resumableTeam = items.some(
+    (item) => item.kind === 'team' && Boolean(item.payload.resumable),
+  )
+
   const sendMessage = useCallback((content: string) => {
     const text = content.trim()
     if (!text) return
@@ -733,8 +775,23 @@ export function useSessionTimeline(
     // 「路由中」进入（方案 14 §4.3）：只对普通消息置位——斜杠开头的是命令 / /plan /
     // /team，它们不参与路由；开关没开时也没有路由这一跳。
     if (!text.startsWith('/') && routerRef.current?.enabled) beginRouterRouting()
+    // 「继续」唤起（方案 15 §4.9）：只有确实存在可续跑的 Team 任务、且输入短得像一句
+    // 指令时才亮按钮；长句（"继续修复登录模块的 X，顺便改 Y"）一律当正常对话。
+    if (resumableTeam && looksLikeResume(text)) flashResumeHint()
     socketRef.current?.send({ type: 'user_message', request_id: newRequestId('msg'), content: text })
-  }, [beginRouterRouting])
+  }, [beginRouterRouting, resumableTeam, flashResumeHint])
+
+  const resumeTeam = useCallback((options: { taskId?: string; scope?: string[] }) => {
+    const scope = options.scope ?? []
+    setResumeHint(false)
+    socketRef.current?.send({
+      type: 'team_resume',
+      request_id: newRequestId('resume'),
+      ...(options.taskId ? { task_id: options.taskId } : {}),
+      // 只送 write：补范围就是为了让 Repairer 能动手（服务端还会再校验一遍）。
+      ...(scope.length ? { scope: scope.map((pattern) => ({ pattern, access: 'write' })) } : {}),
+    })
+  }, [])
 
   const cancel = useCallback(() => {
     socketRef.current?.send({ type: 'cancel', request_id: newRequestId('cancel') })
@@ -818,6 +875,7 @@ export function useSessionTimeline(
     planReview,
     router,
     routerRouting,
+    resumeHint,
     memory,
     context,
     memoryNotice,
@@ -825,6 +883,7 @@ export function useSessionTimeline(
     error,
     refreshMemory,
     sendMessage,
+    resumeTeam,
     cancel,
     resolveApproval,
     answerAsk,

@@ -15,11 +15,12 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable, Literal, Protocol
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Literal, Protocol
 
 from routivus.agent.plan import PlanError, ReviewDecision, build_batches
 from routivus.agent.react import AgentEvent, DEFAULT_SYSTEM_PROMPT, ReActAgent
@@ -34,6 +35,8 @@ from routivus.tool.registry import ToolRegistry
 if TYPE_CHECKING:
     from routivus.mcp.manager import McpManager
 
+
+logger = logging.getLogger(__name__)
 
 TEAM_MAX_RETRIES = 2
 TEAM_MAX_RECOVERIES = 1
@@ -204,6 +207,10 @@ class TeamTask:
     recovery_attempts: int = 0
     repair_attempts_started: int = 0
     repair_attempts_blocked: int = 0
+    # 「无法安全确定写入范围」而失败（方案 15 §4.6）：前端据此在团队卡上给出
+    # 「允许修改哪些文件」的候选选择器。只有这一条失败路径会置位——它正是
+    # 用户补一个范围就能救回来的那类。
+    needs_scope: bool = False
 
 
 @dataclass
@@ -214,6 +221,112 @@ class TeamPlan:
 
     def task_by_id(self, task_id: str) -> TeamTask | None:
         return next((task for task in self.tasks if task.id == task_id), None)
+
+
+# ---------------------------------------------------------------------------
+# 可恢复快照（方案 15 §4.2）
+#
+# Team 执行器是**每轮创建、轮完销毁**的，所以「接着跑」必须先把任务图与各任务状态
+# 落盘。快照以一条 `team.snapshot` 事件写进 events 表（通用结构，加类型零 schema
+# 迁移），读取时取最近一条重建 `TeamPlan`。
+#
+# 取舍（方案 15 §4.3）：快照只保证**任务图 + 状态 + 结果文本**可恢复；Artifact
+# （工具调用明细）不持久化，服务重启后续跑拿不到它们——但 Worker 的产出主要落在
+# 磁盘上，下游任务还能读到文件本身。
+# ---------------------------------------------------------------------------
+
+TEAM_SNAPSHOT_VERSION = 1
+
+
+def team_snapshot_data(plan: TeamPlan, *, team_id: str, resume_count: int) -> dict[str, Any]:
+    """把计划摊平成可落库的快照（重建 `TeamPlan` 所需的完整字段）。"""
+    return {
+        "version": TEAM_SNAPSHOT_VERSION,
+        "team_id": team_id,
+        "goal": plan.goal,
+        "resume_count": int(resume_count),
+        "batches": [[str(task_id) for task_id in batch] for batch in plan.batches],
+        "tasks": [
+            {
+                "id": task.id,
+                "title": task.title,
+                "description": task.description,
+                "deps": list(task.deps),
+                "owner_role": task.owner_role,
+                "allowed_tools": list(task.allowed_tools),
+                "allowed_tools_declared": bool(task.allowed_tools_declared),
+                "resource_scope_mode": task.resource_scope_mode,
+                "resource_claims": [
+                    {"pattern": claim.pattern, "access": claim.access, "exclusive": bool(claim.exclusive)}
+                    for claim in task.resource_claims
+                ],
+                "resource_deny_patterns": list(task.resource_deny_patterns),
+                "acceptance_criteria": list(task.acceptance_criteria),
+                "status": task.status,
+                "result": task.result,
+                "failure_category": task.failure_category,
+                "needs_scope": bool(task.needs_scope),
+                "attempts": int(task.attempts),
+                "repair_attempts_started": int(task.repair_attempts_started),
+                "repair_attempts_blocked": int(task.repair_attempts_blocked),
+            }
+            for task in plan.tasks
+        ],
+    }
+
+
+def team_plan_from_snapshot(data: Any) -> TeamPlan | None:
+    """快照 → `TeamPlan`；结构不合法返回 None（调用方据此回可读错误，不静默兜底）。"""
+    if not isinstance(data, dict):
+        return None
+    tasks_raw = data.get("tasks")
+    goal = data.get("goal")
+    if not isinstance(tasks_raw, list) or not tasks_raw or not isinstance(goal, str):
+        return None
+    tasks: list[TeamTask] = []
+    for item in tasks_raw:
+        if not isinstance(item, dict):
+            return None
+        task_id = item.get("id")
+        if not isinstance(task_id, str) or not task_id:
+            return None
+        claims = [
+            ResourceClaim(
+                str(claim.get("pattern", "")),
+                "write" if str(claim.get("access", "")).lower() == "write" else "read",
+                bool(claim.get("exclusive", False)),
+            )
+            for claim in (item.get("resource_claims") or [])
+            if isinstance(claim, dict) and str(claim.get("pattern", "")).strip()
+        ]
+        mode = str(item.get("resource_scope_mode", "targeted"))
+        tasks.append(TeamTask(
+            id=task_id,
+            title=str(item.get("title", "") or task_id),
+            description=str(item.get("description", "")),
+            deps=[str(dep) for dep in (item.get("deps") or [])],
+            owner_role=str(item.get("owner_role", "coder") or "coder"),
+            allowed_tools=[str(tool) for tool in (item.get("allowed_tools") or [])],
+            allowed_tools_declared=bool(item.get("allowed_tools_declared", False)),
+            resource_claims=claims,
+            resource_scope_mode=mode if mode in {"targeted", "read_discovery"} else "targeted",
+            resource_deny_patterns=[str(pat) for pat in (item.get("resource_deny_patterns") or [])],
+            acceptance_criteria=[str(text) for text in (item.get("acceptance_criteria") or [])],
+            status=str(item.get("status", "pending") or "pending"),
+            result=str(item.get("result", "")),
+            failure_category=str(item.get("failure_category", "")),
+            needs_scope=bool(item.get("needs_scope", False)),
+            attempts=int(item.get("attempts", 0) or 0),
+            repair_attempts_started=int(item.get("repair_attempts_started", 0) or 0),
+            repair_attempts_blocked=int(item.get("repair_attempts_blocked", 0) or 0),
+        ))
+    batches_raw = data.get("batches")
+    batches = [
+        [str(task_id) for task_id in batch]
+        for batch in batches_raw
+        if isinstance(batch, list)
+    ] if isinstance(batches_raw, list) else []
+    return TeamPlan(goal=goal, tasks=tasks, batches=batches or conflict_safe_batches(tasks))
 
 
 @dataclass
@@ -229,7 +342,7 @@ class TeamEvent:
         "subtask_event", "artifact_produced", "task_review_started",
         "task_review_done", "repair_requested", "team_done", "team_failed",
         "review_output_invalid", "review_output_retry",
-        "cancelled",
+        "cancelled", "team_resume_requested",
     ]
     team_id: str = ""
     plan: TeamPlan | None = None
@@ -251,6 +364,10 @@ class TeamEvent:
     preserved_artifacts: list[str] = field(default_factory=list)
     repair_attempts_started: int = 0
     repair_attempts_blocked: int = 0
+    # 收尾事件（team_failed / cancelled）携带：这轮还能不能续跑、已经续过几次。
+    # 前端据此决定团队卡上要不要给「继续」按钮（方案 15 §4.4）。
+    resumable: bool = False
+    resume_count: int = 0
 
 
 class Planner(Protocol):
@@ -259,6 +376,15 @@ class Planner(Protocol):
 
 class AgentFactory(Protocol):
     def create(self, profile: AgentProfile, task: TeamTask) -> ReActAgent: ...
+
+
+class SnapshotHook(Protocol):
+    """可恢复快照的落库回调（方案 15 §4.2）。
+
+    同步、无返回值、**不允许抛异常**（执行器内部会兜住：快照失败不该打断任务）。
+    """
+
+    def __call__(self, data: dict[str, Any]) -> None: ...
 
 
 class ArtifactStore(Protocol):
@@ -884,6 +1010,11 @@ TaskReviewCallback = Callable[[TeamTask, list[Artifact]], Awaitable[ReviewResult
 
 
 class TeamExecutor:
+    """多 Agent 执行器（Supervisor 调度 + 证据化审查 + 定向修复 + 断点续跑）。
+
+    断点续跑（方案 15）：`on_snapshot` 把任务图与状态交给调用方落库；`resume()` /
+    `resume_task_with_repair_scope()` 从重建出来的任务图接着跑，**不重新规划**。
+    """
     """Team 计划生成、调度、Worker 执行、审查和修复。"""
 
     def __init__(
@@ -903,6 +1034,9 @@ class TeamExecutor:
         team_id: str | None = None,
         agent_factory: AgentFactory | None = None,
         ask_requester=None,
+        on_snapshot: SnapshotHook | None = None,
+        resume_plan: TeamPlan | None = None,
+        resume_count: int = 0,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -919,7 +1053,13 @@ class TeamExecutor:
         self.project_root = (project_root or Path.cwd()).resolve()
         self.team_id = team_id or f"team-{uuid.uuid4().hex[:8]}"
         self.agent_factory = agent_factory
-        self._last_plan: TeamPlan | None = None
+        # 快照回调（方案 15 §4.2）：执行器只管"什么时候该存"，落库交给调用方——
+        # agent 层不依赖 server 层的 WorkspaceStore（与 audit 回调同款做法）。
+        self.on_snapshot = on_snapshot
+        # 断点续跑：调用方从快照重建任务图后传进来（`self._last_plan` 因此非空），
+        # `resume_count` 决定还能续几次（跨重启有效，因为计数也在快照里）。
+        self._last_plan: TeamPlan | None = resume_plan
+        self.resume_count = max(0, int(resume_count))
 
     async def run(self, goal: str) -> AsyncIterator[TeamEvent]:
         if self.mcp_manager is not None:
@@ -971,7 +1111,82 @@ class TeamExecutor:
         yield TeamEvent(kind="approved", team_id=self.team_id, plan=plan, message="团队计划已批准，开始执行")
         self._last_plan = plan
         plan.batches = conflict_safe_batches(plan.tasks)
+        self._snapshot(plan, reason="started")
         async for event in self._execute_plan_batches(plan):
+            yield event
+
+    # ---- 可恢复快照（方案 15 §4.2）----
+
+    def _resume_limit(self) -> int:
+        """续跑次数上限：复用既有的 `task_max_resumes`（防"失败→继续→失败"烧预算）。"""
+        return max(0, int(getattr(self.settings, "task_max_resumes", 3)))
+
+    def _resumable(self, plan: TeamPlan) -> bool:
+        """还有没做完的任务、且没用完续跑配额 → 这份快照可以被续跑。"""
+        if self.resume_count >= self._resume_limit():
+            return False
+        return any(task.status != "done" for task in plan.tasks)
+
+    def _snapshot(self, plan: TeamPlan | None = None, *, reason: str = "") -> None:
+        """把当前任务图与状态交给调用方落库。三个时机：开跑前 / 每批结束 / 终态。
+
+        绝不抛错：快照只是"可续跑"的附加能力，写失败不该影响正在跑的任务。
+        """
+        if self.on_snapshot is None:
+            return
+        target = plan if plan is not None else self._last_plan
+        if target is None:
+            return
+        try:
+            data = team_snapshot_data(target, team_id=self.team_id, resume_count=self.resume_count)
+            data["reason"] = reason
+            data["resumable"] = self._resumable(target)
+            self.on_snapshot(data)
+        except Exception:  # noqa: BLE001 - 快照失败不影响任务本身
+            logger.warning("team snapshot 写入失败 team_id=%s", self.team_id, exc_info=True)
+
+    # ---- 断点续跑（方案 15 §4.7）----
+
+    async def resume(self, instruction: str = "") -> AsyncIterator[TeamEvent]:
+        """从断点继续：**不重新规划**，done 任务跳过、其余重跑。
+
+        `self._last_plan` 由调用方从快照重建后传入（见 `resume_plan` 构造参数）。
+        """
+        plan = self._last_plan
+        if plan is None:
+            yield TeamEvent(kind="team_failed", team_id=self.team_id, message="没有可恢复的 Team 计划")
+            return
+        limit = self._resume_limit()
+        if self.resume_count >= limit:
+            yield TeamEvent(
+                kind="team_failed", team_id=self.team_id, plan=plan,
+                message=f"续跑次数已达上限（{limit} 次），请重新发起 /team",
+                resumable=False, resume_count=self.resume_count,
+            )
+            return
+        self.resume_count += 1
+        # done 保留（不重跑、result 与磁盘改动都在）；其余一律回到 pending 重来。
+        for task in plan.tasks:
+            if task.status == "done":
+                continue
+            task.status = "pending"
+            task.result = ""
+            task.blocked_by = []
+            task.failure_category = ""
+        plan.batches = conflict_safe_batches(plan.tasks)
+        skipped = [task.id for task in plan.tasks if task.status == "done"]
+        todo = sum(1 for batch in plan.batches for _ in batch)
+        self._audit("team_resume", team_id=self.team_id, resume_count=self.resume_count, skipped=len(skipped))
+        yield TeamEvent(
+            kind="team_resume_requested", team_id=self.team_id, plan=plan,
+            message=(
+                f"从断点继续：跳过 {len(skipped)} 个已完成任务，重跑 {todo} 个"
+                + (f"；补充指令：{instruction}" if instruction else "")
+            ),
+            resume_count=self.resume_count,
+        )
+        self._snapshot(plan, reason="resumed")
+        async for event in self._execute_plan_batches(plan, instruction=instruction):
             yield event
 
     async def _execute_plan_batches(self, plan: TeamPlan, instruction: str = "") -> AsyncIterator[TeamEvent]:
@@ -983,6 +1198,8 @@ class TeamExecutor:
             )
             async for event in self._run_batch(plan, batch, instruction=instruction):
                 yield event
+            # 批次结束即落一次快照：中途被取消（用户停止 / 断线）也留得住断点。
+            self._snapshot(plan, reason="batch")
             failed = [task for task in plan.tasks if task.status == "failed"]
             if failed:
                 blocked = self._block_dependents(plan, {task.id for task in failed})
@@ -1005,16 +1222,24 @@ class TeamExecutor:
                         f"Team 因 {len(failed)} 个任务失败而停止；"
                         f"阻塞任务数 {len(blocked)}"
                     )
+                self._snapshot(plan, reason="team_failed")
                 yield TeamEvent(
                     kind="team_failed", team_id=self.team_id, plan=plan,
                     message=message,
+                    resumable=self._resumable(plan), resume_count=self.resume_count,
                 )
                 return
 
         done = sum(task.status == "done" for task in plan.tasks)
         if done != len(plan.tasks):
-            yield TeamEvent(kind="team_failed", team_id=self.team_id, plan=plan, message=f"Team 未完成：{done}/{len(plan.tasks)} 个任务通过")
+            self._snapshot(plan, reason="team_failed")
+            yield TeamEvent(
+                kind="team_failed", team_id=self.team_id, plan=plan,
+                message=f"Team 未完成：{done}/{len(plan.tasks)} 个任务通过",
+                resumable=self._resumable(plan), resume_count=self.resume_count,
+            )
             return
+        self._snapshot(plan, reason="team_done")
         yield TeamEvent(kind="team_done", team_id=self.team_id, plan=plan, message=f"Team 完成：{done}/{len(plan.tasks)} 个任务通过")
 
     async def _generate_plan(
@@ -1124,15 +1349,16 @@ class TeamExecutor:
         message: str,
         review: ReviewResult | None = None,
     ) -> None:
-        """Repairer 无法确定写入范围时**终态失败**。
+        """Repairer 无法安全确定写入范围时**终态失败**，并标记"补个范围就能救"。
 
-        `/team resume` 已移除（断点续跑不再支持），所以"等用户补范围"没有出口：
-        这里把无法安全确定范围的情况直接落成任务失败——依赖它的任务会被阻塞，
-        Team 走既有的失败收尾路径，不再留下永不解除的 waiting 状态。
+        仍然是失败而不是挂起（挂起态会让会话停在 waiting 上，超时还会白死），
+        但 `needs_scope=True` 让前端在团队卡上给出「允许修改哪些文件」的选择器，
+        用户确认后走 `resume_task_with_repair_scope()` 只重跑这一个任务（方案 15 §4.6）。
         """
         task.status = "failed"
         task.failure_category = category
         task.result = message[:TEAM_RESULT_LIMIT]
+        task.needs_scope = True
         self._audit(
             "team_task_failed", team_id=self.team_id, task_id=task.id,
             role=task.owner_role, error=task.result,
@@ -1142,6 +1368,189 @@ class TeamExecutor:
             role=task.owner_role, failure_category=category, message=message,
             review=review,
         ))
+
+    async def resume_task_with_repair_scope(
+        self,
+        task_id: str,
+        claims: list[ResourceClaim],
+    ) -> AsyncIterator[TeamEvent]:
+        """用户确认写入范围后重启 Repairer（方案 15 §4.6）。
+
+        与 14 号之前的旧实现有两处差别：
+
+        1. 审查结果不再来自内存里的 `pending_review`（挂起态已移除），而是从失败任务的
+           `result` / `failure_category` 重建——那正是当初失败的原因文本；
+        2. 修复通过后会**接着把剩余批次跑完**（旧实现只修这一个任务，用户得再点一次）。
+        """
+        plan = self._last_plan
+        if plan is None:
+            yield TeamEvent(kind="team_failed", team_id=self.team_id, message="没有可恢复的 Team 计划")
+            return
+        task = plan.task_by_id(task_id)
+        if task is None or task.status != "failed":
+            yield TeamEvent(
+                kind="task_failed", team_id=self.team_id, plan=plan, task=task,
+                failure_category="resume_invalid", message="任务不存在或当前不处于失败状态",
+            )
+            return
+        repair_claims = [
+            ResourceClaim(claim.pattern, "write", claim.exclusive)
+            for claim in claims
+            if claim.access == "write" and claim.pattern.strip()
+        ]
+        repair_profile = self.profiles.get("repairer") or self.profiles["coder"]
+        if not repair_claims:
+            # 空范围 = 没授权任何写入，Repairer 无从下手（fail closed，不猜）
+            task.status = "failed"
+            task.failure_category = "repair_scope_missing"
+            task.result = "没有收到允许修改的范围，Repairer 无法开始"
+            task.needs_scope = True
+            self._snapshot(plan, reason="scope_empty")
+            yield TeamEvent(
+                kind="task_failed", team_id=self.team_id, plan=plan, task=task,
+                role="repairer", failure_category="repair_scope_missing",
+                message=task.result,
+            )
+            return
+
+        failure = task.result or "任务失败"
+        review = ReviewResult(
+            task.id, "fail", [failure], [failure],
+            [], repair_claims, task.failure_category or "review_failed",
+        )
+        repair = replace(
+            task,
+            id=f"{task.id}-repair-{task.repair_attempts_started + 1}",
+            title=f"修复：{task.title}",
+            description=f"{failure}\n\n修复范围提示：仅允许修改 {'、'.join(c.pattern for c in repair_claims)}",
+            owner_role="repairer",
+            # 角色变了就不能沿用原任务的工具与发现策略；空表示用 repairer 的档案工具。
+            allowed_tools=[],
+            allowed_tools_declared=False,
+            invalid_tools=[],
+            tool_warnings=[],
+            resource_scope_mode="targeted",
+            resource_claims=repair_claims,
+            resource_deny_patterns=list(task.resource_deny_patterns),
+            deps=[],
+            status="pending",
+            result="",
+            artifacts=[],
+            failure_category="",
+            blocked_by=[],
+            recovery_attempts=0,
+            needs_scope=False,
+        )
+        policy_errors = validate_task_resource_policy(repair, repair_profile, self.project_root)
+        if policy_errors:
+            task.repair_attempts_blocked += 1
+            category = (
+                "repair_scope_missing"
+                if not repair_claims
+                else "repair_scope_unsafe"
+            )
+            task.status = "failed"
+            task.failure_category = category
+            task.result = "；".join(policy_errors)[:TEAM_RESULT_LIMIT]
+            self._audit(
+                "team_task_failed", team_id=self.team_id, task_id=task.id,
+                role="repairer", error=task.result,
+            )
+            self._snapshot(plan, reason="scope_rejected")
+            yield TeamEvent(
+                kind="task_failed", team_id=self.team_id, plan=plan, task=task,
+                role="repairer", failure_category=category,
+                message="；".join(policy_errors),
+            )
+            return
+
+        queue: asyncio.Queue[TeamEvent | None] = asyncio.Queue()
+        task.status = "running"
+        task.needs_scope = False
+        task.repair_attempts_started += 1
+        task.attempts = task.repair_attempts_started
+        self._audit(
+            "team_resume_scope", team_id=self.team_id, task_id=task.id,
+            scope=[claim.normalized() for claim in repair_claims],
+        )
+        queue.put_nowait(TeamEvent(
+            kind="team_resume_requested", team_id=self.team_id, plan=plan, task=task,
+            role="repairer",
+            message=f"已确认修复范围（{'、'.join(claim.pattern for claim in repair_claims)}），继续执行",
+            resume_count=self.resume_count,
+        ))
+        queue.put_nowait(TeamEvent(
+            kind="repair_requested", team_id=self.team_id, plan=plan, task=repair,
+            role="repairer", attempt=task.repair_attempts_started,
+            message=repair.description,
+        ))
+        result, artifacts, agent_id, error, category = await self._execute_worker(
+            plan, repair, queue, attempt=task.repair_attempts_started,
+        )
+        if error:
+            task.status = "failed"
+            task.failure_category = category or "execution_failed"
+            task.result = error[:TEAM_RESULT_LIMIT]
+            queue.put_nowait(TeamEvent(
+                kind="agent_failed", team_id=self.team_id, plan=plan, task=repair,
+                agent_id=agent_id, role="repairer", attempt=task.repair_attempts_started,
+                failure_category=task.failure_category, message=error,
+            ))
+            queue.put_nowait(TeamEvent(
+                kind="task_failed", team_id=self.team_id, plan=plan, task=task,
+                agent_id=agent_id, role=task.owner_role,
+                failure_category=task.failure_category, message=error,
+            ))
+            while not queue.empty():
+                event = queue.get_nowait()
+                if event is not None:
+                    yield event
+            return
+
+        await self._publish_artifacts(plan, repair, artifacts, agent_id, queue, attempt=task.repair_attempts_started)
+        task.result = result[:TEAM_RESULT_LIMIT]
+        try:
+            next_review = await self._review(plan, task, artifacts, queue)
+        except Exception as exc:  # noqa: BLE001 - 审查挂了按失败落地，不静默通过
+            next_review = ReviewResult(
+                task.id, "fail", [f"Reviewer 执行失败：{exc}"],
+                ["重新执行任务审查"], [], [], "review_execution_failed",
+            )
+        if next_review.verdict == "pass":
+            task.status = "done"
+            task.failure_category = ""
+            task.needs_scope = False
+            queue.put_nowait(TeamEvent(
+                kind="task_done", team_id=self.team_id, plan=plan, task=task,
+                message=f"修复后通过：{task.result}",
+            ))
+        else:
+            self._fail_task_for_unresolved_scope(
+                plan, task, queue,
+                category=next_review.category or "review_output_invalid",
+                message="；".join(next_review.findings or next_review.required_fixes)
+                or "Reviewer 仍未通过该任务",
+                review=next_review,
+            )
+        while not queue.empty():
+            event = queue.get_nowait()
+            if event is not None:
+                yield event
+
+        if task.status != "done":
+            self._snapshot(plan, reason="repair_failed")
+            return
+        # 修好的这一环解开了下游：接着把剩余批次跑完，不必让用户再点一次「继续」。
+        self._snapshot(plan, reason="repair_done")
+        plan.batches = conflict_safe_batches(plan.tasks)
+        if any(other.status != "done" for other in plan.tasks):
+            async for event in self._execute_plan_batches(plan):
+                yield event
+        else:
+            yield TeamEvent(
+                kind="team_done", team_id=self.team_id, plan=plan,
+                message=f"Team 完成：{sum(1 for other in plan.tasks if other.status == 'done')}/{len(plan.tasks)} 个任务通过",
+            )
 
 
     async def _run_task(self, plan: TeamPlan, task_id: str, queue: asyncio.Queue[TeamEvent | None], instruction: str = "") -> None:
