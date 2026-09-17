@@ -101,22 +101,23 @@ def test_fresh_database_migrates_to_current_version(tmp_path: Path) -> None:
     WorkspaceStore(tmp_path / "workspace.sqlite3")
     path = tmp_path / "workspace.sqlite3"
 
-    assert _user_version(path) == 4
+    # 断言对着 WorkspaceStore.VERSION 而不是字面量：本用例要守的是"新库被迁到代码
+    # 声明的版本"，不是某个具体数字 —— 每升一次版本都要来改这个数字是没意义的。
+    assert _user_version(path) == WorkspaceStore.VERSION
     assert "idx_events_type_time" in _indexes(path)
 
 
 def test_old_database_gets_usage_index_on_open(tmp_path: Path) -> None:
-    """老库（user_version=3、没有新索引）打开后补索引并升到 4：纯向上迁移。"""
+    """老库（user_version=3、没有新索引）打开后补索引并升到当前版本：纯向上迁移。"""
     store, path = _store(tmp_path)
     with sqlite3.connect(path) as conn:
         conn.execute("DROP INDEX IF EXISTS idx_events_type_time")
         conn.execute("PRAGMA user_version = 3")
         conn.commit()
 
-    reopened = WorkspaceStore(path)
+    WorkspaceStore(path)  # 重开触发迁移
 
-    assert reopened.VERSION == 4
-    assert _user_version(path) == 4
+    assert _user_version(path) == WorkspaceStore.VERSION
     assert "idx_events_type_time" in _indexes(path)
 
 

@@ -149,7 +149,7 @@ def _timestamp(value: str) -> datetime:
 class WorkspaceStore:
     """Thread-safe SQLite store for server-owned workspace data."""
 
-    VERSION = 4
+    VERSION = 5
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path).expanduser()
@@ -305,6 +305,19 @@ class WorkspaceStore:
                     CREATE INDEX IF NOT EXISTS idx_events_type_time
                         ON events(event_type, occurred_at ASC);
                     PRAGMA user_version = 4;
+                    """
+                )
+            if version < 5:
+                # 删掉与 UNIQUE(session_id, sequence) 完全重复的索引（Optimization 01 §5.4）：
+                # 每次 INSERT 都要多维护一棵 B-tree，而 events 上的几个查询都不依赖它 ——
+                # list_events / latest_event_sequence 走那条 UNIQUE，list_card_events 走
+                # UNIQUE + 类型过滤，list_events_by_type 走 idx_events_type_time。
+                # 只删索引、不动表结构，纯向上迁移。注意新库会在 v2 建它、这里再删掉
+                # （多一次空表建索引的无用功），那是为了让 v2 的历史定义保持可追溯。
+                conn.executescript(
+                    """
+                    DROP INDEX IF EXISTS idx_events_session_sequence;
+                    PRAGMA user_version = 5;
                     """
                 )
 

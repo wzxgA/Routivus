@@ -21,6 +21,7 @@ build/
 plans/
 .pytest_cache/
 .pytest-tmp/
+.pytest-opt/
 .coverage
 htmlcov/
 

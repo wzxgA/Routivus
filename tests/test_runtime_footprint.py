@@ -228,3 +228,114 @@ def test_count_tool_failures_fallback_without_json1(tmp_path: Path) -> None:
     store._conn = _NoJson1()  # type: ignore[assignment]
     assert store.count_tool_failures(session.id) == 1
     store.close()
+
+
+# ==========================================================================
+# §5.3 快照只占序号
+# ==========================================================================
+
+
+def test_snapshot_persists_only_placeholder(tmp_path: Path) -> None:
+    """落库的那份是空占位：快照正文（含 replay，可达数百 KB）只发给前端。"""
+    client, store = _client(tmp_path)
+    session, _ = _run_turn(client)
+
+    records = store.list_card_events(session["id"], ("session.snapshot",))
+    assert len(records) == 1
+    assert records[0].data == {}
+
+
+def test_snapshot_pushed_to_ws_is_intact(tmp_path: Path) -> None:
+    """WS 收到的仍是完整快照——只占序号不能把推给前端的内容一起省掉。"""
+    client, _ = _client(tmp_path)
+    _, events = _run_turn(client)
+
+    snapshot = events[0]
+    assert snapshot["type"] == "session.snapshot"
+    data = snapshot["data"]
+    assert isinstance(data["last_sequence"], int) and data["last_sequence"] > 0
+    assert "replay" in data and "audit" in data and "pending" in data
+
+
+# ==========================================================================
+# §5.4 删除冗余索引
+# ==========================================================================
+
+
+def _event_index_names(store: WorkspaceStore) -> set[str]:
+    with store._lock, store._connect() as conn:
+        return {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events'"
+            )
+        }
+
+
+def test_redundant_index_is_dropped_on_fresh_db(tmp_path: Path) -> None:
+    store = WorkspaceStore(tmp_path / "ws.sqlite3")
+    names = _event_index_names(store)
+
+    assert "idx_events_session_sequence" not in names
+    # 等价的那条 UNIQUE 约束索引还在（查询不会因此退化）
+    assert any(name.startswith("sqlite_autoindex_events") for name in names)
+    assert {"idx_events_project_time", "idx_events_type_time"} <= names
+    store.close()
+
+
+def test_migration_drops_redundant_index(tmp_path: Path) -> None:
+    """模拟 v4 老库：带重复索引 + user_version=4，打开后应被迁移删掉。"""
+    db = tmp_path / "legacy.sqlite3"
+    legacy = sqlite3.connect(db)
+    legacy.executescript(
+        """
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL);
+        CREATE TABLE events (
+            event_id TEXT PRIMARY KEY,
+            sequence INTEGER NOT NULL,
+            session_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            data_json TEXT NOT NULL DEFAULT '{}',
+            occurred_at TEXT NOT NULL,
+            UNIQUE(session_id, sequence)
+        );
+        CREATE INDEX idx_events_session_sequence ON events(session_id, sequence ASC);
+        CREATE INDEX idx_events_project_time ON events(project_id, occurred_at ASC);
+        CREATE INDEX idx_events_type_time ON events(event_type, occurred_at ASC);
+        PRAGMA user_version = 4;
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    store = WorkspaceStore(db)
+    assert (
+        store._connect().execute("PRAGMA user_version").fetchone()[0]
+        == WorkspaceStore.VERSION
+    )
+    names = _event_index_names(store)
+    assert "idx_events_session_sequence" not in names
+    assert {"idx_events_project_time", "idx_events_type_time"} <= names
+    store.close()
+
+
+def test_event_queries_still_use_index(tmp_path: Path) -> None:
+    """删索引的验收线：按会话取事件的查询仍走索引，没有退化成全表扫描。"""
+    store = WorkspaceStore(tmp_path / "ws.sqlite3")
+    session = store.create_session("p1")
+    store.append_event(session.id, session.project_id, "tool.started", {})
+
+    with store._lock, store._connect() as conn:
+        plan = " ".join(
+            str(row[3])
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM events WHERE session_id = ? AND sequence > ?"
+                " ORDER BY sequence ASC LIMIT ?",
+                (session.id, 0, 500),
+            )
+        ).upper()
+
+    assert "USING" in plan, plan
+    assert "SCAN EVENTS" not in plan, plan
+    store.close()

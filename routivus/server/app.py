@@ -2745,7 +2745,13 @@ def create_app(
                     + workspace_store.count_events(session.id, "approval.resolved")
                 ),
             }
-            snapshot_event = workspace_store.append_event(session.id, session.project_id, "session.snapshot", snapshot)
+            # 只占一个序号，不落快照正文（Optimization 01 §5.3）：快照是瞬时状态，
+            # 每次（重）连都会重新生成，而它的 replay 内容本身又是从 events 表读出来的
+            # ——落库等于把同一批数据存两遍（此前 76 次连接占了 21.8 MB）。
+            # 下面仍用完整的 snapshot 构造发给前端的载荷，所以 WS 收到的内容一字未变。
+            snapshot_event = workspace_store.append_event(
+                session.id, session.project_id, "session.snapshot", {}
+            )
             snapshot["last_sequence"] = snapshot_event.sequence
             snapshot_event = EventRecord(
                 snapshot_event.event_id, snapshot_event.sequence, snapshot_event.session_id,
