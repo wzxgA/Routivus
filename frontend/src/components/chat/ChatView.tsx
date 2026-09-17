@@ -174,7 +174,6 @@ export function ChatView({
             <ErrorBoundary label="消息流">
               <MessageList
                 items={timeline.items}
-                approval={timeline.approval}
                 planReview={timeline.planReview}
                 onResolveApproval={timeline.resolveApproval}
                 onAnswerAsk={timeline.answerAsk}

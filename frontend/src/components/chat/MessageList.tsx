@@ -9,7 +9,7 @@ import { SourceTag } from './SourceTag'
 import { TeamCard } from './TeamCard'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCard } from './ToolCard'
-import type { ApprovalRequestedData, PlanReviewRequest } from '../../api/types'
+import type { PlanReviewRequest } from '../../api/types'
 
 // ---- 命令回执的语义高亮 -------------------------------------------------
 // 命令输出是纯文本（service 层拼的表格/状态行），这里按行做轻量着色：
@@ -85,7 +85,6 @@ function CmdLine({ line, index }: { line: string; index: number }) {
 
 interface MessageListProps {
   items: TimelineItem[]
-  approval: ApprovalRequestedData | null
   planReview: PlanReviewRequest | null
   onResolveApproval: (
     decision: 'approve' | 'reject',
@@ -110,10 +109,17 @@ const ChatRow = memo(function ChatRow({
   item,
   onTeamResume,
   resumeHint,
+  onResolveApproval,
+  onAnswerAsk,
 }: {
   item: TimelineItem
   onTeamResume: (options: { taskId?: string; scope?: string[] }) => void
   resumeHint: boolean
+  onResolveApproval: (
+    decision: 'approve' | 'reject',
+    options?: { args?: Record<string, unknown>; scope?: 'session' },
+  ) => void
+  onAnswerAsk: (answers: Record<string, string> | null) => void
 }) {
   switch (item.kind) {
     case 'user':
@@ -158,6 +164,17 @@ const ChatRow = memo(function ChatRow({
       return <PlanCard payload={item.payload} />
     case 'team':
       return <TeamCard payload={item.payload} onResume={onTeamResume} highlight={resumeHint} />
+    case 'approval':
+      // 审批 / 提问卡是**时间线条目**：待决时（`resolved === null`）可交互，
+      // 应答后原地定格成终态——这样它在会话里留痕，且位置就是它发生的那个位置。
+      return (
+        <ApprovalCard
+          approval={item.payload}
+          resolved={item.resolved}
+          onResolve={onResolveApproval}
+          onAnswer={onAnswerAsk}
+        />
+      )
     case 'router':
       // 换档卡（方案 14 §4.5）：只在档位变化 / 回落 / 失败 / 冻结 / 防降级时出现
       return <RouterCard item={item} />
@@ -168,7 +185,6 @@ const ChatRow = memo(function ChatRow({
 
 export function MessageList({
   items,
-  approval,
   planReview,
   onResolveApproval,
   onAnswerAsk,
@@ -179,16 +195,15 @@ export function MessageList({
   return (
     <>
       {items.map((item) => (
-        <ChatRow key={item.id} item={item} onTeamResume={onTeamResume} resumeHint={resumeHint} />
-      ))}
-      {approval ? (
-        <ApprovalCard
-          approval={approval}
-          key={approval.approval_id ?? 'pending-approval'}
-          onResolve={onResolveApproval}
-          onAnswer={onAnswerAsk}
+        <ChatRow
+          key={item.id}
+          item={item}
+          onTeamResume={onTeamResume}
+          resumeHint={resumeHint}
+          onResolveApproval={onResolveApproval}
+          onAnswerAsk={onAnswerAsk}
         />
-      ) : null}
+      ))}
       {planReview ? (
         <PlanReviewCard
           review={planReview}

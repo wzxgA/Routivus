@@ -4,8 +4,15 @@ import type { ApprovalRequestedData } from '../../api/types'
 /** 下拉里「自定义…」的哨兵值；选中时展示手填输入框，提交取其内容。 */
 const CUSTOM = '__custom__'
 
+/** 终态载荷（来自 `approval.resolved`）；有值时卡片静态化，不再渲染操作控件。 */
+export interface ApprovalResolved {
+  decision: string
+  reason: string
+}
+
 interface ApprovalCardProps {
   approval: ApprovalRequestedData
+  resolved?: ApprovalResolved | null
   onResolve: (
     decision: 'approve' | 'reject',
     options?: { args?: Record<string, unknown>; scope?: 'session' },
@@ -18,11 +25,44 @@ const RISK_TEXT: Record<string, string> = {
   confirm: '中风险：该工具执行前需要确认',
 }
 
+/** 终态文案：decision 是服务端给的枚举。 */
+const DECISION_TEXT: Record<string, string> = {
+  approve: '已批准',
+  reject: '已拒绝',
+  answered: '已回答',
+  skipped: '已跳过',
+}
+
+/** 终态原因的说明；未知原因原样显示，不硬编成别的话。 */
+const REASON_TEXT: Record<string, string> = {
+  user_approved: '你批准了这一次调用',
+  user_rejected: '你拒绝了这次调用',
+  user_modified: '你修改参数后批准',
+  auto_allow: '本会话已放行同类工具',
+  approval_timeout: '超时未应答，已按拒绝处理',
+  auto_deny_busy: '当时已有待决项，本次调用被自动拒绝',
+  user_cancelled: '轮次被取消',
+}
+
+function resolvedLabel(resolved: ApprovalResolved): { text: string; warn: boolean } {
+  return {
+    text: DECISION_TEXT[resolved.decision] ?? resolved.decision ?? '已结束',
+    warn: resolved.decision === 'reject' || resolved.decision === 'skipped',
+  }
+}
+
+function resolvedReason(resolved: ApprovalResolved): string {
+  if (!resolved.reason) return ''
+  return REASON_TEXT[resolved.reason] ?? resolved.reason
+}
+
 function AskForm({
   approval,
+  resolved = null,
   onAnswer,
 }: {
   approval: ApprovalRequestedData
+  resolved?: ApprovalResolved | null
   onAnswer: (answers: Record<string, string> | null) => void
 }) {
   const ask = approval.ask
@@ -92,6 +132,22 @@ function AskForm({
     setMissing(missingQuestions)
     if (missingQuestions.length > 0) return
     onAnswer(answers)
+  }
+
+  // 已应答：定格成终态（放在所有 hooks 之后，避免钩子数量随分支变化）
+  if (resolved) {
+    const label = resolvedLabel(resolved)
+    const reason = resolvedReason(resolved)
+    return (
+      <div className="approval resolved">
+        <div className="approval-title">
+          <span className="approval-risk">提问</span>
+          {prompt || 'Agent 需要补充信息'}
+          <span className={label.warn ? 'pill-warn' : 'pill-ok'}>{label.text}</span>
+        </div>
+        {reason ? <div className="approval-note">{reason}</div> : null}
+      </div>
+    )
   }
 
   return (
@@ -177,7 +233,12 @@ function AskForm({
   )
 }
 
-export function ApprovalCard({ approval, onResolve, onAnswer }: ApprovalCardProps) {
+export function ApprovalCard({
+  approval,
+  resolved = null,
+  onResolve,
+  onAnswer,
+}: ApprovalCardProps) {
   const [editing, setEditing] = useState(false)
   const [argsText, setArgsText] = useState(() =>
     JSON.stringify(approval.arguments ?? {}, null, 2),
@@ -185,7 +246,24 @@ export function ApprovalCard({ approval, onResolve, onAnswer }: ApprovalCardProp
   const [parseError, setParseError] = useState<string | null>(null)
 
   if (approval.kind === 'ask') {
-    return <AskForm approval={approval} onAnswer={onAnswer} />
+    return <AskForm approval={approval} resolved={resolved} onAnswer={onAnswer} />
+  }
+
+  // 已应答：定格成终态，不再渲染任何操作控件（放在 hooks 之后）
+  if (resolved) {
+    const label = resolvedLabel(resolved)
+    const reason = resolvedReason(resolved)
+    return (
+      <div className="approval resolved">
+        <div className="approval-title">
+          <span className="approval-risk">需要审批</span>
+          {approval.tool_name || '工具调用'}
+          <span className={label.warn ? 'pill-warn' : 'pill-ok'}>{label.text}</span>
+        </div>
+        <div className="approval-args">{JSON.stringify(approval.arguments ?? {}, null, 2)}</div>
+        {reason ? <div className="approval-note">{reason}</div> : null}
+      </div>
+    )
   }
 
   const applyModified = () => {

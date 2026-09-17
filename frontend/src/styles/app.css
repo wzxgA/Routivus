@@ -2238,6 +2238,12 @@ button {
   padding: 10px 13px;
   animation: rise var(--dur) var(--ease);
 }
+/* 已应答的审批卡：终态静态展示——左侧警示条转中性、去掉入场动画，
+   弱化存在感但仍留在原位可回看（这是它与旧"浮卡答完即消失"的关键区别） */
+.approval.resolved {
+  border-left-color: var(--border-strong);
+  animation: none;
+}
 .approval-title {
   display: flex;
   align-items: center;

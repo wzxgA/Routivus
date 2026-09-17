@@ -443,12 +443,16 @@ def _plan_card_view(plan: Any, *, mode: str) -> dict[str, Any]:
 
 
 # 卡片类事件：结构化状态只在 events 表里，重连快照必须回放它们才能重建卡片。
+# approval 两类也在其中：审批卡是时间线条目（requested 插卡、resolved 定格终态），
+# 不回放的话刷新后审批记录就消失了——此前只回五类，审批只活在内存里，答完即无痕。
 _REPLAY_EVENT_TYPES = (
     "plan.updated",
     "team.updated",
     "tool.started",
     "tool.completed",
     "command.executed",
+    "approval.requested",
+    "approval.resolved",
 )
 
 # router.updated 是状态类事件：回放里只保留最后一条（见 _replay_card_events）。
@@ -2112,13 +2116,11 @@ def create_app(
                     "tool_calls": self.tool_calls,
                     "tool_failures": self.tool_failures,
                 })
-            elif kind == "approval":
-                decision = getattr(item, "decision", None)
-                await self.emit("approval.resolved", {
-                    "tool_call_id": getattr(getattr(item, "tool_call", None), "id", ""),
-                    "decision": "approve" if getattr(decision, "allow", False) else "reject",
-                    "reason": getattr(decision, "reason", ""),
-                })
+            # kind == "approval"（审批决策的通知）**不再转发**：ApprovalBridge 已经发过
+            # 带 `approval_id` 的 `approval.resolved`（那才是正主），这里再发一份只有
+            # `tool_call_id` 的同名事件，前端按 id 匹配不上就会**无条件清空当前审批卡**
+            # ——并行 worker 时，A 的决策会把 B 正等着用户点的卡直接抹掉。信息上它也
+            # 是 ApprovalBridge 事件的子集，转发纯属冗余。
             elif kind == "ask_user":
                 await self.emit("approval.requested", {
                     "ask": _record_payload(getattr(item, "ask", None)),

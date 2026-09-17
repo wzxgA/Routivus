@@ -281,6 +281,88 @@ def test_websocket_approval_requested_then_approved(tmp_path: Path) -> None:
     assert "waiting_approval" in statuses
 
 
+class _ApprovalNoticeAgent:
+    """只 yield 一条审批决策通知（`AgentEvent(kind="approval")`）——react.py 的真实形态。
+
+    这类事件**不该**被转发成 `approval.resolved`：那会多出一个没有 `approval_id` 的
+    同名事件，前端按 id 匹配不上就无条件清空当前审批卡，把别人正等用户点的卡抹掉。
+    """
+
+    def __init__(self) -> None:
+        self.approval_policy = None
+        self.ask_requester = None
+        self.settings = object()
+
+    async def run(self, content: str):
+        yield AgentEvent(
+            kind="approval",
+            decision=ApprovalDecision(allow=True, reason="user_approved"),
+        )
+        yield AgentEvent(kind="done")
+
+
+def test_approval_decision_notice_is_not_broadcast(tmp_path: Path) -> None:
+    """agent 的审批决策通知不再广播成 `approval.resolved`。
+
+    正主是 `ApprovalBridge` 发的（带 `approval_id`）。多出来的无 id 版本会让前端误清
+    审批卡——并行 worker 时表现为「A 批完，B 正等着的卡突然消失」。
+    """
+    client, project, session, _ = _approval_app(tmp_path)
+    client.app.state.agent_factory = lambda _p, _s: _ApprovalNoticeAgent()
+
+    resolved: list[dict] = []
+    with client.websocket_connect(f"/api/ws/projects/{project['id']}/sessions/{session['id']}") as socket:
+        socket.receive_json()
+        socket.send_json({"type": "user_message", "request_id": "r1", "content": "跑"})
+        for _ in range(40):
+            event = socket.receive_json()
+            if event.get("type") == "approval.resolved":
+                resolved.append(event["data"])
+            if event.get("type") == "session.status" and event["data"].get("status") == "completed":
+                break
+
+    assert resolved == [], "审批决策通知不该被广播成 approval.resolved"
+
+
+def test_approval_events_survive_reconnect(tmp_path: Path) -> None:
+    """审批结束后重连：快照要回放 approval 事件。
+
+    此前审批是浮卡（不进 items、也不在回放白名单），答完即无痕；现在它是时间线条目，
+    刷新 / 重连靠回放重建，且 requested / resolved 两条靠 `approval_id` 对上（前端据此
+    把卡片从「待决」定格成终态）。
+    """
+    client, project, session, _ = _approval_app(tmp_path)
+    decisions: list[ApprovalDecision] = []
+    client.app.state.agent_factory = lambda _p, _s: ApprovalAgent([], decisions)
+    ws = f"/api/ws/projects/{project['id']}/sessions/{session['id']}"
+
+    with client.websocket_connect(ws) as socket:
+        socket.receive_json()
+        socket.send_json({"type": "user_message", "request_id": "r1", "content": "写文件"})
+        for _ in range(40):
+            event = socket.receive_json()
+            if event.get("type") == "approval.requested":
+                socket.send_json({
+                    "type": "approve",
+                    "request_id": "r2",
+                    "approval_id": event["data"]["approval_id"],
+                })
+            if event.get("type") == "session.status" and event["data"].get("status") == "completed":
+                break
+
+    with client.websocket_connect(ws) as socket:
+        snapshot = socket.receive_json()["data"]
+
+    replay = snapshot["replay"]
+    types = [item["type"] for item in replay]
+    assert "approval.requested" in types, "审批请求要能回放，否则刷新后记录消失"
+    assert "approval.resolved" in types, "审批结果同样要回放，卡片才能定格成终态"
+    requested = next(item for item in replay if item["type"] == "approval.requested")
+    resolved = next(item for item in replay if item["type"] == "approval.resolved")
+    assert requested["data"]["approval_id"] == resolved["data"]["approval_id"]
+    assert resolved["data"]["decision"] == "approve"
+
+
 def test_websocket_approval_rejected(tmp_path: Path) -> None:
     client, project, session, _ = _approval_app(tmp_path)
     decisions: list[ApprovalDecision] = []

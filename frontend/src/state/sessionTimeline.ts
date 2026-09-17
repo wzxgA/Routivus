@@ -47,6 +47,23 @@ export interface TeamItem {
 }
 
 /**
+ * 审批 / 提问卡。
+ *
+ * 此前审批是**浮在消息流末尾的单例卡**：答完立刻从 DOM 消失，既不进时间线、也不在
+ * 回放白名单里，等于没有任何记录（想回看"当时批过什么"只能翻 audit.log）。现在它是
+ * 普通条目——`requested` 插在发生的那个位置，`resolved` 原地定格成终态，刷新后随
+ * 快照回放重建，位置与在线时一致。
+ */
+export interface ApprovalItem {
+  kind: 'approval'
+  /** `approval_id`：应答、回放对账都靠它。 */
+  id: string
+  payload: ApprovalRequestedData
+  /** 终态；`null` 表示仍在等待用户应答（此时卡片可交互）。 */
+  resolved: { decision: string; reason: string } | null
+}
+
+/**
  * 对话流里的换档卡（方案 14 §4.5）：结构化载荷由 `routerNoticeView` 生成，
  * 触发判据与旧的文字提示一致（只在 变化 / 回落 / 失败 / 冻结 / 防降级 时出现）。
  * `fresh` 标记"在线事件插入"——回放重建的条目没有它，卡片据此走静态终态
@@ -69,6 +86,7 @@ export type TimelineItem =
   | ToolItem
   | PlanItem
   | TeamItem
+  | ApprovalItem
   | RouterItem
 
 export type ThinkingItem = Extract<TimelineItem, { kind: 'thinking' }>
@@ -288,9 +306,78 @@ function withCardEvent(items: TimelineItem[], type: string, data: Record<string,
       return upsertTaskCard(items, 'team', data as unknown as TeamPayload)
     case 'command.executed':
       return withCommand(items, data)
+    case 'approval.requested':
+      return withApprovalRequested(items, data)
+    case 'approval.resolved':
+      return withApprovalResolved(items, data)
     default:
       return items
   }
+}
+
+/** 把 `approval.requested` 的事件载荷解析成卡片数据；缺 `approval_id` 时返回 null。 */
+function parseApprovalRequested(data: Record<string, unknown>): ApprovalRequestedData | null {
+  const approvalId = String(data.approval_id ?? '')
+  if (!approvalId) return null
+  const ask = data.ask as AskRequest | null | undefined
+  return ask
+    ? {
+        kind: 'ask',
+        approval_id: approvalId,
+        ask,
+        timeout: Number(data.timeout ?? 0),
+        request_id: String(data.request_id ?? ''),
+      }
+    : {
+        kind: 'approval',
+        approval_id: approvalId,
+        tool_name: String(data.tool_name ?? ''),
+        level: String(data.level ?? ''),
+        arguments: (data.arguments as Record<string, unknown>) ?? {},
+        timeout: Number(data.timeout ?? 0),
+        request_id: String(data.request_id ?? ''),
+      }
+}
+
+/** 插入一条待决审批卡（幂等：同一个 `approval_id` 重复到达不会插第二张）。 */
+function withApprovalRequested(
+  items: TimelineItem[],
+  data: Record<string, unknown>,
+): TimelineItem[] {
+  const payload = parseApprovalRequested(data)
+  if (!payload) return items
+  const approvalId = String(payload.approval_id ?? '')
+  if (!approvalId) return items
+  if (items.some((item) => item.kind === 'approval' && item.id === approvalId)) {
+    return items
+  }
+  return [...items, { kind: 'approval', id: approvalId, payload, resolved: null }]
+}
+
+/**
+ * 把对应卡片定格成终态。
+ *
+ * **没有 `approval_id` 的事件一律不碰任何卡**：历史上 worker 的审批决策通知就只带
+ * `tool_call_id`，无条件清卡会把别人正等着用户点的卡抹掉（详见 `server/app.py`
+ * 里 `kind == "approval"` 那段注释）。只定格一次，重复的 resolved 是幂等的。
+ */
+function withApprovalResolved(
+  items: TimelineItem[],
+  data: Record<string, unknown>,
+): TimelineItem[] {
+  const approvalId = String(data.approval_id ?? '')
+  if (!approvalId) return items
+  return items.map((item) =>
+    item.kind === 'approval' && item.id === approvalId && item.resolved === null
+      ? {
+          ...item,
+          resolved: {
+            decision: String(data.decision ?? ''),
+            reason: String(data.reason ?? ''),
+          },
+        }
+      : item,
+  )
 }
 
 /**
@@ -607,34 +694,26 @@ export function useSessionTimeline(
             return
           }
           case 'approval.requested': {
-            const ask = data.ask as AskRequest | null | undefined
-            const requested: ApprovalRequestedData = ask
-              ? {
-                  kind: 'ask',
-                  approval_id: String(data.approval_id ?? ''),
-                  ask,
-                  timeout: Number(data.timeout ?? 0),
-                  request_id: String(data.request_id ?? ''),
-                }
-              : {
-                  kind: 'approval',
-                  approval_id: String(data.approval_id ?? ''),
-                  tool_name: String(data.tool_name ?? ''),
-                  level: String(data.level ?? ''),
-                  arguments: (data.arguments as Record<string, unknown>) ?? {},
-                  timeout: Number(data.timeout ?? 0),
-                  request_id: String(data.request_id ?? ''),
-                }
-            setApproval(requested)
+            const requested = parseApprovalRequested(data)
+            if (requested) {
+              // 单例 state 仍保留：resolveApproval / answerAsk 要从它身上取 approval_id。
+              // 卡片本身已经进 items（见 withApprovalRequested），不再单独渲染浮卡。
+              setApproval(requested)
+              setItems((current) => withApprovalRequested(current, data))
+            }
             setAudit((current) => ({ ...current, approvals: current.approvals + 1 }))
             return
           }
           case 'approval.resolved': {
+            // 只认带 `approval_id` 的（ApprovalBridge 的正主）。没有 id 的事件一律不碰
+            // 当前待决——历史上 worker 的审批决策通知就没带 id，无条件清空会把别人正
+            // 等你点的卡抹掉。
             setApproval((current) => {
               const resolvedId = String(data.approval_id ?? '')
-              if (current && resolvedId && current.approval_id !== resolvedId) return current
-              return null
+              if (!resolvedId || !current) return current
+              return current.approval_id === resolvedId ? null : current
             })
+            setItems((current) => withApprovalResolved(current, data))
             return
           }
           case 'session.status': {
