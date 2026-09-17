@@ -5,13 +5,15 @@ import type {
   PlanPayload,
   RouterState,
   Session,
+  TeamPayload,
 } from '../../api/types'
 import type { AuditTotals, UsageTotals } from '../../state/sessionTimeline'
 import type { ConnState } from '../../ws/sessionSocket'
 import { formatDateTime, formatNumber } from '../../utils/format'
 import { reasonSummary } from '../../utils/routerNotes'
+import { teamStatusText, teamStatusTone, teamTaskMark } from '../../utils/teamStatus'
 
-const TABS = ['Session', 'Plan', 'Memory', 'Safety'] as const
+const TABS = ['Session', 'Plan', 'Team', 'Memory', 'Safety'] as const
 type TabName = (typeof TABS)[number]
 
 const STATUS_TEXT: Record<string, string> = {
@@ -37,6 +39,11 @@ interface SidePanelProps {
   audit: AuditTotals
   connection: ConnState
   plan: PlanPayload | null
+  /**
+   * 最近一次团队任务（方案 16）。只读总览——续跑 / 补范围的按钮留在消息流的
+   * 团队卡上，那里有带状态的勾选表单，复制一份必然与服务端能力漂移。
+   */
+  team: TeamPayload | null
   projectPath: string | null
   projectNotes: number
   memory: MemoryPayload | null
@@ -64,6 +71,7 @@ export function SidePanel({
   audit,
   connection,
   plan,
+  team,
   projectPath,
   projectNotes,
   memory,
@@ -91,6 +99,22 @@ export function SidePanel({
     contextBudget && contextBudget.limit > 0
       ? Math.min(1, contextBudget.estimated / contextBudget.limit)
       : 0
+  // Team 页签（方案 16）：只读总览，不复制任何操作控件
+  const teamTasks = team?.plan?.tasks ?? []
+  const teamDone = teamTasks.filter((task) => task.status === 'done').length
+  // 「补个范围就能救」的那个任务：卡上给的是勾选入口，这里只指路
+  const teamScopeTask =
+    teamTasks.find((task) => task.needs_scope && task.status === 'failed') ?? null
+  // 当前批次：`batch` 是任务 id 列表，拿它去 batches 里比对（顺序无关）
+  const teamBatch = (() => {
+    const batches = team?.plan?.batches ?? []
+    const current = team?.batch ?? []
+    if (current.length === 0 || batches.length === 0) return ''
+    const key = [...current].sort().join('|')
+    const index = batches.findIndex((batch) => [...batch].sort().join('|') === key)
+    return index >= 0 ? `第 ${index + 1}/${batches.length} 批` : `共 ${batches.length} 批`
+  })()
+
   const memoryItems = memory?.items ?? []
   const memoryEmptyHint =
     memory?.status === 'unavailable'
@@ -334,6 +358,128 @@ export function SidePanel({
             <div className="hint">
               使用 <code>/plan go</code> 继续、<code>/plan edit</code> 追加要求、<code>/plan abort</code> 终止。
             </div>
+          </>
+        ) : null}
+
+        {tab === 'Team' ? (
+          <>
+            <div className="sec-title">团队任务</div>
+            {team ? (
+              <>
+                <div className="kv">
+                  <span>主任务</span>
+                  <span>{team.plan?.goal ?? team.message ?? '—'}</span>
+                </div>
+                <div className="kv">
+                  <span>状态</span>
+                  <span>
+                    <span
+                      className={teamStatusTone(team.kind) === 'warn' ? 'pill-warn' : 'pill-ok'}
+                    >
+                      {teamStatusText(team.kind)}
+                    </span>
+                  </span>
+                </div>
+                {team.message ? (
+                  <div className="hint" style={{ marginTop: 2 }}>
+                    {team.message}
+                    {team.failure_category ? (
+                      <span className="mono"> · {team.failure_category}</span>
+                    ) : null}
+                  </div>
+                ) : null}
+                {team.resume_count ? (
+                  <div className="kv">
+                    <span>已续跑</span>
+                    <span className="num">{team.resume_count} 次</span>
+                  </div>
+                ) : null}
+
+                <div className="sec-title" style={{ marginTop: 10 }}>
+                  Worker 进度
+                </div>
+                {teamTasks.length > 0 ? (
+                  <ul className="steps">
+                    {teamTasks.map((task) => {
+                      const mark = teamTaskMark(task.status)
+                      return (
+                        <li key={task.id}>
+                          <span className={`mk ${mark.cls}`}>{mark.glyph}</span>
+                          <span className="team-step">
+                            <span className="team-step-head">
+                              <span
+                                className={
+                                  task.status === 'done'
+                                    ? 'step-done'
+                                    : task.status === 'running'
+                                      ? 'step-run'
+                                      : ''
+                                }
+                              >
+                                {task.title}
+                              </span>
+                              <span className="team-role">{task.owner_role}</span>
+                            </span>
+                            {task.status === 'failed' && task.failure_category ? (
+                              <span className="team-fail">{task.failure_category}</span>
+                            ) : null}
+                          </span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                ) : (
+                  <div className="hint">还没有拆出子任务。</div>
+                )}
+
+                <div className="sec-title" style={{ marginTop: 10 }}>
+                  进度
+                </div>
+                <div className="kv">
+                  <span>已完成</span>
+                  <span className="num">
+                    {teamDone}/{teamTasks.length}
+                  </span>
+                </div>
+                <div className="bar">
+                  <i
+                    style={{
+                      width: `${
+                        teamTasks.length > 0 ? (teamDone / teamTasks.length) * 100 : 0
+                      }%`,
+                    }}
+                  />
+                </div>
+                {teamBatch ? (
+                  <div className="kv">
+                    <span>批次</span>
+                    <span className="num">{teamBatch}</span>
+                  </div>
+                ) : null}
+                {team.task ? (
+                  <div className="kv">
+                    <span>运行中</span>
+                    <span>{team.task.title}</span>
+                  </div>
+                ) : null}
+                {teamScopeTask ? (
+                  <div className="hint">
+                    「{teamScopeTask.title}」无法确定可授权的写入范围——到消息流的团队卡上点
+                    「选择修改范围并继续」。
+                  </div>
+                ) : null}
+                {team.resumable ? (
+                  <div className="hint">
+                    此任务可续跑，按钮在消息流的团队卡上（那里能勾选授权范围）。
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <div className="hint">
+                当前会话没有团队任务。用 <code>/team &lt;任务&gt;</code> 发起，多个 Agent 会
+                并行协作。
+              </div>
+            )}
           </>
         ) : null}
 

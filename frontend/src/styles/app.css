@@ -3251,7 +3251,9 @@ button {
   background: transparent;
   border: 1px solid transparent;
   border-bottom: none;
-  padding: 5px 12px;
+  /* 五个页签（Session / Plan / Team / Memory / Safety）要在 340px 里排下，
+     水平内边距收窄给中文标签留余量 */
+  padding: 5px 8px;
   border-radius: 7px 7px 0 0;
   cursor: pointer;
   position: relative;
@@ -3359,6 +3361,32 @@ button {
 }
 .step-run {
   font-weight: 600;
+}
+/* Team 页签（方案 16）：任务行比 Plan 多一列角色标签与失败原因，纵向排布 */
+.team-step {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.team-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.team-role {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--beige-deep);
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.team-fail {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--danger);
 }
 .mem-item {
   padding: 5px 0;

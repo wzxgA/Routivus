@@ -78,6 +78,19 @@ export function ChatView({
     return null
   })()
 
+  /**
+   * 最近一次团队任务（方案 16）：与 `latestPlan` 同构——`upsertTaskCard` 在
+   * `team_started` 时开新卡、后续事件更新最后一张，所以"最近一次"就是最后一个
+   * `kind === 'team'` 的条目。侧栏 Team 页签据此做常驻总览（不新增后端接口）。
+   */
+  const latestTeam = (() => {
+    for (let i = timeline.items.length - 1; i >= 0; i -= 1) {
+      const item = timeline.items[i]
+      if (item.kind === 'team') return item.payload
+    }
+    return null
+  })()
+
   const handleScroll = useCallback(() => {
     const element = scrollRef.current
     if (!element) return
@@ -211,6 +224,7 @@ export function ChatView({
         audit={timeline.audit}
         connection={timeline.connection}
         plan={latestPlan}
+        team={latestTeam}
         projectPath={projectPath}
         projectNotes={projectNotesCount}
         memory={timeline.memory}

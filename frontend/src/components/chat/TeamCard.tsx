@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { TeamPayload } from '../../api/types'
+import { teamStatusText, teamStatusTone } from '../../utils/teamStatus'
 
 interface TeamCardProps {
   payload: TeamPayload
@@ -17,18 +18,9 @@ export function TeamCard({ payload, onResume, highlight = false }: TeamCardProps
   const plan = payload.plan
   const tasks = plan?.tasks ?? []
   const activeTask = payload.task
-  const statusText =
-    payload.kind === 'team_done'
-      ? '已完成'
-      : payload.kind === 'team_failed'
-        ? '失败'
-        : payload.kind === 'cancelled'
-          ? '已取消'
-          : payload.kind === 'team_review'
-            ? '待审阅'
-            : payload.kind === 'approved'
-              ? '已批准'
-              : '进行中'
+  // 文案与色调走共享函数：侧栏 Team 页签显示的是同一份（方案 16 §6）
+  const statusText = teamStatusText(payload.kind)
+  const statusTone = teamStatusTone(payload.kind)
 
   // 「补范围救任务」（方案 15 §4.6）：只有"无法安全确定写入范围"而失败的任务会被
   // 服务端标记 needs_scope。候选来自服务端保守提取（任务已声明的 claims + 同伴的
@@ -47,11 +39,7 @@ export function TeamCard({ payload, onResume, highlight = false }: TeamCardProps
       <div className="task-head">
         <span className="task-mode team">团队</span>
         <span className="task-name">{plan?.goal ?? payload.message ?? '团队任务'}</span>
-        <span
-          className={
-            payload.kind === 'team_failed' || payload.kind === 'cancelled' ? 'pill-warn' : 'pill-ok'
-          }
-        >
+        <span className={statusTone === 'warn' ? 'pill-warn' : 'pill-ok'}>
           {statusText}
         </span>
       </div>
