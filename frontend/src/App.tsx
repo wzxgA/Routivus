@@ -46,6 +46,7 @@ export function App() {
 
   const [renameTarget, setRenameTarget] = useState<Project | null>(null)
   const [removeTarget, setRemoveTarget] = useState<Project | null>(null)
+  const [sessionRenameTarget, setSessionRenameTarget] = useState<Session | null>(null)
   const [sessionDeleteTarget, setSessionDeleteTarget] = useState<Session | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [filesOpen, setFilesOpen] = useState(false)
@@ -293,6 +294,7 @@ export function App() {
         onNewProject={() => setNewProjectOpen(true)}
         onSelectSession={handleSelectSession}
         onNewSession={() => void handleNewSession()}
+        onRequestRenameSession={setSessionRenameTarget}
         onRequestDeleteSession={setSessionDeleteTarget}
         onGoHome={() => navigate(HOME)}
         onGoNotes={() => navigate(GLOBAL_NOTES)}
@@ -386,6 +388,16 @@ export function App() {
             await refresh()
             // 若当前正停留在被移除的项目里，退回首页，避免停留在悬空路由
             if (projectId === removedId) navigate(HOME)
+          }}
+        />
+      ) : null}
+
+      {sessionRenameTarget ? (
+        <RenameSessionModal
+          session={sessionRenameTarget}
+          onClose={() => setSessionRenameTarget(null)}
+          onRename={async (title) => {
+            await workspace.renameSession(sessionRenameTarget.id, title)
           }}
         />
       ) : null}
@@ -650,6 +662,89 @@ function RemoveProjectModal({
       <div className="ed-meta" style={{ marginTop: 6 }}>
         该项目的会话、消息与笔记仍保留在本地数据库中；重新添加同一路径即可恢复可见。
         若该项目仍有运行中的会话，服务端会拒绝移除（先停止会话）。
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * 重命名会话（左侧会话列表右键触发）。
+ *
+ * 走 `PATCH /api/sessions/{id}`，只动标题：消息、工具卡与用量记录都不受影响。
+ * `renameSession` 成功后就地更新会话列表，而 `activeSession` 是由列表派生的，
+ * 所以左侧列表与顶栏会立刻跟着变，不需要重新拉取。
+ */
+function RenameSessionModal({
+  session,
+  onClose,
+  onRename,
+}: {
+  session: Session
+  onClose: () => void
+  onRename: (title: string) => Promise<void>
+}) {
+  const [name, setName] = useState(session.title)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const submit = async () => {
+    const trimmed = name.trim()
+    if (!trimmed) {
+      setError('会话名称不能为空')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      await onRename(trimmed)
+      onClose()
+    } catch (err) {
+      // 失败原因摆在框里（例如后端 200 字上限、会话已被删），不只落在页面顶部
+      setError(describeError(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      title={`重命名会话：${session.title}`}
+      description="只改显示名，会话的消息与运行记录保持不变。"
+      onClose={onClose}
+      actions={
+        <>
+          <button type="button" className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={saving || !name.trim() || name.trim() === session.title}
+            onClick={() => void submit()}
+          >
+            {saving ? '保存中…' : '保存'}
+          </button>
+        </>
+      }
+    >
+      {error ? (
+        <div className="banner error" style={{ margin: '0 0 10px' }}>
+          {error}
+        </div>
+      ) : null}
+      <div className="field">
+        <label htmlFor="rename-session">会话名称</label>
+        <input
+          id="rename-session"
+          value={name}
+          autoFocus
+          // 与后端 storage.update_session 的上限一致（超了会 422），这里先挡住
+          maxLength={200}
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') void submit()
+          }}
+        />
       </div>
     </Modal>
   )

@@ -14,6 +14,8 @@ interface NavProps {
   onNewProject: () => void
   onSelectSession: (sessionId: string) => void
   onNewSession: () => void
+  /** 右键「重命名会话」：由上层弹输入框后执行（只改显示名）。 */
+  onRequestRenameSession: (session: Session) => void
   /** 右键「删除会话」：由上层弹确认框后真正执行（删除是不可逆的）。 */
   onRequestDeleteSession: (session: Session) => void
   onGoHome: () => void
@@ -32,6 +34,7 @@ export function Nav({
   onNewProject,
   onSelectSession,
   onNewSession,
+  onRequestRenameSession,
   onRequestDeleteSession,
   onGoHome,
   onGoNotes,
@@ -180,6 +183,11 @@ export function Nav({
           y={openSessionMenu.y}
           onClose={sessionMenu.close}
           items={[
+            {
+              key: 'rename-session',
+              label: '重命名会话',
+              onSelect: () => onRequestRenameSession(openSessionMenu.target),
+            },
             {
               key: 'delete-session',
               label: '删除会话',

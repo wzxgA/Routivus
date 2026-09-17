@@ -13,7 +13,7 @@ export interface ProjectWorkspaceValue {
   refresh: () => Promise<void>
   refreshNotes: (query?: string) => Promise<void>
   createSession: () => Promise<Session | null>
-  renameSession: (sessionId: string, title: string) => Promise<void>
+  renameSession: (sessionId: string, title: string) => Promise<Session>
   removeSession: (sessionId: string) => Promise<void>
   applySessionUpdate: (session: Session) => void
 }
@@ -110,13 +110,12 @@ export function useProjectWorkspace(
     }
   }, [projectId])
 
-  const renameSession = useCallback(async (targetId: string, title: string) => {
-    try {
-      const updated = await api.updateSession(targetId, title)
-      setSessions((current) => current.map((s) => (s.id === targetId ? updated : s)))
-    } catch (err) {
-      setError(describeError(err))
-    }
+  const renameSession = useCallback(async (targetId: string, title: string): Promise<Session> => {
+    // 与 removeSession 同理：失败**继续抛**给调用方（重命名输入框），让它把原因摆在
+    // 用户眼前，而不是只落在页面顶部的错误条里。
+    const updated = await api.updateSession(targetId, title)
+    setSessions((current) => current.map((s) => (s.id === targetId ? updated : s)))
+    return updated
   }, [])
 
   const removeSession = useCallback(async (targetId: string) => {

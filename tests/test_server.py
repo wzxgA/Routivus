@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from routivus.server import ProjectRegistry, create_app
@@ -111,6 +112,56 @@ def test_project_crud_does_not_mutate_project_directory(tmp_path: Path) -> None:
     assert deleted.status_code == 204
     assert client.get(f"/api/projects/{project_id}").status_code == 404
     assert marker.read_text(encoding="utf-8") == "# demo\n"
+
+
+def test_session_rename_only_touches_title(tmp_path: Path) -> None:
+    """会话重命名（`PATCH /api/sessions/{id}`）只改标题。
+
+    这条路径此前没有测试覆盖，而左侧会话列表右键的「重命名会话」就打在它上面：
+    改完必须能从会话详情与列表里都读到新标题（不是只改了返回值），且 id /
+    project_id / status 原样——重命名不该顺带改任何别的状态。
+    """
+    client, workspace, _ = _client(tmp_path)
+    project_root = workspace / "demo"
+    project_root.mkdir()
+    project = client.post(
+        "/api/projects", json={"name": "Demo", "root_path": str(project_root)}
+    ).json()
+    session = client.post(
+        f"/api/projects/{project['id']}/sessions", json={"title": "新建会话"}
+    ).json()
+
+    renamed = client.patch(f"/api/sessions/{session['id']}", json={"title": "登录重构"})
+
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "登录重构"
+    assert client.get(f"/api/sessions/{session['id']}").json()["title"] == "登录重构"
+    listed = client.get(f"/api/projects/{project['id']}/sessions").json()
+    assert [item["title"] for item in listed] == ["登录重构"]
+    assert renamed.json()["id"] == session["id"]
+    assert renamed.json()["project_id"] == session["project_id"]
+    assert renamed.json()["status"] == session["status"]
+
+
+@pytest.mark.parametrize("title", ["", "x" * 201])
+def test_session_rename_rejects_empty_or_overlong_title(tmp_path: Path, title: str) -> None:
+    """空标题与超 200 字都要被拒：前端的 maxLength 只是顺手挡一下，不是唯一防线。"""
+    client, workspace, _ = _client(tmp_path)
+    project_root = workspace / "demo"
+    project_root.mkdir()
+    project = client.post(
+        "/api/projects", json={"name": "Demo", "root_path": str(project_root)}
+    ).json()
+    session = client.post(
+        f"/api/projects/{project['id']}/sessions", json={"title": "新建会话"}
+    ).json()
+
+    response = client.patch(f"/api/sessions/{session['id']}", json={"title": title})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    # 被拒之后原标题原样留着，不会被写坏
+    assert client.get(f"/api/sessions/{session['id']}").json()["title"] == "新建会话"
 
 
 def test_remove_project_blocked_while_session_running(tmp_path: Path) -> None:
