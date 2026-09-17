@@ -44,6 +44,8 @@ from routivus.server.files import (
     list_entries,
     read_image,
     read_text_file,
+    reference_hint,
+    search_paths,
     write_text_file,
 )
 from routivus.server.insights import router_insights as build_router_insights
@@ -1185,6 +1187,18 @@ def create_app(
             Path(project.root_path), path, include_ignored=include_ignored
         )
 
+    @router.get("/projects/{project_id}/files/search")
+    async def search_project_files(
+        project_id: str, q: str = "", limit: int = 20
+    ) -> dict[str, Any]:
+        """按路径片段搜项目内文件（方案 05 §5.1）。
+
+        只读、只匹配路径（不读文件内容），返回结构与文件树一致。与 `/completions`
+        **不合并**：那是 slash 命令补全，语义与数据源都不同（方案 §6）。
+        """
+        project = require_project(project_id)
+        return search_paths(Path(project.root_path), q, limit=limit)
+
     @router.get("/projects/{project_id}/file")
     async def read_project_file(project_id: str, path: str) -> dict[str, Any]:
         """读文本文件：二进制只给元信息；超限截断、解码失败标记 lossy（两者禁止保存）。"""
@@ -2215,7 +2229,16 @@ def create_app(
             forwarder.set_attrs(**model_attrs(agent))
             # 普通轮在执行前路由换档（/plan、/team 不路由，与 TUI 一致）
             await apply_smart_routing(forwarder, agent, content, session)
-            stream = agent.run(content)
+            # `@` 文件引用（方案 05 §4.1）：只有**发给模型的这一份**带提示段——落库、
+            # 路由、消息流仍用原文。提示段只含"提到了哪些路径、在不在"，不含内容。
+            prompt = content
+            try:
+                hint = reference_hint(Path(project.root_path), content)
+            except Exception:  # noqa: BLE001 - 提示段是增益，失败不该拦住这一轮
+                hint = ""
+            if hint:
+                prompt = f"{content}\n\n{hint}"
+            stream = agent.run(prompt)
             if inspect.isawaitable(stream):
                 stream = await stream
             async for item in stream:

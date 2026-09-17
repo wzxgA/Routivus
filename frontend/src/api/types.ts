@@ -584,6 +584,19 @@ export interface FileListing {
 }
 
 /**
+ * `@` 文件引用的路径搜索结果（方案 05 §5.1）。
+ *
+ * `entries` 与文件树**同一套结构**（同一个后端 `_entry`），所以前端不必为补全
+ * 另写一份解析。`query` 为空时只给项目根下一层，不做递归。
+ */
+export interface FileSearchResult {
+  query: string
+  entries: FileEntry[]
+  truncated: boolean
+  limit: number
+}
+
+/**
  * 文件内容。三类护栏：`binary` 不下发内容；`lossy`（含无法解码字节）与
  * `truncated`（超 1MB）虽然能看，但**不能保存**（`editable` 为 false）。
  */

@@ -6,6 +6,7 @@ import type {
   DesktopInfo,
   FileContent,
   FileListing,
+  FileSearchResult,
   FileWriteResult,
   MaxTokensField,
   MemoryPayload,
@@ -93,6 +94,23 @@ export const listProjectFiles = (
   request<FileListing>(`/projects/${projectId}/files`, {
     query: { path, include_ignored: options?.includeIgnored ? '1' : '' },
     signal: options?.signal,
+  })
+
+/**
+ * 按路径片段搜项目内文件（`@` 引用补全用，方案 05 §5.1）。
+ *
+ * 只读、只匹配路径（不读文件内容）；`q` 为空时后端只给根下一层，不做全量扫描。
+ * 与 `/completions` 刻意**不合并**：那个是 slash 命令补全，语义与数据源都不同。
+ */
+export const searchProjectFiles = (
+  projectId: string,
+  q: string,
+  limit = 20,
+  signal?: AbortSignal,
+) =>
+  request<FileSearchResult>(`/projects/${projectId}/files/search`, {
+    query: { q, limit },
+    signal,
   })
 
 /** 读文本文件（二进制只给元信息；超限截断、解码失败标 lossy）。 */

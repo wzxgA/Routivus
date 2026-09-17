@@ -182,6 +182,7 @@ export function ChatView({
 
         <Composer
           prompt={projectName}
+          projectId={projectId}
           value={composer}
           history={history}
           sessionId={session?.id ?? null}

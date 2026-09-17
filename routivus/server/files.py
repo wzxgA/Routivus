@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -576,3 +577,163 @@ def delete_entry(root: Path, raw: str | None, *, recursive: bool = False) -> dic
 
     _audit_delete(root, rel, kind, recursive)
     return {"path": rel, "type": kind, "deleted": True, "recursive": recursive}
+
+
+# ---------- `@` 文件引用（方案 05）----------
+# 完整设计与取舍见 plans/enhancement/05-at-file-reference.md。两条硬约束：
+# 1. 解析是**白名单式**的（§3.2）——只认"`@` + 项目内相对路径"这一种形态，
+#    其余一律当普通文本，宁可不认也不错认（`a@b.com`、`@@x`、`@../x` 都不识别）；
+# 2. 提示段**只含路径与是否存在**（§4.1），不读文件内容，也不写库、不推事件。
+
+MAX_REF_CHARS = 512  # 单个 `@` 引用 / 搜索前缀的长度上限
+MAX_SEARCH_RESULTS = 20  # 搜索结果上限（与方案 §5.1 一致）
+MAX_SEARCH_SCAN = 20_000  # 递归扫描条目上限：宁可少给结果，也不在大仓库上长时间阻塞
+
+# 路径在标点处结束：中文逗号 / 顿号是"引用后接标点"最常见的写法（`@a.ts、@b.ts`），
+# 把标点吃进路径会凭空多出一条"不存在"的引用去干扰模型；半角冒号同理，顺带让
+# `@src/a.py:42` 这种行号写法退化成对 `src/a.py` 的引用，而不是整条作废。
+_REF_BOUNDARY = "，。、；：！？（）【】《》“”‘’\"',;:!?"
+_AT_REF_RE = re.compile(rf"(?:^|[\s{_REF_BOUNDARY}])@([^\s@{_REF_BOUNDARY}]+)")
+"""`@` 前必须是行首、空白或标点；路径段不含空白、不含第二个 `@`、也不含标点。
+
+前置允许标点是"标点即边界"的配套：`@a.ts、@b.ts` 里第二个引用的 `@` 前面正是顿号。
+`a@b.com` 仍然不匹配（`@` 前是字母），`@@x` 也不匹配（路径段以 `@` 开头）。
+"""
+
+
+def _is_valid_ref(raw: str) -> bool:
+    """白名单式校验：只认"项目内相对路径"这一种形态。"""
+    if not raw or len(raw) > MAX_REF_CHARS:
+        return False
+    if raw[0] in {'"', "'", "/", "\\"}:
+        return False
+    if '"' in raw or "'" in raw:  # 不做引号转义：含空格的路径（`@"my file.ts"`）不支持
+        return False
+    if any(part == ".." for part in raw.replace("\\", "/").split("/")):
+        return False
+    return True
+
+
+def parse_at_references(text: str) -> list[str]:
+    """从文本里解析 `@<相对路径>`；按出现顺序去重，纯函数、不碰文件系统。
+
+    这是"落库仍是原文、只有发给模型的那一份带提示段"的实现基础：解析结果只用于
+    构造 prompt，不写库、不推事件。
+    """
+    if not isinstance(text, str) or "@" not in text:
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _AT_REF_RE.finditer(text):
+        raw = match.group(1)
+        if not _is_valid_ref(raw):
+            continue
+        rel = raw.replace("\\", "/")
+        if rel in seen:
+            continue
+        seen.add(rel)
+        found.append(rel)
+    return found
+
+
+def reference_hint(root: Path, text: str) -> str:
+    """构造发给模型的 `@` 引用提示段；没有引用时返回空串。
+
+    刻意保持极短，且**只给路径与存在性**：文件内容交给 `read_file` 按需读取，
+    既不把 `.env` 之类的内容顺手读进上下文，也不占用可观的 token。行数属方案
+    §9.1 的开放问题，这里选择不读文件（`stat` 拿不到行数），换零 IO 风险。
+    """
+    refs = parse_at_references(text)
+    if not refs:
+        return ""
+    lines = ["[用户提到的项目内文件]"]
+    for rel in refs:
+        try:
+            target = resolve_in_root(root, rel)
+        except WorkspaceFileError:
+            # 软链接指向根外等情况：路径本身合法但用不了，如实标注
+            lines.append(f"- {rel}（不可用）")
+            continue
+        if target.is_dir():
+            lines.append(f"- {rel}（目录）")
+        elif target.is_file():
+            lines.append(f"- {rel}（存在）")
+        else:
+            lines.append(f"- {rel}（不存在）")
+    lines.append("")
+    lines.append("需要时用 read_file 查看内容。")
+    return "\n".join(lines)
+
+
+def search_paths(
+    root: Path, raw_query: str | None, *, limit: int = MAX_SEARCH_RESULTS
+) -> dict[str, Any]:
+    """按路径片段搜项目内条目（只读；只匹配路径，不读文件内容）。
+
+    返回结构与文件树共用 `_entry`（方案 §5.1 要求"避免两套"），前端不必写第二份解析。
+
+    - 查询非法（绝对路径、含 `..`、超长）直接 422 —— 不静默兜底成"全量扫描"；
+    - 空查询只给**根下一层**（方案 §5.1 首选）：不做递归，成本与打一次文件树相同；
+    - 递归只发生在查询所称的目录里（`src/ma` 从 `src/` 往下扫），并剪掉忽略目录；
+    - 排序：末段以查询开头优先 → 路径短优先 → 字典序，取前 `limit` 条。
+    """
+    capped = max(1, min(int(limit), MAX_SEARCH_RESULTS))
+    query = str(raw_query or "").strip().replace("\\", "/")
+    if len(query) > MAX_REF_CHARS:
+        raise WorkspaceFileError(422, "invalid_query", f"查询前缀不能超过 {MAX_REF_CHARS} 字符")
+    if not query:
+        listing = list_entries(root, "", include_ignored=False)
+        entries = listing["entries"]
+        return {
+            "query": "",
+            "entries": entries[:capped],
+            "truncated": bool(listing["truncated"]) or len(entries) > capped,
+            "limit": capped,
+        }
+    if Path(query).is_absolute() or query.startswith("/"):
+        raise WorkspaceFileError(422, "invalid_query", "只支持项目内相对路径前缀")
+    rel_query = normalize_rel(query)  # 含 `..` 时在这里抛 422
+    if not rel_query:
+        return {"query": "", "entries": [], "truncated": False, "limit": capped}
+
+    base_rel = rel_query.rsplit("/", 1)[0] if "/" in rel_query else ""
+    start = resolve_in_root(root, base_rel)
+    if not start.is_dir():
+        return {"query": rel_query, "entries": [], "truncated": False, "limit": limit}
+
+    needle = rel_query.casefold()
+    needle_tail = rel_query.rsplit("/", 1)[-1].casefold()
+    base_abs = str(root.resolve())
+    matches: list[tuple[tuple[int, int, str], dict[str, Any]]] = []
+    scanned = 0
+    exhausted = False
+
+    for dirpath, dirnames, filenames in os.walk(start):
+        # os.walk 默认不跟随软链接；再剪掉忽略目录，与文件树口径一致
+        dirnames[:] = sorted(name for name in dirnames if name not in IGNORED_DIRS)
+        # 目录相对根的路径：用字符串拼接（`rel_path` 会 resolve 软链接，可能越界回退）
+        parent_rel = Path(dirpath).relative_to(base_abs).as_posix()
+        parent_rel = "" if parent_rel == "." else parent_rel
+        for name in [*dirnames, *sorted(filenames)]:
+            scanned += 1
+            if scanned > MAX_SEARCH_SCAN:
+                exhausted = True
+                break
+            rel = f"{parent_rel}/{name}" if parent_rel else name
+            if needle not in rel.casefold() or _ignored_anywhere(rel):
+                continue
+            item = _entry(root, Path(dirpath) / name, include_ignored=False)
+            if item is None:
+                continue
+            rank = (0 if name.casefold().startswith(needle_tail) else 1, len(rel), rel)
+            matches.append((rank, item))
+        if exhausted:
+            break
+
+    matches.sort(key=lambda pair: pair[0])
+    return {
+        "query": rel_query,
+        "entries": [item for _, item in matches[:capped]],
+        "truncated": exhausted or len(matches) > capped,
+        "limit": capped,
+    }

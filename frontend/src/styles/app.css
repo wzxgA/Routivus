@@ -2793,6 +2793,56 @@ button {
   color: var(--text);
 }
 
+/* Composer 外壳：chip 行与输入行共用同一底色，避免出现两段色带 */
+.composer-wrap {
+  flex: 0 0 auto;
+}
+
+/* 已引用文件 chip（方案 05 A+B）：在输入框**外面**独立一行，× 直接摘掉引用 */
+.cprefs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 9px 14px 0;
+  background: var(--panel);
+}
+.cprefs-label {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.cpref {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 280px;
+  padding: 1px 3px 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.cpref-name {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cpref-x {
+  flex: 0 0 auto;
+  padding: 0 3px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+.cpref-x:hover {
+  color: var(--danger);
+}
+
 /* Composer */
 .composer {
   flex: 0 0 auto;
@@ -2839,6 +2889,64 @@ button {
   color: var(--faint);
 }
 .composer input:disabled {
+  opacity: 0.6;
+}
+
+/*
+ * `@` 引用高亮（方案 05 方案 A）：覆盖层 .cinput-hl 与 textarea 必须**共享同一套
+ * 行盒参数** —— 字体、字号、行高、padding、换行策略全部一致，底纹才不会跑位。
+ *
+ * 覆盖层只画背景，颜色设成 transparent（连 mark 的文字也透明），真正的文字、光标、
+ * 选区与 IME 全由 textarea 提供——这是选择"覆盖层"而不是 contenteditable 的原因：
+ * 边缘行为全部保持原生，代价是底纹只能变色、不能把路径画成药丸（会改宽度而错位）。
+ */
+.cinput {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.cinput-hl,
+.cinput textarea {
+  margin: 0;
+  padding: 2px 0;
+  border: none;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: normal;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.cinput-hl {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: transparent;
+  pointer-events: none;
+  user-select: none;
+}
+.cinput-hl mark {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: transparent;
+}
+.cinput textarea {
+  position: relative;
+  display: block;
+  width: 100%;
+  max-height: 120px;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+  resize: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.cinput textarea::placeholder {
+  color: var(--faint);
+}
+.cinput textarea:disabled {
   opacity: 0.6;
 }
 
@@ -4082,6 +4190,7 @@ kbd {
 [data-theme='night'] .topbar,
 [data-theme='night'] .foot,
 [data-theme='night'] .composer,
+[data-theme='night'] .cprefs,
 [data-theme='night'] .side,
 [data-theme='night'] .notes-side {
   background: rgba(18, 18, 18, 0.88);
