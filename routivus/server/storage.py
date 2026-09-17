@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from collections.abc import Sequence
@@ -13,7 +14,18 @@ from typing import Any, Literal
 from uuid import uuid4
 
 
+logger = logging.getLogger(__name__)
+
 SessionStatus = Literal["idle", "running", "waiting_approval", "completed", "failed", "cancelled"]
+
+# 历史里可以安全清理的事件类型（Optimization 01 §5.5）。判定标准与 app 层的
+# `_EPHEMERAL_EVENT_TYPES` 一致：**落库之后没有任何读取方**——
+#   message.delta     前端只在 WS 实时消费；重连恢复正文靠 messages 表的段落，不靠它。
+#   session.snapshot  只为占一个序号而写，正文从不被读回（§5.3 之后更是空占位）。
+# 刻意**按类型清理，而不是按条数截断**：卡片类事件（plan.updated / team.updated /
+# tool.* / approval.*）是重连回放必需的，按条数截断会让长会话丢最新卡片
+# （方案 07 §4.6b）；而收益本就集中在这两类上——实测占 events payload 的 55%。
+_PURGEABLE_EVENT_TYPES = ("message.delta", "session.snapshot")
 # thinking：模型推理段（仅展示用，方案 07 §4.1；不参与 agent 上下文重建）
 MessageRole = Literal["user", "assistant", "tool", "system", "thinking"]
 _MISSING = object()
@@ -645,6 +657,51 @@ class WorkspaceStore:
         with self._lock, self._connect() as conn:
             row = conn.execute("SELECT COALESCE(MAX(sequence), 0) FROM events WHERE session_id = ?", (session_id,)).fetchone()
         return int(row[0])
+
+    # ---------- 存储维护（Optimization 01 §5.5）----------
+
+    def purge_unread_events(self) -> int:
+        """删掉历史里**没有任何读取方**的事件，返回删除行数。
+
+        只删 `_PURGEABLE_EVENT_TYPES` 里的类型，卡片类事件一律不动。调用方应挑
+        **无人连接时**执行（服务启动阶段），免得删掉正在重连的客户端要回放的数据。
+        查询走 `idx_events_type_time`（event_type 是首列），不需要扫全表。
+        """
+        placeholders = ",".join("?" for _ in _PURGEABLE_EVENT_TYPES)
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                f"DELETE FROM events WHERE event_type IN ({placeholders})",
+                _PURGEABLE_EVENT_TYPES,
+            )
+            return int(cursor.rowcount)
+
+    def vacuum_if_bloated(self, *, threshold: float = 0.2) -> bool:
+        """空闲页占比超过 threshold 时执行 VACUUM，返回是否真的跑了。
+
+        SQLite 删数据**不会**缩小文件，只是把页标记成空闲——只有 VACUUM 能把它们
+        真正还给文件系统（§5.5）。它需要一份**等大的临时空间**、执行期间还持写锁，
+        所以做成"按需"而不是每次都跑。失败（空间不足 / 库被占）只记日志并返回 False，
+        绝不向上抛：压实失败不该挡住建服务。
+        """
+        with self._lock:
+            try:
+                conn = self._connect()
+                freelist = int(conn.execute("PRAGMA freelist_count").fetchone()[0])
+                total = int(conn.execute("PRAGMA page_count").fetchone()[0])
+            except sqlite3.Error:
+                logger.warning("vacuum skipped: cannot read page stats", exc_info=True)
+                return False
+            if total <= 0 or freelist / total < threshold:
+                return False
+            try:
+                # VACUUM 不能在事务内执行（它会重建整个库）。Python 的 sqlite3 只对 DML
+                # 开隐式事务，VACUUM 不属于 DML，所以这里能直接执行。
+                conn.execute("VACUUM")
+            except sqlite3.Error:
+                logger.warning("vacuum failed; database left as is", exc_info=True)
+                return False
+        logger.info("vacuumed workspace database (freelist %s of %s pages)", freelist, total)
+        return True
 
     def claim_request(self, session_id: str, request_id: str) -> bool:
         """Atomically claim a client request id for a session."""

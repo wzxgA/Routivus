@@ -717,6 +717,29 @@ def _record_payload(record: Any) -> dict[str, Any]:
     return jsonable_encoder(record.model_dump(mode="json") if hasattr(record, "model_dump") else record)
 
 
+def _maintain_workspace_store(app: FastAPI) -> None:
+    """启动时的存储维护：清掉无读者的事件，再按需压实（Optimization 01 §5.5）。
+
+    放在启动阶段，是因为此刻**还没 accept 连接**——既是"删历史不会碰到正在重连的
+    客户端"的唯一窗口，也是 VACUUM 独占写锁而不打扰任何请求的唯一时机。两步都尽力
+    而为：维护失败绝不能挡住建服务。
+    """
+    store = getattr(app.state, "workspace_store", None)
+    if store is None:
+        return
+    try:
+        removed = store.purge_unread_events()
+    except Exception:  # noqa: BLE001 - 维护是增益，失败就跳过
+        logger.debug("purge unread events failed", exc_info=True)
+        return
+    if removed:
+        logger.info("purged %s unread session events", removed)
+    try:
+        store.vacuum_if_bloated()
+    except Exception:  # noqa: BLE001
+        logger.debug("vacuum failed", exc_info=True)
+
+
 @asynccontextmanager
 async def _terminal_lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """服务退出时收割所有终端。
@@ -730,6 +753,7 @@ async def _terminal_lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     # 桌面端已在 `__main__` 的事件循环之前预热过，这里通常已是空操作。
     if getattr(app.state, "smart_router_startup_enabled", False):
         prewarm_shared_assets(blocking=True)
+    _maintain_workspace_store(app)
     yield
     for terminal in list(getattr(app.state, "terminals", {}).values()):
         try:

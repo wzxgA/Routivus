@@ -339,3 +339,100 @@ def test_event_queries_still_use_index(tmp_path: Path) -> None:
     assert "USING" in plan, plan
     assert "SCAN EVENTS" not in plan, plan
     store.close()
+
+
+# ==========================================================================
+# §5.5 保留策略 + VACUUM
+# ==========================================================================
+
+
+def test_purge_removes_only_unread_event_types(tmp_path: Path) -> None:
+    """只删无读者的类型；卡片事件一条不动 —— 按条数截断会让长会话丢回放。"""
+    store = WorkspaceStore(tmp_path / "ws.sqlite3")
+    session = store.create_session("p1")
+    for _ in range(20):
+        store.append_event(session.id, session.project_id, "message.delta", {"text": "x"})
+    store.append_event(session.id, session.project_id, "session.snapshot", {"big": "y" * 100})
+    for _ in range(5):
+        store.append_event(session.id, session.project_id, "tool.started", {"tool_call_id": "c"})
+    store.append_event(session.id, session.project_id, "team.updated", {"kind": "task_done"})
+
+    removed = store.purge_unread_events()
+
+    assert removed == 21  # 20 条 delta + 1 条 snapshot
+    assert store.count_events(session.id, "message.delta") == 0
+    assert store.count_events(session.id, "session.snapshot") == 0
+    # 卡片类事件是重连回放的依据，必须原样保留
+    assert store.count_events(session.id, "tool.started") == 5
+    assert store.count_events(session.id, "team.updated") == 1
+    store.close()
+
+
+def test_purge_is_idempotent(tmp_path: Path) -> None:
+    store = WorkspaceStore(tmp_path / "ws.sqlite3")
+    session = store.create_session("p1")
+    store.append_event(session.id, session.project_id, "message.delta", {"text": "x"})
+
+    assert store.purge_unread_events() == 1
+    assert store.purge_unread_events() == 0
+    store.close()
+
+
+def _checkpoint(store: WorkspaceStore) -> None:
+    """把 WAL 刷回主库。
+
+    不刷的话刚写入的数据还留在 -wal 里，主库文件（`stat().st_size`）反映不出真实
+    体积——测"文件变没变小"必须先把 WAL 拉平。
+    """
+    store._connect().execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def test_vacuum_shrinks_database_after_purge(tmp_path: Path) -> None:
+    """压实把删掉的空间真正还给文件系统：SQLite 自己不会缩文件。"""
+    db = tmp_path / "ws.sqlite3"
+    store = WorkspaceStore(db)
+    session = store.create_session("p1")
+    payload = {"text": "x" * 1024}
+    for _ in range(1000):
+        store.append_event(session.id, session.project_id, "message.delta", payload)
+
+    _checkpoint(store)
+    before = db.stat().st_size
+    assert before > 500_000, "得先有货，才看得出缩小"
+
+    assert store.purge_unread_events() == 1000
+    assert store.vacuum_if_bloated() is True
+    _checkpoint(store)
+    assert db.stat().st_size < before
+
+    # 压实不能损坏数据
+    assert store.get_session(session.id) is not None
+    assert store.count_events(session.id, "message.delta") == 0
+    store.close()
+
+
+def test_vacuum_skipped_when_not_bloated(tmp_path: Path) -> None:
+    """空闲页占比低时不跑 VACUUM —— 它要一份等大临时空间，不能白跑。"""
+    store = WorkspaceStore(tmp_path / "ws.sqlite3")
+    session = store.create_session("p1")
+    store.append_event(session.id, session.project_id, "tool.started", {})
+
+    assert store.vacuum_if_bloated() is False
+    store.close()
+
+
+def test_startup_maintenance_purges_unread_events(tmp_path: Path) -> None:
+    """端到端：走 lifespan 启动后，老库里的无读者事件被清掉。"""
+    db = tmp_path / "workspace.sqlite3"
+    seed = WorkspaceStore(db)
+    session = seed.create_session("p1")
+    seed.append_event(session.id, session.project_id, "message.delta", {"text": "x"})
+    seed.append_event(session.id, session.project_id, "tool.started", {"tool_call_id": "c"})
+    seed.close()
+
+    client, store = _client(tmp_path)
+    with client:  # 进入 lifespan → 触发启动维护
+        pass
+
+    assert store.count_events(session.id, "message.delta") == 0
+    assert store.count_events(session.id, "tool.started") == 1
