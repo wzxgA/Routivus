@@ -220,6 +220,7 @@ export function ChatView({
         router={timeline.router}
         contextWindow={contextWindow}
         context={timeline.context}
+        contextBudget={timeline.contextBudget}
       />
     </section>
   )

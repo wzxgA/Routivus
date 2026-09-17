@@ -22,12 +22,13 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
+from routivus.agent.react import AgentEvent
 from routivus.config.manager import ConfigManager
 from routivus.config.providers import Provider
 from routivus.config.settings import load_settings
 from routivus.llm.client import LlmError
 from routivus.llm.openai_compat import OpenAICompatClient, _output_limit_hint
-from routivus.llm.types import Message
+from routivus.llm.types import Message, Usage
 from routivus.memory.context import ConversationContext
 from routivus.server import ProjectRegistry, create_app
 from routivus.server.config import ServerConfig
@@ -462,3 +463,60 @@ class TestSessionContextPropagation:
         assert contexts[0]["window"] == 400000
         assert contexts[0]["model"] == "m2"
         assert contexts[0]["source"] == "model"
+
+
+# ==========================================================================
+# 传播：session.usage 带上上下文预算（界面按它算使用率）
+# ==========================================================================
+
+
+class _BudgetAgent:
+    """回放一条带预算字段的 usage 事件——与 `react.py` 每步的 context_fields 同形。"""
+
+    def __init__(self) -> None:
+        self.llm = object()
+        self.tools = object()
+        self.settings = object()
+        self.approval_policy = None
+        self.ask_requester = None
+
+    async def run(self, content: str):  # noqa: ANN201 - 与 ReActAgent.run 同形的异步生成器
+        yield AgentEvent(
+            kind="usage",
+            usage=Usage(prompt_tokens=100, completion_tokens=10, total_tokens=110),
+            estimated_prompt_tokens=99_200,
+            request_token_limit=800_000,
+            context_window=1_000_000,
+        )
+        yield AgentEvent(kind="done")
+
+
+class TestUsageCarriesContextBudget:
+    def test_usage_event_exposes_estimate_and_trigger(self, tmp_path: Path) -> None:
+        """`session.usage` 必须带上预估输入与压缩触发线。
+
+        界面用「预估输入 ÷ 触发线」显示使用率；这两个字段一旦丢了，界面只剩
+        「累计用量 ÷ 窗口」可算——把整个会话的账单除以单次上限，必然虚高且与
+        "要不要压缩"无关（历史事故：明明没到压缩线，界面却一直显示 100%）。
+        """
+        client = _client(tmp_path, factory=lambda project, session: _BudgetAgent())
+        project = _project(client)
+        session = _session(client, project)
+
+        payload: dict | None = None
+        with client.websocket_connect(_ws(project, session)) as socket:
+            socket.receive_json()  # snapshot
+            socket.send_json({"type": "user_message", "content": "跑一下", "request_id": "r1"})
+            for _ in range(40):
+                event = socket.receive_json()
+                if event.get("type") == "session.usage":
+                    payload = event["data"]
+                    break
+
+        assert payload is not None, "未收到 session.usage"
+        assert payload["estimated_prompt_tokens"] == 99_200
+        assert payload["request_token_limit"] == 800_000
+        assert payload["context_window"] == 1_000_000
+        # 原有载荷不能被挤掉：累计口径（首页 token 面板）照旧依赖这几个字段
+        assert payload["total_tokens"] == 110
+        assert payload["prompt_tokens"] == 100

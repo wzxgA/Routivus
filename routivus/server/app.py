@@ -1996,9 +1996,25 @@ def create_app(
             """补归因字段：只覆盖非空值，后设的优先（路由结果要盖掉 settings 的初值）。"""
             self.attrs.update({key: str(value) for key, value in kwargs.items() if value})
 
-        def usage_payload(self, usage: Any) -> dict[str, Any]:
-            """用量事件载荷 = usage 三件套 + 本轮归因字段。"""
-            return {**_record_payload(usage), **self.attrs}
+        def usage_payload(self, usage: Any, item: Any | None = None) -> dict[str, Any]:
+            """用量事件载荷 = usage 三件套 + 本轮归因字段 + 上下文预算。
+
+            预算三件套（`estimated_prompt_tokens` / `request_token_limit` /
+            `context_window`）来自 `react.py` 的 context_fields，界面靠它显示"下一次
+            请求有多大、离压缩触发线还有多远"。
+
+            不透出去的话，界面只剩「累计用量 ÷ 窗口」可算——那是把**整个会话所有请求
+            的总和**除以**单次请求的上限**，会话跑得越久越接近 100%，跟"要不要压缩"
+            毫无关系（每一轮都要把历史重发一遍，累计必然虚高）。
+            """
+            payload: dict[str, Any] = {**_record_payload(usage), **self.attrs}
+            if item is None:
+                return payload
+            for key in ("estimated_prompt_tokens", "request_token_limit", "context_window"):
+                value = getattr(item, key, None)
+                if value is not None:
+                    payload[key] = int(value)
+            return payload
 
         async def emit(self, event_type: str, data: dict[str, Any]) -> None:
             await send_event(self.websocket, event_type, self.session, {**data, "request_id": self.request_id})
@@ -2111,7 +2127,7 @@ def create_app(
                 usage = getattr(item, "usage", None)
                 if usage:
                     self.apply_usage(usage)
-                    await self.emit("session.usage", self.usage_payload(usage))
+                    await self.emit("session.usage", self.usage_payload(usage, item))
             elif kind in {"context_warning", "context_compacted", "context_overflow", "budget_exceeded"}:
                 await self.emit("memory.updated", {"kind": kind, "message": text})
             elif getattr(item, "plan", None) is not None or kind.startswith("plan_"):
@@ -2125,7 +2141,7 @@ def create_app(
                 usage = getattr(item, "usage", None)
                 if usage:
                     self.apply_usage(usage)
-                    await self.emit("session.usage", self.usage_payload(usage))
+                    await self.emit("session.usage", self.usage_payload(usage, item))
 
         async def finish(self) -> None:
             """一轮正常结束：收尾所有来源的段落并收敛会话状态。

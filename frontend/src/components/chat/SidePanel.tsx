@@ -47,6 +47,13 @@ interface SidePanelProps {
   contextWindow: number
   /** 会话当前模型的能力上限；换模型 / 路由换档后会变（见 plans/enhancement/06）。 */
   context: ContextPayload | null
+  /**
+   * 上下文预算：`estimated` 是下一次请求的预估输入，`limit` 是压缩触发线。
+   *
+   * 使用率只能用它算——用「已用 ÷ 窗口」会把整个会话的累计账单除以单次上限，
+   * 必然虚高且与压缩无关（见 `sessionTimeline.contextBudget` 的注释）。
+   */
+  contextBudget: { estimated: number; limit: number } | null
   /** 文件抽屉接管右侧区域时收起。只隐藏、不卸载：来回开合不会丢掉当前页签。 */
   hidden?: boolean
 }
@@ -66,6 +73,7 @@ export function SidePanel({
   router,
   contextWindow,
   context,
+  contextBudget,
   hidden = false,
 }: SidePanelProps) {
   const [tab, setTab] = useState<TabName>('Session')
@@ -74,7 +82,15 @@ export function SidePanel({
   // 会话时的基线，不再是构建期写死的常量。
   const effectiveWindow = context?.window ?? contextWindow
   const outputLimit = Math.max(0, context?.max_output ?? 0)
-  const ratio = effectiveWindow > 0 ? Math.min(1, usedTokens / effectiveWindow) : 0
+  // 使用率 = 下一次请求的预估输入 ÷ 压缩触发线（后端每步都会算）。
+  //
+  // 这里**不要**退回「已用 ÷ 窗口」：`session.total_tokens` 是整个会话所有请求的
+  // 累计（每一轮都要把历史重发一遍），除以单次窗口只会得到一个必然虚高、且与
+  // "要不要压缩"完全无关的百分比——历史上正是它让人以为"窗口满了却没压缩"。
+  const budgetRatio =
+    contextBudget && contextBudget.limit > 0
+      ? Math.min(1, contextBudget.estimated / contextBudget.limit)
+      : 0
   const memoryItems = memory?.items ?? []
   const memoryEmptyHint =
     memory?.status === 'unavailable'
@@ -197,14 +213,34 @@ export function SidePanel({
             ) : null}
             <div className="kv">
               <span>使用率</span>
-              <span className="num">{(ratio * 100).toFixed(1)}%</span>
+              <span className="num">
+                {contextBudget ? `${(budgetRatio * 100).toFixed(1)}%` : '—'}
+              </span>
             </div>
             <div className="bar">
-              <i style={{ width: `${Math.max(ratio * 100, ratio > 0 ? 2 : 0)}%` }} />
+              <i
+                style={{
+                  width: `${Math.max(budgetRatio * 100, budgetRatio > 0 ? 2 : 0)}%`,
+                }}
+              />
             </div>
             <div className="kv">
-              <span>已用</span>
-              <span className="num">{formatNumber(session?.total_tokens ?? 0)} tk</span>
+              <span>下次请求预估</span>
+              <span className="num">
+                {contextBudget
+                  ? `${formatNumber(contextBudget.estimated)} tk`
+                  : '待本轮首次请求'}
+              </span>
+            </div>
+            <div className="kv">
+              <span>压缩触发线</span>
+              <span className="num">
+                {contextBudget ? `${formatNumber(contextBudget.limit)} tk` : '—'}
+              </span>
+            </div>
+            <div className="kv">
+              <span>已用（累计）</span>
+              <span className="num">{formatNumber(usedTokens)} tk</span>
             </div>
             <div className="kv">
               <span>最大输出</span>
@@ -222,9 +258,10 @@ export function SidePanel({
               最大输入是推导值（窗口 − 最大输出），不可单独配置。窗口与输出上限按「当前模型」
               计算，换模型或智能路由换档后都会变化。
             </div>
-            <div className="kv">
-              <span>已用来源</span>
-              <span>会话快照 + usage 事件累计</span>
+            <div className="hint">
+              「使用率」回答的是「离自动压缩还有多远」＝ 下次请求预估 ÷ 触发线；
+              「已用（累计）」是这个会话所有请求的合计——每轮都会把历史重发一遍，
+              所以它必然远大于当前上下文，别拿它判断窗口快满了。
             </div>
 
             <div className="sec-title">使用量</div>

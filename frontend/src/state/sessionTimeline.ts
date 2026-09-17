@@ -118,6 +118,15 @@ export interface SessionTimelineValue {
    * 使用率分母与输出上限都必须读它，不能缓存成常量。
    */
   context: ContextPayload | null
+  /**
+   * 上下文预算：`estimated` 是**下一次请求**的预估输入 token，`limit` 是压缩触发线。
+   * 由 `session.usage` 事件附带（后端 `react.py` 每步都会算）。
+   *
+   * 界面回答「离压缩还有多远」只能用这两个数。**不能**用「已用 ÷ 窗口」——
+   * `session.total_tokens` 是整个会话所有请求的累计（每一轮都要把历史重发一遍），
+   * 除以单次窗口只会得到一个必然虚高、且与是否要压缩无关的百分比。
+   */
+  contextBudget: { estimated: number; limit: number } | null
   memoryNotice: { kind: string; message: string } | null
   hitl: string | null
   error: string | null
@@ -315,6 +324,7 @@ export function useSessionTimeline(
   const [router, setRouter] = useState<RouterState | null>(null)
   const [memory, setMemory] = useState<MemoryPayload | null>(null)
   const [context, setContext] = useState<ContextPayload | null>(null)
+  const [contextBudget, setContextBudget] = useState<{ estimated: number; limit: number } | null>(null)
   const [memoryNotice, setMemoryNotice] = useState<{ kind: string; message: string } | null>(null)
   const [hitl, setHitl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -436,6 +446,7 @@ export function useSessionTimeline(
     let routerNoticeSeq = 0
     setMemory(null)
     setContext(null)
+    setContextBudget(null)
     setMemoryNotice(null)
     setError(null)
 
@@ -670,11 +681,19 @@ export function useSessionTimeline(
               sessionRef.current = next
               updateRef.current(next)
             }
+            // 上下文预算：只在两个字段都拿到时才更新（老事件不带它们，不猜也不回填）。
+            const estimated = Number(data.estimated_prompt_tokens ?? NaN)
+            const limit = Number(data.request_token_limit ?? NaN)
+            if (Number.isFinite(estimated) && Number.isFinite(limit) && limit > 0) {
+              setContextBudget({ estimated, limit })
+            }
             return
           }
           case 'context.updated': {
-            // 换模型（/model）或 SmartRouter 换档后，窗口与输出上限会变：
-            // 用它更新使用率分母，不做任何换算，避免界面与后端算的不是同一个数。
+            // 换模型（/model）或 SmartRouter 换档后：窗口、输出上限与**压缩触发线**
+            // 都会变，旧预算按旧窗口算出来的 → 作废。宁可先显示「—」，也不拿旧分母
+            // 糊弄，等本轮第一次请求的 usage 事件刷新。
+            setContextBudget(null)
             setContext({
               window: Number(data.window ?? 0),
               max_output: Number(data.max_output ?? 0),
@@ -878,6 +897,7 @@ export function useSessionTimeline(
     resumeHint,
     memory,
     context,
+    contextBudget,
     memoryNotice,
     hitl,
     error,
