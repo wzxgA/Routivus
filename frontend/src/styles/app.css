@@ -5184,7 +5184,13 @@ kbd {
   margin-bottom: 8px;
   word-break: break-all;
 }
-/* 会话里说了句"继续"时把按钮亮一下（方案 15 §4.9）：只唤起，不执行 */
+/* 消息流末尾的范围确认卡（方案 17 §3.8）：复用团队卡的选择器，只换渲染位置；
+   描边用强调色是为了在长消息流里一眼看到"这里需要你做决定"。 */
+.task-card.scope-request {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+/* 会话里说了句"继续"时把团队卡按钮亮一下（方案 17 §3.6）：现在只是前端回声，
+   后端会真的续跑；权限类失败仍要靠这个按钮勾范围。 */
 .btn.resume-hint {
   border-color: var(--accent);
   color: var(--accent);

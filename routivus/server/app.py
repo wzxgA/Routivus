@@ -29,6 +29,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from routivus import __version__
+from routivus.agent.resume import ResumableTask, classify_resume_intent
 from routivus.config.providers import DEFAULT_MAX_TOKENS_FIELD
 from routivus.memory.manager import MemoryManager
 from routivus.safety.audit import AuditLogger
@@ -595,6 +596,55 @@ def _parse_task_command(content: str) -> tuple[str, str, dict[str, Any]]:
     return "chat", text, {}
 
 
+# ---------- 自然语言续跑（方案 17）----------
+#
+# 一个会话同一时刻只有一个"可续跑任务"槽位（`session_resumables`）：新任务直接覆盖
+# 旧的，所以不存在"plan 与 team 同时可续、该续哪个"的仲裁问题。
+#
+# **槽位在进程内存里，服务重启后清空**：重启后发"继续"不会触发文本续跑。team 还有
+# 一条不经过槽位的入口——团队卡上的「继续」按钮直接查库，重启后依然可用。
+
+
+def _resumable_summary(resume: Any) -> str:
+    """一句话概括任务状态（供意图识别）。不要塞整份计划——够判断就行。"""
+    plan = getattr(getattr(resume, "plan_executor", None), "_last_plan", None)
+    if plan is None:
+        return f"类型：/{getattr(resume, 'kind', '')}；目标：{getattr(resume, 'goal', '')}"
+    tasks = list(getattr(plan, "tasks", None) or [])
+    done = sum(1 for task in tasks if str(getattr(task, "status", "")) == "done")
+    failed = sum(1 for task in tasks if str(getattr(task, "status", "")) == "failed")
+    return (
+        f"类型：/plan；目标：{getattr(plan, 'goal', '')}；"
+        f"共 {len(tasks)} 个子任务，{done} 个已完成、{failed} 个失败"
+    )
+
+
+def _resume_limit(settings: Any) -> int:
+    """续跑次数上限：复用既有的 `task_max_resumes`（防"失败→继续→失败"烧预算）。"""
+    return max(0, int(getattr(settings, "task_max_resumes", 3)))
+
+
+def _team_snapshot_plan(data: Any) -> Any:
+    """快照 → `TeamPlan`（结构不合法返回 None）。"""
+    from routivus.agent.team import team_plan_from_snapshot
+
+    return team_plan_from_snapshot(data)
+
+
+def _team_snapshot_pending(plan: Any) -> bool:
+    """快照里还有没做完的任务（与执行器 `_resumable` 同源判定）。
+
+    配额不在这里判：配额用尽与"任务已做完"要回**不同的结果**——前者消费掉用户的
+    "继续"并回明确错误，后者不该吃输入（照常走普通对话）。
+    """
+    return any(str(getattr(task, "status", "")) != "done" for task in getattr(plan, "tasks", None) or [])
+
+
+def _resumable_terminal(kind: str) -> bool:
+    """终态事件里"完成 / 取消"（清槽位）与"失败"（保留槽位）的分界。"""
+    return kind in ("plan_done", "team_done", "cancelled")
+
+
 def _event_payload(event: EventRecord) -> dict[str, Any]:
     return {
         "type": event.event_type,
@@ -822,6 +872,8 @@ def create_app(
     app.state.session_approvals = {}
     # 计划 / 团队审阅桥接（计划模式的人工审阅往返）。
     app.state.session_reviews = {}
+    # 每个会话一个"最近一次可续跑任务"槽位（方案 17 §3.2）；进程内存，重启即清空。
+    app.state.session_resumables = {}
     # 会话级 SmartRouter 运行态（惰性创建；None 表示该会话已确认不可用）
     app.state.session_routers = {}
     # 项目级长期记忆库句柄（按项目根缓存，惰性打开；见 project_memory）
@@ -1057,6 +1109,7 @@ def create_app(
         session_agents.pop(session_id, None)
         session_approvals.pop(session_id, None)
         session_reviews.pop(session_id, None)
+        session_resumables.pop(session_id, None)
         session_routers.pop(session_id, None)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -1695,6 +1748,7 @@ def create_app(
     connections: dict[str, list[WebSocket]] = app.state.ws_connections
     session_approvals: dict[str, ApprovalBridge] = app.state.session_approvals
     session_reviews: dict[str, PlanReviewBridge] = app.state.session_reviews
+    session_resumables: dict[str, ResumableTask] = app.state.session_resumables
     session_routers: dict[str, SessionRouter | None] = app.state.session_routers
     project_memories: dict[str, MemoryManager] = app.state.project_memories
     terminals: dict[str, TerminalSession] = app.state.terminals
@@ -2349,6 +2403,179 @@ def create_app(
         except Exception as exc:
             await handle_turn_failure(websocket, session, request_id, exc, label="agent turn")
 
+    # ---- 可续跑任务槽位（方案 17 §3.2）------------------------------------
+
+    def _register_resumable(
+        session_id: str,
+        *,
+        kind: str,
+        goal: str,
+        turn_id: str,
+        plan_executor: Any = None,
+    ) -> None:
+        """任务开始：覆盖槽位（单一槽位、最新覆盖，没有"该续哪个"的歧义）。"""
+        session_resumables[session_id] = ResumableTask(
+            kind=kind,  # type: ignore[arg-type]
+            goal=goal,
+            turn_id=turn_id,
+            plan_executor=plan_executor,
+        )
+
+    def _finalize_resumable(session_id: str, kind: str, terminal_kind: str) -> None:
+        """任务终态：完成 / 取消清空槽位，失败保留（否则"继续"会去续一个做完的任务）。"""
+        resume = session_resumables.get(session_id)
+        if resume is not None and resume.kind != kind:
+            return  # 槽位已被别的任务覆盖，别顺手清掉别人
+        if _resumable_terminal(terminal_kind):
+            session_resumables.pop(session_id, None)
+
+    def _touch_resumable(session_id: str, kind: str, turn_id: str) -> None:
+        """续跑轮开始时接管槽位的 `turn_id`，取消时才能认出"这是刚才那一轮"。"""
+        resume = session_resumables.get(session_id)
+        if resume is not None and resume.kind == kind and turn_id:
+            resume.turn_id = turn_id
+
+    def _mark_resumable_cancelled(session_id: str, turn_id: str) -> None:
+        """用户主动取消 → 保留槽位但置位，避免"继续"去续一个被放弃的任务。"""
+        resume = session_resumables.get(session_id)
+        if resume is not None and (not turn_id or resume.turn_id == turn_id):
+            resume.user_cancelled = True
+
+    async def _persist_user_message(
+        websocket: WebSocket | None, session: SessionRecord, content: str, request_id: str
+    ) -> None:
+        """续跑轮也要把用户输入留在消息流里（与普通轮一致的可见性）。"""
+        user_message = workspace_store.add_message(session.id, "user", content)
+        await send_event(
+            websocket,
+            "message.created",
+            session,
+            {"message": _record_payload(_message_response(user_message)), "request_id": request_id},
+        )
+
+    async def _start_resume_turn(
+        websocket: WebSocket | None,
+        session: SessionRecord,
+        coroutine_factory: Callable[[SessionRecord], Any],
+        request_id: str,
+    ) -> SessionRecord:
+        """把续跑轮登记成 `running_tasks` 并把会话置为 running（与普通轮同一套）。"""
+        updated = workspace_store.update_session(session.id, status="running")
+        if updated:
+            session = updated
+            await send_event(
+                websocket, "session.status", session, {"status": "running", "request_id": request_id}
+            )
+        running_tasks[session.id] = asyncio.create_task(coroutine_factory(session))
+        return session
+
+    async def try_resume_turn(
+        websocket: WebSocket | None,
+        project: Any,
+        session: SessionRecord,
+        content: str,
+        request_id: str,
+    ) -> bool:
+        """普通输入是否被消费为一次"续跑"（方案 17 §3.1 的入口）。
+
+        返回 True = 输入已被消费（续跑轮已启动，或已回明确错误），调用方 `continue`；
+        返回 False = 照常走普通对话，输入**不被消费**。斜杠开头的输入一律不到达这里。
+        """
+        resume = session_resumables.get(session.id)
+        if resume is None or resume.user_cancelled:
+            return False
+        agent = await ensure_session_agent(project, session)
+        if agent is None:
+            return False
+        enabled = bool(getattr(getattr(agent, "settings", None), "resume_intent_llm", True))
+        intent = await classify_resume_intent(
+            getattr(agent, "llm", None), _resumable_summary(resume), content, enabled=enabled
+        )
+        if intent != "resume_task":
+            return False  # 判成新话题 → 不吃输入，照常走普通对话
+
+        # 先把**不会吃输入**的判定做完（team 快照已做完 → 照常走普通对话）。
+        # 关键：这一步必须在占 request_id **之前**——占完再返回 False，普通对话那条
+        # 分支就会把这次输入判成 `duplicate_request`，用户的话被静默吞掉。
+        data: dict[str, Any] | None = None
+        plan: Any = None
+        if resume.kind == "team":
+            # team 的恢复素材在库里的快照（槽位只存元信息）
+            snapshots = workspace_store.list_card_events(session.id, (_TEAM_SNAPSHOT_EVENT,), limit=1)
+            data = snapshots[-1].data if snapshots else None
+            plan = _team_snapshot_plan(data)
+            if plan is None or not _team_snapshot_pending(plan):
+                session_resumables.pop(session.id, None)  # 快照已不可续 → 顺手清掉槽位
+                return False
+
+        # 到这里就确定要消费这次输入了 → 占 request_id（与普通轮同一套幂等规则）
+        if not request_is_new(session.id, request_id):
+            await send_event(
+                websocket,
+                "error",
+                session,
+                {"code": "duplicate_request", "request_id": request_id},
+            )
+            return True
+
+        if resume.kind == "plan":
+            if resume.plan_executor is None:
+                session_resumables.pop(session.id, None)
+                await send_event(websocket, "error", session, {
+                    "code": "no_resumable_plan",
+                    "message": "没有可续跑的计划（计划续跑在服务重启后失效），请重新发起 /plan",
+                    "request_id": request_id,
+                })
+                return True
+            limit = _resume_limit(getattr(agent, "settings", None))
+            if resume.resume_count >= limit:
+                await send_event(websocket, "error", session, {
+                    "code": "resume_quota_exceeded",
+                    "message": f"续跑次数已达上限（{limit} 次），请重新发起 /plan",
+                    "request_id": request_id,
+                })
+                return True
+            await _persist_user_message(websocket, session, content, request_id)
+            await _start_resume_turn(
+                websocket,
+                session,
+                lambda current: run_plan_resume_turn(
+                    websocket, project, current, content, request_id
+                ),
+                request_id,
+            )
+            return True
+
+        # team（`data` / `plan` 已在上面取好）
+        limit = _resume_limit(getattr(agent, "settings", None))
+        if max(0, int((data or {}).get("resume_count", 0) or 0)) >= limit:
+            # 配额用尽：**消费掉输入**并回明确错误，否则 agent 拿着"继续"重跑一遍任务。
+            await send_event(websocket, "error", session, {
+                "code": "resume_quota_exceeded",
+                "message": f"续跑次数已达上限（{limit} 次），请重新发起 /team",
+                "request_id": request_id,
+            })
+            return True
+
+        await _persist_user_message(websocket, session, content, request_id)
+        _touch_resumable(session.id, "team", request_id)
+        scope_task = _first_needs_scope_task(plan)
+        if scope_task:
+            # 权限类失败（方案 17 §3.8）：文本续跑救不了，把范围确认入口搬到消息流末尾。
+            await send_event(websocket, "team.scope_requested", session, {
+                "task_id": scope_task,
+                "goal": str((data or {}).get("goal", "") or ""),
+                "candidates": _scope_candidates(plan, plan.task_by_id(scope_task)),
+            })
+            return True
+        await _start_resume_turn(
+            websocket,
+            session,
+            lambda current: run_team_resume_turn(websocket, project, current, {}, request_id),
+            request_id,
+        )
+        return True
+
     async def run_plan_turn(websocket: WebSocket | None, project: Any, session: SessionRecord, goal: str, request_id: str = "") -> None:
         """`/plan <任务>`：拆解 → 审阅 → 按依赖批次执行。"""
         forwarder = _TurnForwarder(websocket, session, request_id)
@@ -2373,10 +2600,20 @@ def create_app(
             from routivus.agent.plan import PlanExecutor
 
             executor = PlanExecutor(**_executor_kwargs(agent), reviewer=review.review)
+            # 登记为可续跑任务：`resume()` 依赖内存里的 `_last_plan`，所以槽位存执行器引用。
+            _register_resumable(
+                session.id, kind="plan", goal=goal, turn_id=request_id, plan_executor=executor
+            )
+            terminal = ""
             async for event in executor.run(goal):
+                kind = str(getattr(event, "kind", ""))
+                if kind in ("plan_done", "plan_failed", "cancelled"):
+                    terminal = kind
                 await forward_task_event(event, forwarder, mode="plan")
+            _finalize_resumable(session.id, "plan", terminal)
             await forwarder.finish()
         except asyncio.CancelledError:
+            _mark_resumable_cancelled(session.id, request_id)
             await handle_turn_cancelled(websocket, session, request_id)
             raise
         except Exception as exc:
@@ -2422,10 +2659,18 @@ def create_app(
                 project_root=Path(project.root_path),
                 on_snapshot=lambda data: _write_team_snapshot(session.id, project.id, data),
             )
+            # team 的恢复素材在库里的快照，槽位只存元信息（方案 17 §3.2）。
+            _register_resumable(session.id, kind="team", goal=goal, turn_id=request_id)
+            terminal = ""
             async for event in executor.run(goal):
+                kind = str(getattr(event, "kind", ""))
+                if kind in ("team_done", "team_failed", "cancelled"):
+                    terminal = kind
                 await forward_task_event(event, forwarder, mode="team")
+            _finalize_resumable(session.id, "team", terminal)
             await forwarder.finish()
         except asyncio.CancelledError:
+            _mark_resumable_cancelled(session.id, request_id)
             await handle_turn_cancelled(websocket, session, request_id)
             raise
         except Exception as exc:
@@ -2463,7 +2708,7 @@ def create_app(
                 )
                 return
 
-            from routivus.agent.team import TeamExecutor, team_plan_from_snapshot
+            from routivus.agent.team import TeamExecutor
 
             snapshots = workspace_store.list_card_events(session.id, (_TEAM_SNAPSHOT_EVENT,), limit=1)
             if not snapshots:
@@ -2474,14 +2719,14 @@ def create_app(
                 )
                 return
             data = snapshots[-1].data
-            plan = team_plan_from_snapshot(data)
+            plan = _team_snapshot_plan(data)
             if plan is None:
                 await forwarder.close_with(
                     "idle", error="Team 快照不可解析，无法续跑", code="invalid_snapshot"
                 )
                 return
 
-            limit = max(0, int(getattr(agent.settings, "task_max_resumes", 3)))
+            limit = _resume_limit(agent.settings)
             resume_count = max(0, int(data.get("resume_count", 0) or 0))
             if resume_count >= limit:
                 await forwarder.close_with(
@@ -2500,6 +2745,8 @@ def create_app(
 
             bind_interactions(agent, session.id)
             forwarder.set_attrs(**model_attrs(agent))  # 续跑同样记一份归因
+            # 续跑轮接管槽位的 turn_id：用户中途取消时才能认出"这是刚才那一轮"。
+            _touch_resumable(session.id, "team", request_id)
             executor = TeamExecutor(
                 **_executor_kwargs(agent),
                 # 续跑不重新规划，用不到计划审阅回调；任务级审查仍走 LLM（`_review` 的默认路径）。
@@ -2524,14 +2771,91 @@ def create_app(
             else:
                 stream = executor.resume(instruction)
 
+            terminal = ""
             async for event in stream:
+                kind = str(getattr(event, "kind", ""))
+                if kind in ("team_done", "team_failed", "cancelled"):
+                    terminal = kind
                 await forward_task_event(event, forwarder, mode="team")
+            _finalize_resumable(session.id, "team", terminal)
             await forwarder.finish()
         except asyncio.CancelledError:
+            _mark_resumable_cancelled(session.id, request_id)
             await handle_turn_cancelled(websocket, session, request_id)
             raise
         except Exception as exc:
             await handle_turn_failure(websocket, session, request_id, exc, label="team resume turn")
+
+    async def run_plan_resume_turn(
+        websocket: WebSocket | None,
+        project: Any,
+        session: SessionRecord,
+        instruction: str,
+        request_id: str = "",
+    ) -> None:
+        """计划的文本续跑（方案 17 §3.5）：与 `run_team_resume_turn` 对称。
+
+        恢复素材是槽位里的 `PlanExecutor`（`resume()` 依赖内存里的 `_last_plan`），
+        所以**服务重启后续不了**——那时只能重新 `/plan`。
+
+        `PlanExecutor.resume()` 自己会把 failed/running/pending 的子任务重置为 pending
+        并重算批次（done 的保留 result 供下游复用），这里不需要做状态清理。
+        """
+        forwarder = _TurnForwarder(websocket, session, request_id)
+        try:
+            agent = await ensure_session_agent(project, session)
+            if agent is None:
+                await forwarder.close_with("failed", error="Agent 尚未配置", code="agent_unavailable")
+                return
+            missing = _missing_executor_deps(agent)
+            if missing:
+                await forwarder.close_with(
+                    "failed",
+                    error=f"当前 Agent 不支持计划模式（缺少 {', '.join(missing)}）",
+                    code="plan_unavailable",
+                )
+                return
+
+            resume = session_resumables.get(session.id)
+            if resume is None or resume.kind != "plan" or resume.plan_executor is None:
+                await forwarder.close_with(
+                    "idle",
+                    error="没有可续跑的计划（计划续跑在服务重启后失效），请重新发起 /plan",
+                    code="no_resumable_plan",
+                )
+                return
+            if resume.user_cancelled:
+                await forwarder.close_with(
+                    "idle", error="该计划已被取消，不再续跑；如需继续请重新发起 /plan", code="resume_cancelled"
+                )
+                return
+            limit = _resume_limit(agent.settings)
+            if resume.resume_count >= limit:
+                await forwarder.close_with(
+                    "idle",
+                    error=f"续跑次数已达上限（{limit} 次），请重新发起 /plan",
+                    code="resume_quota_exceeded",
+                )
+                return
+            resume.resume_count += 1
+            resume.turn_id = request_id or resume.turn_id
+
+            bind_interactions(agent, session.id)
+            forwarder.set_attrs(**model_attrs(agent))
+            terminal = ""
+            async for event in resume.plan_executor.resume(instruction):
+                kind = str(getattr(event, "kind", ""))
+                if kind in ("plan_done", "plan_failed", "cancelled"):
+                    terminal = kind
+                await forward_task_event(event, forwarder, mode="plan")
+            _finalize_resumable(session.id, "plan", terminal)
+            await forwarder.finish()
+        except asyncio.CancelledError:
+            _mark_resumable_cancelled(session.id, request_id)
+            await handle_turn_cancelled(websocket, session, request_id)
+            raise
+        except Exception as exc:
+            await handle_turn_failure(websocket, session, request_id, exc, label="plan resume turn")
 
     def _turn_coroutine(
         websocket: WebSocket | None,
@@ -2938,6 +3262,12 @@ def create_app(
                 if task and not task.done():
                     await send_event(websocket, "error", session, {"code": "session_busy", "message": "会话正在运行", "request_id": request_id})
                     continue
+                # 自然语言续跑（方案 17 §3.1）：只对普通对话输入尝试——**斜杠开头一律视为
+                # 用户的明确意图，不吃**。判成新话题时 `try_resume_turn` 返回 False，输入
+                # 照常走下面的普通对话分支。
+                if turn_kind == "chat" and not content.startswith("/"):
+                    if await try_resume_turn(websocket, project, session, content, request_id):
+                        continue
                 if not request_is_new(session.id, request_id):
                     await send_event(websocket, "error", session, {"code": "duplicate_request", "request_id": request_id})
                     continue

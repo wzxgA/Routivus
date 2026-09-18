@@ -11,6 +11,7 @@ import type {
   PlanReviewRequest,
   ReplayEvent,
   RouterState,
+  ScopeRequestedData,
   Session,
   SessionSnapshot,
   TeamPayload,
@@ -77,6 +78,23 @@ export interface RouterItem {
   fresh?: boolean
 }
 
+/**
+ * 消息流末尾的「范围确认卡」（方案 17 §3.8）。
+ *
+ * 权限类失败（`needs_scope`）的入口本来只在团队卡上，用户得往上翻才能勾选。用户说了
+ * 句"继续"时服务端推一张卡到末尾，勾选 + 确认后走**现有的** `team_resume` + `scope`
+ * ——服务端不新增 WS 消息类型。
+ *
+ * 重连后这张卡不恢复（它不在回放白名单里）：团队卡是权威展示，再说一次"继续"即可。
+ */
+export interface ScopeRequestItem {
+  kind: 'scope'
+  id: string
+  payload: ScopeRequestedData
+  /** 已提交的授权范围；`null` = 仍在等待用户确认。 */
+  submitted: string[] | null
+}
+
 export type TimelineItem =
   | { kind: 'user'; id: string; content: string; at: string }
   | { kind: 'agent'; id: string; content: string; at: string; streaming?: boolean; source?: string }
@@ -88,6 +106,7 @@ export type TimelineItem =
   | TeamItem
   | ApprovalItem
   | RouterItem
+  | ScopeRequestItem
 
 export type ThinkingItem = Extract<TimelineItem, { kind: 'thinking' }>
 export type AgentItem = Extract<TimelineItem, { kind: 'agent' }>
@@ -156,8 +175,15 @@ export interface SessionTimelineValue {
    */
   resumeTeam: (options: { taskId?: string; scope?: string[] }) => void
   /**
-   * 会话里刚说了句"继续"（方案 15 §4.9）：用来把团队卡上的按钮亮一下——
-   * **只唤起、不执行**，避免把"继续"的歧义（也可能是在聊上一个问题）变成一次续跑。
+   * 提交「范围确认卡」的授权并续跑那一个任务（方案 17 §3.8）。
+   *
+   * 授权永远是用户点出来的：勾选 + 确认才发出 `team_resume` + `scope`，服务端还会再
+   * 过一遍资源策略校验（越界 / 黑名单 / 只读升写一律拒）。提交后把卡标记为已提交。
+   */
+  submitScope: (taskId: string, scope: string[]) => void
+  /**
+   * 会话里刚说了句"继续"（方案 17 §3.6）：本地识别出续跑意图的**回声**。
+   * 后端现在会真的执行续跑，这里只把团队卡上的按钮亮一下作提示（权限类失败仍要用它）。
    */
   resumeHint: boolean
   cancel: () => void
@@ -197,7 +223,12 @@ function messageToItem(message: Message, source?: string): TimelineItem | null {
 
 // ---- 条目归约的纯函数（在线事件与快照回放共用，避免两套逻辑漂移）----------------
 
-/** 「像不像一句续跑指令」的保守判定（方案 15 §4.9）：短输入 + 命中关键词。 */
+/**
+ * 「像不像一句续跑指令」的保守判定（方案 17 §3.6）：短输入 + 命中关键词。
+ *
+ * 只用于**前端回声**（把团队卡按钮亮一下）。真正要不要续跑由服务端的意图识别决定，
+ * 前端不自己动手，避免两套判断漂移。
+ */
 const RESUME_HINT_WORDS = ['继续', '接着', '恢复任务', '往下跑', 'continue', 'go on']
 
 function looksLikeResume(text: string): boolean {
@@ -310,6 +341,8 @@ function withCardEvent(items: TimelineItem[], type: string, data: Record<string,
       return withApprovalRequested(items, data)
     case 'approval.resolved':
       return withApprovalResolved(items, data)
+    case 'team.scope_requested':
+      return withScopeRequested(items, data)
     default:
       return items
   }
@@ -378,6 +411,38 @@ function withApprovalResolved(
         }
       : item,
   )
+}
+
+/** 范围确认卡的稳定 id：同一任务的重复请求不重复插卡。 */
+function scopeItemId(taskId: string): string {
+  return `scope:${taskId}`
+}
+
+/**
+ * 末尾插入一张范围确认卡（方案 17 §3.8）。
+ *
+ * 幂等：同一 `task_id` 已经在等应答就不重复插；已提交过的也不再插——它刚刚就是为
+ * 这个任务发出去的授权，再弹一张等于让用户批第二次。
+ */
+function withScopeRequested(items: TimelineItem[], data: Record<string, unknown>): TimelineItem[] {
+  const taskId = String(data.task_id ?? '')
+  if (!taskId) return items
+  const id = scopeItemId(taskId)
+  if (items.some((item) => item.kind === 'scope' && item.id === id)) return items
+  const payload: ScopeRequestedData = {
+    task_id: taskId,
+    goal: String(data.goal ?? ''),
+    candidates: Array.isArray(data.candidates)
+      ? (data.candidates as unknown[]).map(String).filter(Boolean)
+      : [],
+  }
+  return [...items, { kind: 'scope', id, payload, submitted: null }]
+}
+
+/** 用户确认后把卡定格成"已提交"，避免重复弹出。 */
+function withScopeSubmitted(items: TimelineItem[], taskId: string, scope: string[]): TimelineItem[] {
+  const id = scopeItemId(taskId)
+  return items.map((item) => (item.kind === 'scope' && item.id === id ? { ...item, submitted: scope } : item))
 }
 
 /**
@@ -453,7 +518,8 @@ export function useSessionTimeline(
     clearRouterRoutingRef.current = clearRouterRouting
   }, [clearRouterRouting])
 
-  // 「继续」唤起（方案 15 §4.9）：说了句"继续"就把团队卡的按钮亮几秒，**不执行**。
+  // 「继续」唤起（方案 17 §3.6）：说了句"继续"就把团队卡的按钮亮几秒。
+  // 后端现在会**真的续跑**，这个高亮只是本地回声——权限类失败仍需用户点卡勾范围。
   const [resumeHint, setResumeHint] = useState(false)
   const resumeHintTimer = useRef<number | null>(null)
   const flashResumeHint = useCallback(() => {
@@ -550,6 +616,7 @@ export function useSessionTimeline(
           case 'plan.updated':
           case 'plan.review':
           case 'team.updated':
+          case 'team.scope_requested':
           case 'command.executed':
           case 'error':
             clearRouterRoutingRef.current()
@@ -803,6 +870,11 @@ export function useSessionTimeline(
             setItems((current) => upsertTaskCard(current, 'team', payload))
             return
           }
+          case 'team.scope_requested': {
+            // 权限类失败的范围确认入口（方案 17 §3.8）：插到消息流末尾，省得往上翻团队卡。
+            setItems((current) => withScopeRequested(current, data))
+            return
+          }
           case 'router.updated': {
             // 普通对话轮在开关开启时按复杂度换档，这里回显本轮实际使用的档位。
             // 方案 08：带上判定依据（notes）与运行态（是否真换了模型 / 耗时）；
@@ -878,6 +950,21 @@ export function useSessionTimeline(
     if (resumableTeam && looksLikeResume(text)) flashResumeHint()
     socketRef.current?.send({ type: 'user_message', request_id: newRequestId('msg'), content: text })
   }, [beginRouterRouting, resumableTeam, flashResumeHint])
+
+  /**
+   * 提交范围确认卡（方案 17 §3.8）：走**现有的** `team_resume` + `scope`，
+   * 服务端不新增消息类型。授权只在这一刻由用户明确产生（默认全不勾）。
+   */
+  const submitScope = useCallback((taskId: string, scope: string[]) => {
+    if (!taskId || scope.length === 0) return
+    setItems((current) => withScopeSubmitted(current, taskId, scope))
+    socketRef.current?.send({
+      type: 'team_resume',
+      request_id: newRequestId('resume'),
+      task_id: taskId,
+      scope: scope.map((pattern) => ({ pattern, access: 'write' })),
+    })
+  }, [])
 
   const resumeTeam = useCallback((options: { taskId?: string; scope?: string[] }) => {
     const scope = options.scope ?? []
@@ -983,6 +1070,7 @@ export function useSessionTimeline(
     refreshMemory,
     sendMessage,
     resumeTeam,
+    submitScope,
     cancel,
     resolveApproval,
     answerAsk,

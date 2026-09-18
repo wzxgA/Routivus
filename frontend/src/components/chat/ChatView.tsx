@@ -179,6 +179,7 @@ export function ChatView({
                 onAnswerAsk={timeline.answerAsk}
                 onDecideReview={timeline.resolvePlanReview}
                 onTeamResume={timeline.resumeTeam}
+                onSubmitScope={timeline.submitScope}
                 resumeHint={timeline.resumeHint}
               />
             </ErrorBoundary>

@@ -5,6 +5,7 @@ import { ApprovalCard } from './ApprovalCard'
 import { PlanCard } from './PlanCard'
 import { PlanReviewCard } from './PlanReviewCard'
 import { RouterCard } from './RouterCard'
+import { ScopeRequestCard } from './ScopeRequestCard'
 import { SourceTag } from './SourceTag'
 import { TeamCard } from './TeamCard'
 import { ThinkingBlock } from './ThinkingBlock'
@@ -94,7 +95,9 @@ interface MessageListProps {
   onDecideReview: (action: 'execute' | 'cancel' | 'replan', feedback?: string) => void
   /** Team 续跑（方案 15 §4.4）：带 scope 是补范围救任务，不带是整轮续跑。 */
   onTeamResume: (options: { taskId?: string; scope?: string[] }) => void
-  /** 会话里刚说了句"继续"：把团队卡的按钮亮一下（不自动执行）。 */
+  /** 提交消息流末尾的范围确认卡（方案 17 §3.8）。 */
+  onSubmitScope: (taskId: string, scope: string[]) => void
+  /** 会话里刚说了句"继续"：把团队卡的按钮亮一下作回声（后端会真的续跑）。 */
   resumeHint: boolean
 }
 
@@ -108,12 +111,14 @@ interface MessageListProps {
 const ChatRow = memo(function ChatRow({
   item,
   onTeamResume,
+  onSubmitScope,
   resumeHint,
   onResolveApproval,
   onAnswerAsk,
 }: {
   item: TimelineItem
   onTeamResume: (options: { taskId?: string; scope?: string[] }) => void
+  onSubmitScope: (taskId: string, scope: string[]) => void
   resumeHint: boolean
   onResolveApproval: (
     decision: 'approve' | 'reject',
@@ -164,6 +169,11 @@ const ChatRow = memo(function ChatRow({
       return <PlanCard payload={item.payload} />
     case 'team':
       return <TeamCard payload={item.payload} onResume={onTeamResume} highlight={resumeHint} />
+    case 'scope':
+      // 权限类失败的范围确认入口（方案 17 §3.8）：插在消息流末尾，就地勾选并续跑。
+      return (
+        <ScopeRequestCard payload={item.payload} submitted={item.submitted} onSubmit={onSubmitScope} />
+      )
     case 'approval':
       // 审批 / 提问卡是**时间线条目**：待决时（`resolved === null`）可交互，
       // 应答后原地定格成终态——这样它在会话里留痕，且位置就是它发生的那个位置。
@@ -190,6 +200,7 @@ export function MessageList({
   onAnswerAsk,
   onDecideReview,
   onTeamResume,
+  onSubmitScope,
   resumeHint,
 }: MessageListProps) {
   return (
@@ -199,6 +210,7 @@ export function MessageList({
           key={item.id}
           item={item}
           onTeamResume={onTeamResume}
+          onSubmitScope={onSubmitScope}
           resumeHint={resumeHint}
           onResolveApproval={onResolveApproval}
           onAnswerAsk={onAnswerAsk}

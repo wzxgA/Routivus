@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { TeamPayload } from '../../api/types'
 import { teamStatusText, teamStatusTone } from '../../utils/teamStatus'
+import { ScopeSelector } from './ScopeSelector'
 
 interface TeamCardProps {
   payload: TeamPayload
@@ -9,7 +10,7 @@ interface TeamCardProps {
    * 不带 = 续跑整轮（done 跳过、其余重跑）。
    */
   onResume?: (options: { taskId?: string; scope?: string[] }) => void
-  /** 会话里刚说了句"继续"：把按钮亮一下（方案 15 §4.9，仍要用户点，不自动执行）。 */
+  /** 会话里刚说了句"继续"（方案 17 §3.6）：把按钮亮一下作回声，仍要用户点。 */
   highlight?: boolean
 }
 
@@ -26,12 +27,7 @@ export function TeamCard({ payload, onResume, highlight = false }: TeamCardProps
   // 服务端标记 needs_scope。候选来自服务端保守提取（任务已声明的 claims + 同伴的
   // write 范围），**勾选才产生授权**——候选本身不是授权。
   const scopeTask = tasks.find((task) => task.needs_scope && task.status === 'failed') ?? null
-  const candidates = scopeTask?.scope_candidates ?? []
-  const [picked, setPicked] = useState<Record<string, boolean>>({})
-  const [custom, setCustom] = useState('')
   const [picking, setPicking] = useState(false)
-  const customPatterns = custom.split(/[\s,，]+/).filter(Boolean)
-  const scope = [...candidates.filter((pattern) => picked[pattern]), ...customPatterns]
   const doneCount = tasks.filter((task) => task.status === 'done').length
 
   return (
@@ -82,59 +78,18 @@ export function TeamCard({ payload, onResume, highlight = false }: TeamCardProps
       </div>
 
       {scopeTask && picking ? (
-        <div className="team-resume">
-          <div className="team-resume-title">
-            允许 Repairer 修改哪些文件？<span className="dim">（{scopeTask.title}）</span>
-          </div>
-          {candidates.length > 0 ? (
-            <div className="scope-list">
-              {candidates.map((pattern) => (
-                <label key={pattern} className="scope-row">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(picked[pattern])}
-                    onChange={(event) =>
-                      setPicked((current) => ({ ...current, [pattern]: event.target.checked }))
-                    }
-                  />
-                  <span className="mono">{pattern}</span>
-                </label>
-              ))}
-            </div>
-          ) : (
-            <div className="card-desc">
-              服务端没能给出候选（该任务没有声明过资源范围），请手动填写要授权的路径。
-            </div>
-          )}
-          <input
-            className="scope-input"
-            value={custom}
-            placeholder="也可以手动补充，空格分隔，例如 routivus/web/** tests/test_web*"
-            onChange={(event) => setCustom(event.target.value)}
-          />
-          <div className="team-resume-echo">
-            {scope.length > 0 ? (
-              <>
-                将授权：<span className="mono">{scope.join('、')}</span>（write）
-              </>
-            ) : (
-              <span className="dim">还没有选择任何范围</span>
-            )}
-          </div>
-          <div className="approval-actions">
-            <button
-              type="button"
-              className="btn primary"
-              disabled={scope.length === 0}
-              onClick={() => onResume?.({ taskId: scopeTask.id, scope })}
-            >
-              确认并继续
-            </button>
-            <button type="button" className="btn" onClick={() => setPicking(false)}>
-              返回
-            </button>
-          </div>
-        </div>
+        // 范围选择器与消息流末尾的确认卡共用同一份实现（方案 17 §3.8）。
+        <ScopeSelector
+          title={
+            <>
+              允许 Repairer 修改哪些文件？
+              <span className="dim">（{scopeTask.title}）</span>
+            </>
+          }
+          candidates={scopeTask.scope_candidates ?? []}
+          onCancel={() => setPicking(false)}
+          onSubmit={(scope) => onResume?.({ taskId: scopeTask.id, scope })}
+        />
       ) : payload.resumable && onResume ? (
         <div className="team-resume-actions">
           {scopeTask ? (

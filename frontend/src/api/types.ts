@@ -707,6 +707,20 @@ export interface TeamPayload {
 }
 
 /**
+ * 权限类失败的范围确认请求（服务端 `team.scope_requested` 事件，方案 17 §3.8）。
+ *
+ * 用户说了句"继续"、但失败任务是"补个范围才能救"的 `needs_scope` 时，服务端**不直接
+ * 续跑**，而是把范围确认入口推到消息流末尾——省得用户往上翻团队卡。
+ *
+ * `candidates` 只是省打字的候选，**勾选才产生授权**；默认全不勾。
+ */
+export interface ScopeRequestedData {
+  task_id: string
+  goal: string
+  candidates: string[]
+}
+
+/**
  * 计划 / 团队审阅请求（服务端 `plan.review` 事件）。
  *
  * 由 `PlanReviewBridge` 发出：`/plan`、`/team` 生成计划后进入阻塞式审阅，
