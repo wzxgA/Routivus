@@ -1,27 +1,37 @@
-# Routivus
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/routivus-logo-night.svg">
+    <img src="frontend/public/routivus-logo.svg" alt="Routivus Logo" width="120" height="120">
+  </picture>
+</p>
 
-**纯后端** Python Agent 服务：只保留 Agent 核心逻辑与编排能力，**Python 包本身不含终端界面**；仓库内另附可选的 Web Console 前端（`frontend/`，Vite + React + TypeScript），也可由使用方自行接入其他客户端。
+<h1 align="center">Routivus</h1>
 
-保留能力：ReAct 直接执行、`/plan` 计划模式、`/team` Multi-Agent 协作，内置文件读写、代码搜索、命令执行与只读联网工具，附带 SmartRouter 智能路由与训练能力（针对不同复杂度任务自动切换四档模型）。
+<p align="center"><strong>Agent IDE</strong> · 计划执行 · 多 Agent 协作 · 智能路由</p>
 
-## 定位
+---
 
-- **纯后端**：可 `import routivus`，通过 `routivus.service` 程序化入口驱动执行
-- **无界面**：不含 Textual/TUI、inline REPL、终端安装脚本
-- **Web Console 服务层**：提供项目、会话、消息、笔记 REST API、Agent WebSocket 会话流、HITL 审批闭环和项目 cwd 绑定的终端通道
+Routivus 是一个本地运行的 Agent 工作台：一个能读写代码、执行命令、查资料的 Agent，配一套看得见执行过程的界面。
+
+- **三种执行方式**：普通对话走 ReAct 直接执行；`/plan <任务>` 先把多步任务拆成带依赖的子任务，审阅通过后按轮次跑；`/team <任务>` 派多个隔离上下文的 Worker 协作，Reviewer 按证据审查并对失败任务定向修复
+- **看得见的执行过程**：正文、思考块、工具卡、计划 / 团队任务卡、审批卡按事件时序交错显示，刷新或断线重连后原样恢复
+- **智能路由**：SmartRouter 按任务复杂度在 Basic / Enhanced / Superior / Ultimate 四档之间自动换模型，并随本机使用持续学习（样本与反馈不出本机）
+- **完整工具链**：文件读写与代码搜索、命令执行、只读联网（搜索 / 抓取）、项目笔记读写、MCP 外部工具、Skill 任务规范、项目长期记忆与自动上下文压缩
+- **安全边界**：危险操作走 HITL 审批；路径越界与黑名单命令**不可被审批绕过**；工具调用、审批与终端命令全部落审计日志
+- **可换客户端**：后端提供 REST + WebSocket 接口（项目 / 会话 / 消息 / 笔记、Agent 事件流、审批闭环、项目 cwd 绑定的终端通道），仓库内附带开箱即用的 Agent IDE 前端（`frontend/`，Vite + React + TypeScript），也可自行接入其他客户端
 
 ## 安装
 
-要求：**Python 3.11+**；使用 Web Console 前端还需要 **Node 18+**（只用后端可以不装 Node）。
+要求：**Python 3.11+**；运行 Agent IDE 前端还需要 **Node 18+**（不用前端就不需要装 Node）。
 
 ```bash
 cd Routivus                          # 仓库根目录（Routivus/），不是 routivus/ 子目录
 uv sync                              # 或 pip install -e .；Windows 上 pywinpty（终端 ConPTY 后端）随之装好
 
-cd frontend && npm install           # 可选：Web Console 前端
+cd frontend && npm install           # 可选：Agent IDE 前端
 ```
 
-> 依赖不含 `textual`（已随 TUI 移除）。SmartRouter 的**运行时**依赖（`numpy` / `scikit-learn` / `lightgbm` / `joblib` / `onnxruntime` / `tokenizers`）、Windows 的 `pywinpty`（终端通道的 ConPTY 后端）与 `websockets`（**对话通道的 WebSocket 实现**，uvicorn 本身只带 http 栈；缺了它每个升级请求都被拒，前端会停在「重连中」）均已并入核心依赖，装完即可用；只有**离线重导出**语义模型那套大件（`optimum` / `transformers` / `torch` / `safetensors`，即 `routivus[semantic]`）仍属可选，日常使用不需要。
+> SmartRouter 的**运行时**依赖（`numpy` / `scikit-learn` / `lightgbm` / `joblib` / `onnxruntime` / `tokenizers`）、Windows 的 `pywinpty`（终端通道的 ConPTY 后端）与 `websockets`（**对话通道的 WebSocket 实现**，uvicorn 本身只带 http 栈；缺了它每个升级请求都被拒，前端会停在「重连中」）均已并入核心依赖，装完即可用；只有**离线重导出**语义模型那套大件（`optimum` / `transformers` / `torch` / `safetensors`，即 `routivus[semantic]`）仍属可选，日常使用不需要。
 
 ## 快速开始
 
@@ -29,7 +39,7 @@ cd frontend && npm install           # 可选：Web Console 前端
 
 ### 1. 配置 provider（不配就无法执行 Agent 轮次）
 
-后端**没有 REPL，也没有 CLI 脚本入口**（`[project.scripts]` 为空），所以斜杠命令要用 `routivus.cli.commands` 的确定性入口执行：
+斜杠命令不在 CLI 里暴露（`[project.scripts]` 为空），要用 `routivus.cli.commands` 的确定性入口执行：
 
 ```powershell
 cd Routivus
@@ -82,7 +92,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'"   | Where-Object { $_.Co
 
 端口冲突时：后端改 `$env:ROUTIVUS_SERVER_PORT`，前端改 `$env:ROUTIVUS_SERVER_URL` 指向新地址（`vite.config.ts` 读取该变量）。
 
-## Web Console Server
+## Agent IDE Server
 
 启动本地 Server：
 
@@ -90,7 +100,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'"   | Where-Object { $_.Co
 python -m routivus.server
 ```
 
-默认监听 `127.0.0.1:18765`，健康检查地址为 `GET /healthz`。已实现项目注册与 CRUD（只修改元数据，不会删除或改写项目目录）、会话与消息持久化、全局/项目笔记的范围隔离与搜索、Agent WebSocket 实时事件流、HITL 审批闭环、项目 cwd 绑定的终端通道。前端见下节「Web Console 前端」。
+默认监听 `127.0.0.1:18765`，健康检查地址为 `GET /healthz`。已实现项目注册与 CRUD（只修改元数据，不会删除或改写项目目录）、会话与消息持久化、全局/项目笔记的范围隔离与搜索、Agent WebSocket 实时事件流、HITL 审批闭环、项目 cwd 绑定的终端通道。前端见下节「Agent IDE 前端」。
 
 默认只允许注册 Server 启动目录下的项目。需要管理其他工作区时配置：
 
@@ -206,7 +216,7 @@ Windows 上没有非特权 chroot 类原语，所以这里保证的是「**客�
 
 `guard_tool_call` 此前对 `execute_command` **只**跑 `command_guard`，`path_guard` 里针对 `cwd` 的检查因分派提前返回而不可达。现已修正为两者都执行：Agent 的 `execute_command` 工具若把 `cwd` 指向项目根之外将被拒绝（`path_outside_root`）。这是有意的收紧。
 
-## Web Console 前端
+## Agent IDE 前端
 
 前端位于 `frontend/`（Vite + React 18 + TypeScript，无 UI 框架依赖），实现计划见 `plans/routivus-implementation-plan.md`。
 
@@ -232,7 +242,7 @@ npm run check      # lint + typecheck + build，提交前的质量门禁
 - **团队卡**：展示 Worker 与角色进度，失败时逐任务给出原因分类；**可续跑**（方案 15）——中断后卡上出现「继续」（跳过已完成的，重跑其余），`needs_scope` 的失败给「选择修改范围并继续」（候选勾选 + 自由输入 + 「将授权：…」回显）。在会话里说一句"继续"只会**把按钮亮一下**（6 秒），不会自动执行——"继续"歧义太大（也可能是在聊上一个问题），执行永远要你点。
 - **会话视图**：WebSocket 事件流渲染消息、思考块、工具卡、计划 / 团队任务卡、审批与提问卡。**审批 / 提问卡是时间线条目**：请求时插在发生的那个位置，应答后**原地定格成终态**（已批准 / 已拒绝 / 已回答 / 超时按拒绝…并附原因），刷新或重连后随快照回放重建——不再是"答完就从界面消失、事后查无此事"。**思考块**：provider 返回推理内容（reasoning）时按段落独立显示——流式期间展开，段收尾自动折叠成「思考 · N 字」一行，点击展开；刷新 / 重连后仍在（默认折叠）。**时间线顺序**：思考 / 正文 / 工具卡严格按事件时序交错显示（正文按段落落库，角色 `thinking` 仅用于展示、不参与模型上下文）；重连后按时间戳归并重建，顺序与在线一致。`/team` 并行 worker 的输出按来源分桶并带短标签（如 `a1b2c3d4`），不会互相黏连。`/plan <任务>` 与 `/team <任务>` 在会话内直接可用（生成计划后弹出审阅卡：批准执行 / 重新规划 / 取消）；五页签信息侧栏（Session / Plan / Team / Memory / Safety）；Composer 支持 `Enter` 发送、`↑↓` 历史、`Tab` 应用命令补全、运行中停止。
 
-- **命令执行与补全**：会话内可直接执行 slash 命令——`/help`、`/model`、`/smartrouter`、`/tier`、`/provider`、`/config`、`/hitl`、`/memory`、`/save`、`/lang`、`/clear`、`/skill`（复用 TUI 的 `CommandService`，回执以消息落库；`/cancel` 等价取消按钮；`/exit` 已移除，按未知命令处理）。命令切模型 / 开关智能路由会实时同步顶栏与配置页，`/save`、`/memory` 改完长期记忆会刷新侧栏 Memory 页签。补全浮层覆盖上述全部命令（`↑↓` 选择、`Tab` 应用、`Esc` 关闭），`/model model <前缀>` 提示真实模型名，`/skill load <前缀>` 提示 Skill 名。运行中的会话不接受命令（先停止或取消）。
+- **命令执行与补全**：会话内可直接执行 slash 命令——`/help`、`/model`、`/smartrouter`、`/tier`、`/provider`、`/config`、`/hitl`、`/memory`、`/save`、`/lang`、`/clear`、`/skill`（复用 `routivus.cli` 的 `CommandService`，回执以消息落库；`/cancel` 等价取消按钮；`/exit` 已移除，按未知命令处理）。命令切模型 / 开关智能路由会实时同步顶栏与配置页，`/save`、`/memory` 改完长期记忆会刷新侧栏 Memory 页签。补全浮层覆盖上述全部命令（`↑↓` 选择、`Tab` 应用、`Esc` 关闭），`/model model <前缀>` 提示真实模型名，`/skill load <前缀>` 提示 Skill 名。运行中的会话不接受命令（先停止或取消）。
 - **Skill（任务规范）**：独立管理页（导航「技能」，路由 `#/skills`）——顶部项目选择器切换「全局（内置 + 用户级）/ 某项目」，支持列表、正文预览、新建与编辑（写入 `SKILL.md`）、启用/禁用；会话内也可用 `/skill list|load|enable|disable`，两者共用同一份配置。规范放 `<用户目录>/skills/<名称>/SKILL.md` 或项目 `.routivus/skills/` 下即被自动发现；索引注入 system prompt（开关变更后下一轮生效），正文由模型按需调用 `load_skill` 加载，参考资料受路径白名单与字数上限约束。
 - **Markdown 渲染**：会话正文支持标题 / 列表（含嵌套）/ 表格 / 任务列表 / 删除线 / 引用 / 链接 / 图片 / 围栏代码块；代码块带语言角标、一键复制与语法着色（暖白与夜间各一套配色，均经对比度校核）。三重取舍：流式输出期间先不着色、这一轮结束后再上色；逐 token 的增量先攒 60ms 再合并刷出（把渲染次数封顶）；单块超过 300 行或 20k 字符跳过着色（保滚动与内存，角标与复制仍在）。安全边界不变：不渲染裸 HTML、链接仅 http/https、不使用 `innerHTML`。
 - **项目文件**：顶栏「文件」页签进入整页视图——左侧懒加载文件树（逐层请求、可切换显示被忽略目录），右侧查看或编辑；聊天页还可按 `Ctrl+Shift+E` 展开只读抽屉边聊边看。点击文件**默认先预览**（想改再点「编辑」），编辑态可保存（`Ctrl+S`）并显示光标行列；图片直接预览，二进制/超 1MB/含无法解码字节的文件只读。写入边界：只允许项目根内（`..` 与软链接逃逸一律拒绝）、拒绝写 `.git` 与被忽略目录、超 5MB 拒绝；保存带内容版本号，文件被外部改过会提示「覆盖 / 重新加载」而不是静默覆盖；换行符按原文件保留（Windows 上 CRLF 文件不会因为改一行而整篇 diff）。每次写入都会记入 `.routivus/audit.log`。**文件可删除**（整页文件视图的树里右键，抽屉是只读的、没有右键菜单）：与写入同一套路径护栏，另加四条——项目根与 `.routivus`（项目数据目录：记忆 / 审计 / 项目级 Skill）不能删、被忽略目录里的东西不能删、**软链接只摘链接本身**（指向哪里都不影响目标）、**非空目录必须勾选「递归删除」**（服务端对没带递归标志的非空目录回 `409 directory_not_empty`，这是有意的第二次确认）；每次删除同样落审计（`file_delete`）。
@@ -328,7 +338,7 @@ print(message)
 
 所有 provider 配置（定义、URL、API Key、模型列表）**统一写入 `config.json`**，由后端 `/provider` 命令完成，无需手改文件、无需 `.env`。
 
-**怎么执行这些命令**：本仓库没有 REPL / TUI，`[project.scripts]` 也为空，所以要用 `routivus.cli.commands` 的确定性入口；下面示例里的 `raw` 就是斜杠命令原文，把 `--yes` 视作「确认」：
+**怎么执行这些命令**：命令不在 CLI 里暴露（`[project.scripts]` 为空），要用 `routivus.cli.commands` 的确定性入口；下面示例里的 `raw` 就是斜杠命令原文，把 `--yes` 视作「确认」：
 
 ```powershell
 python -c "from routivus.config.manager import ConfigManager; from routivus.cli.commands import execute_provider_command; print(execute_provider_command(ConfigManager(), None, '/provider add myproxy https://gateway.example.com/v1 --model deepseek-v4 --key sk_x --set-base')[0])"
@@ -380,7 +390,7 @@ python -c "from routivus.config.manager import ConfigManager; from routivus.cli.
 
 SmartRouter 按任务复杂度动态选择四档模型（Basic / Enhanced / Superior / Ultimate）。
 
-**在 Web Console 会话里怎么生效**：普通对话轮在执行前先路由，再按结果切换本轮实际使用的模型（`router.updated` 事件 / 会话快照的 `router` 字段）。界面分四层：
+**在 Agent IDE 会话里怎么生效**：普通对话轮在执行前先路由，再按结果切换本轮实际使用的模型（`router.updated` 事件 / 会话快照的 `router` 字段）。界面分四层：
 
 - **顶栏 chip**：**四态**——`⚡ 待路由`（开关开着但还没路由过，⚡ 缓慢呼吸）/ `⚡ 路由中…`（普通消息已发出、`router.updated` 未返回，文字 shimmer 流光）/ 档位徽章 `⚡ Superior` / `⚠ 路由失败`。档位徽章带**档位色 + 4 段电量条**（1–4 格对应 Basic–Ultimate，颜色沿用 token 面板那套 `--tier-*`），文字保持中性色（11px 彩字在浅/深底上对比度都不稳，色只上图形元素）。状态切换有一次性动画：出结果弹跳 + 逐格点亮、换档颜色渐变 + 光晕外扩、同档重路由只有极轻的亮度脉冲。**点击展开浮层**。
 - **「路由中」是前端本地推导的瞬态**：只对**普通消息**（非斜杠输入，斜杠是命令 / `/plan` / `/team`）且开关开启时置位，三条回落——① 收到 `router.updated`；② 收到证明本轮不路由的事件（`plan.updated` / `plan.review` / `team.updated` / `command.executed` / 首个 `message.delta` 等）；③ 2s 兜底超时。缺了 ②③，一次 `/plan` 之后 chip 会永远停在"路由中"。
@@ -396,13 +406,13 @@ SmartRouter 按任务复杂度动态选择四档模型（Basic / Enhanced / Supe
 
 边界：
 
-- **只有普通对话轮路由**：`/plan`、`/team` 不参与（与 TUI 的门禁一致）。计划与团队的子任务沿用执行器拿到的那份 LLM 配置。
+- **只有普通对话轮路由**：`/plan`、`/team` 不参与——它们由各自的执行器驱动，子任务沿用执行器拿到的那份 LLM 配置。
 - **路由在工作线程里执行**：校准 / 自学习 / ML 精判（含 23.9 MB 语义 ONNX 会话）是同步重活，首次加载可能数秒；服务端把它丢到工作线程并带超时（`ROUTIVUS_ROUTER_TIMEOUT`），所以**不会阻塞事件循环**（否则表现为「一对话就卡住」、心跳与其它 HTTP 全部停响应）。重资产是进程级单例，只加载一次，后续会话零成本。加载或路由偏慢时会打 WARNING 日志（含耗时），便于排查。
 - 路由结果**只改内存**中的 provider/model，不写回 `active_provider` / `active_model`；重连后档位可从会话快照回显，**服务重启后不保留**。
 - **手动优先**：在顶栏显式切换模型会关闭智能路由（与 `/model` 的行为一致），避免下一轮路由立刻覆盖刚选的模型。
 - 档位未显式配置、或该 provider 缺 API Key 时会回落 active 模型（界面会标出"实际回落 → 具体模型"）；换模型失败只会**沿用当前模型**并回报错误，不阻断对话。
 
-档位的 provider/model 用 `/tier` 配置，总开关用 `/smartRouter`（以下命令经 `handle_service_command` 程序化分发，Web Console 请走配置页）：
+档位的 provider/model 用 `/tier` 配置，总开关用 `/smartRouter`（以下命令经 `handle_service_command` 程序化分发，Agent IDE 请走配置页）：
 
 | 命令 | 行为 |
 |------|------|
@@ -590,7 +600,7 @@ provider 与 SmartRouter 配置统一存于 `config.json`（见「配置 Provide
 | `ROUTIVUS_TOOL_TIMEOUT` | 单工具执行超时秒数（默认 120） |
 | `ROUTIVUS_HITL` | 危险操作审批开关（on 默认 / off 危险模式） |
 | `ROUTIVUS_ROUTER_TIMEOUT` | 智能路由（含首次模型加载）超时秒数（默认 120，下限 5）；超时只降级为「本轮不换档」 |
-| `ROUTIVUS_ADAPTIVE_EVOLVE` | 本地自动演化开关（on 默认，off 关闭；手动 `/smartRouter evolve` 不受影响）。服务端进程里需为真实环境变量（见「Web Console Server」的警告），另见「本地进化与隐私」 |
+| `ROUTIVUS_ADAPTIVE_EVOLVE` | 本地自动演化开关（on 默认，off 关闭；手动 `/smartRouter evolve` 不受影响）。服务端进程里需为真实环境变量（见「Agent IDE Server」的警告），另见「本地进化与隐私」 |
 | `ROUTIVUS_NOTES_WRITE` | 笔记写工具开关（on 默认，off 只剩两个只读笔记工具）。写仍需 HITL 审批，见「笔记」一节 |
 | `ROUTIVUS_PLAN_MAX_SUBTASKS` | 计划模式子任务数上限（默认 12，超出截断） |
 | `ROUTIVUS_PLAN_SUBTASK_STEPS` | 计划模式单个子任务最大工具步数（默认 10） |
@@ -642,4 +652,4 @@ uv run pytest -m "not slow"   # 常规回归
 uv run pytest                 # 全量测试
 ```
 
-项目分层：`routivus/agent`（ReAct 循环 + 计划模式）、`routivus/llm`（客户端抽象 + OpenAI 兼容实现 + 工厂）、`routivus/tool`（统一工具注册表 + 内置工具）、`routivus/mcp`（协议、transport、动态工具和 resources）、`routivus/skill`（Skill 发现、解析、按需加载与安全策略）、`routivus/input_history`（输入历史、游标、持久化与隐私策略）、`routivus/memory`（项目/长期记忆 + 上下文压缩）、`routivus/safety`（PathGuard / CommandGuard 与审计日志）、`routivus/web`（只读搜索与抓取，含 DNS / 重定向逐跳校验）、`routivus/ask`（`ask_user` 的载荷模型）、`routivus/tui`（纯逻辑编排：state / reducer / controller / i18n，无界面）、`routivus/cli`（命令服务层，无 REPL）、`routivus/service`（UI 无关的程序化命令入口）、`routivus/server`（REST + WebSocket 服务层、HITL 通道与项目终端通道）、`routivus/config`（provider/MCP/Web/Skill 配置与运行时快照）、`routivus/router`（SmartRouter 路由、校准与训练）、`routivus/adaptive`（本地样本库、训练内核与本地进化）、`routivus/assets`（随包 SmartRouter 产物：语义编码器、语义版与无语义兜底产物）。
+项目分层：`routivus/agent`（ReAct 循环 + 计划模式）、`routivus/llm`（客户端抽象 + OpenAI 兼容实现 + 工厂）、`routivus/tool`（统一工具注册表 + 内置工具）、`routivus/mcp`（协议、transport、动态工具和 resources）、`routivus/skill`（Skill 发现、解析、按需加载与安全策略）、`routivus/input_history`（输入历史、游标、持久化与隐私策略）、`routivus/memory`（项目/长期记忆 + 上下文压缩）、`routivus/safety`（PathGuard / CommandGuard 与审计日志）、`routivus/web`（只读搜索与抓取，含 DNS / 重定向逐跳校验）、`routivus/ask`（`ask_user` 的载荷模型）、`routivus/tui`（state / reducer / controller / i18n 纯逻辑层）、`routivus/cli`（命令服务层）、`routivus/service`（UI 无关的程序化命令入口）、`routivus/server`（REST + WebSocket 服务层、HITL 通道与项目终端通道）、`routivus/config`（provider/MCP/Web/Skill 配置与运行时快照）、`routivus/router`（SmartRouter 路由、校准与训练）、`routivus/adaptive`（本地样本库、训练内核与本地进化）、`routivus/assets`（随包 SmartRouter 产物：语义编码器、语义版与无语义兜底产物）。
